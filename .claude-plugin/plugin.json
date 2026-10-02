@@ -6,5 +6,11 @@
   "homepage": "https://github.com/Strangees/admobctl",
   "repository": "https://github.com/Strangees/admobctl",
   "license": "MIT",
-  "keywords": ["admob", "ads", "monetization", "mcp", "finance", "reports"]
+  "keywords": ["admob", "ads", "monetization", "mcp", "finance", "reports"],
+  "mcpServers": {
+    "admobctl": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/admobctl.mjs", "mcp"]
+    }
+  }
 }
