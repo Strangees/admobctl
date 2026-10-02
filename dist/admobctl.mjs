@@ -10895,6 +10895,25 @@ async function runDoctor(d) {
       checks.push(failed("apps", err));
     }
   }
+  if (d.betaProbes) {
+    const results = await Promise.all(
+      Object.entries(d.betaProbes).map(async ([name, probe]) => {
+        try {
+          await probe();
+          return { name, err: void 0 };
+        } catch (err) {
+          return { name, err };
+        }
+      })
+    );
+    const denied = results.find((r) => r.err instanceof AdmobctlError && r.err.code === "BETA_ACCESS_DENIED")?.err;
+    const summary = results.map(
+      (r) => `${r.name}: ${!r.err ? "ok" : r.err instanceof AdmobctlError && r.err.code === "BETA_ACCESS_DENIED" ? "no access" : `error (${r.err.message})`}`
+    ).join("; ");
+    checks.push(
+      results.every((r) => !r.err) ? { id: "beta", status: "ok", summary: `AdMob API v1beta: ${summary}` } : { id: "beta", status: "warn", summary: `AdMob API v1beta: ${summary}`, fix: denied?.fix }
+    );
+  }
   return checks;
 }
 
@@ -11378,6 +11397,14 @@ function previousPeriod(r) {
   const len = daysInRange(r);
   const endDate = addDays(r.startDate, -1);
   return { startDate: addDays(endDate, -(len - 1)), endDate };
+}
+function splitRange(r, maxDays) {
+  const out = [];
+  for (let start = r.startDate; compareDates(start, r.endDate) <= 0; start = addDays(start, maxDays)) {
+    const end = addDays(start, maxDays - 1);
+    out.push({ startDate: start, endDate: compareDates(end, r.endDate) < 0 ? end : r.endDate });
+  }
+  return out;
 }
 
 // src/core/money.ts
@@ -12126,6 +12153,36 @@ function resolveTokenProvider(profile, deps) {
   return new AdcTokenProvider({ exec: deps.exec });
 }
 
+// src/core/campaign.ts
+var ADDITIVE = ["IMPRESSIONS", "CLICKS", "INSTALLS", "ESTIMATED_COST", "INTERACTIONS"];
+var RATIO_BASES = {
+  CLICK_THROUGH_RATE: ["CLICKS", "IMPRESSIONS"],
+  AVERAGE_CPI: ["ESTIMATED_COST", "INSTALLS"]
+};
+function mergeCampaignChunks(chunks, dimensions) {
+  const byKey = /* @__PURE__ */ new Map();
+  for (const chunk of chunks) {
+    for (const row of chunk.rows) {
+      const key = JSON.stringify(dimensions.map((d) => row.dimensions[d]?.value ?? ""));
+      const hit = byKey.get(key);
+      if (!hit) {
+        byKey.set(key, { dimensions: row.dimensions, metrics: { ...row.metrics } });
+        continue;
+      }
+      for (const m of ADDITIVE) {
+        if (m in row.metrics || m in hit.metrics) hit.metrics[m] = (hit.metrics[m] ?? 0) + (row.metrics[m] ?? 0);
+      }
+    }
+  }
+  const rows = [...byKey.values()];
+  for (const r of rows) {
+    const m = r.metrics;
+    if ("CLICK_THROUGH_RATE" in m) m.CLICK_THROUGH_RATE = m.IMPRESSIONS ? (m.CLICKS ?? 0) / m.IMPRESSIONS : 0;
+    if ("AVERAGE_CPI" in m) m.AVERAGE_CPI = m.INSTALLS ? Math.round((m.ESTIMATED_COST ?? 0) / m.INSTALLS) : 0;
+  }
+  return { rows, warnings: chunks.flatMap((c) => c.warnings) };
+}
+
 // src/core/http.ts
 var DEFAULT_TIMEOUT_MS = 3e4;
 var DEFAULT_MAX_RETRY_AFTER_MS = 6e4;
@@ -12291,6 +12348,19 @@ var DIMENSIONS = {
     "GMA_SDK_VERSION",
     "APP_VERSION_NAME",
     "SERVING_RESTRICTION"
+  ],
+  // v1beta campaignReport: AdMob app-promotion campaigns (the publisher as advertiser).
+  campaign: [
+    "DATE",
+    "CAMPAIGN_ID",
+    "CAMPAIGN_NAME",
+    "AD_ID",
+    "AD_NAME",
+    "PLACEMENT_ID",
+    "PLACEMENT_NAME",
+    "PLACEMENT_PLATFORM",
+    "COUNTRY",
+    "FORMAT"
   ]
 };
 var METRICS = {
@@ -12314,9 +12384,10 @@ var METRICS = {
     "MATCHED_REQUESTS",
     "MATCH_RATE",
     "OBSERVED_ECPM"
-  ]
+  ],
+  campaign: ["IMPRESSIONS", "CLICKS", "CLICK_THROUGH_RATE", "INSTALLS", "ESTIMATED_COST", "AVERAGE_CPI", "INTERACTIONS"]
 };
-var MONEY_METRICS = /* @__PURE__ */ new Set(["ESTIMATED_EARNINGS", "IMPRESSION_RPM", "OBSERVED_ECPM"]);
+var MONEY_METRICS = /* @__PURE__ */ new Set(["ESTIMATED_EARNINGS", "IMPRESSION_RPM", "OBSERVED_ECPM", "ESTIMATED_COST", "AVERAGE_CPI"]);
 var METRIC_ALIASES = {
   EARNINGS: "ESTIMATED_EARNINGS",
   REVENUE: "ESTIMATED_EARNINGS",
@@ -12324,14 +12395,22 @@ var METRIC_ALIASES = {
   MATCHED: "MATCHED_REQUESTS",
   CTR: "IMPRESSION_CTR",
   RPM: "IMPRESSION_RPM",
-  ECPM: "OBSERVED_ECPM"
+  ECPM: "OBSERVED_ECPM",
+  COST: "ESTIMATED_COST",
+  CPI: "AVERAGE_CPI"
+};
+var KIND_METRIC_ALIASES = {
+  campaign: { CTR: "CLICK_THROUGH_RATE" }
 };
 var DIMENSION_ALIASES = {
   UNIT: "AD_UNIT",
   SOURCE: "AD_SOURCE",
   OS_VERSION: "MOBILE_OS_VERSION",
   SDK_VERSION: "GMA_SDK_VERSION",
-  APP_VERSION: "APP_VERSION_NAME"
+  APP_VERSION: "APP_VERSION_NAME",
+  CAMPAIGN: "CAMPAIGN_NAME",
+  AD: "AD_NAME",
+  PLACEMENT: "PLACEMENT_NAME"
 };
 function canonical(name) {
   return name.trim().toUpperCase().replace(/-/g, "_");
@@ -12355,7 +12434,7 @@ function normalizeDimension(name, kind) {
 }
 function normalizeMetric(name, kind) {
   const c = canonical(name);
-  const resolved = METRIC_ALIASES[c] ?? c;
+  const resolved = KIND_METRIC_ALIASES[kind]?.[c] ?? METRIC_ALIASES[c] ?? c;
   if (!METRICS[kind].includes(resolved)) {
     throw usageError(
       `Metric "${name}" is not supported by ${kind} reports. Valid: ${METRICS[kind].map(friendlyName).join(", ")}`
@@ -12421,7 +12500,8 @@ function metricNumber(v) {
   return v.doubleValue ?? 0;
 }
 function parseReport(raw) {
-  const chunks = Array.isArray(raw) ? raw : [raw];
+  const rows = raw?.rows;
+  const chunks = Array.isArray(raw) ? raw : Array.isArray(rows) ? rows.map((row) => ({ row })) : [raw];
   const report = { rows: [], warnings: [] };
   for (const chunk of chunks) {
     if (chunk.header) {
@@ -12448,6 +12528,7 @@ function parseReport(raw) {
 
 // src/core/client.ts
 var API_BASE = "https://admob.googleapis.com/v1";
+var API_BASE_BETA = "https://admob.googleapis.com/v1beta";
 function accountName(account) {
   return account.startsWith("accounts/") ? account : `accounts/${account}`;
 }
@@ -12456,7 +12537,7 @@ var AdmobClient = class {
     this.opts = opts;
   }
   opts;
-  async request(quota, method, path, body) {
+  async request(quota, method, path, body, version2 = "v1") {
     await (this.opts.limiters ?? processLimiters)[quota].take(this.opts.sleep);
     const headers = {
       authorization: `Bearer ${await this.opts.getToken()}`,
@@ -12464,16 +12545,20 @@ var AdmobClient = class {
     };
     if (this.opts.quotaProject) headers["x-goog-user-project"] = this.opts.quotaProject;
     if (body !== void 0) headers["content-type"] = "application/json";
-    const url2 = `${this.opts.baseUrl ?? API_BASE}/${path}`;
-    return requestJson(url2, { method, headers, body: body === void 0 ? void 0 : JSON.stringify(body) }, this.opts);
+    const base = version2 === "v1" ? this.opts.baseUrl ?? API_BASE : this.opts.betaBaseUrl ?? API_BASE_BETA;
+    try {
+      return await requestJson(`${base}/${path}`, { method, headers, body: body === void 0 ? void 0 : JSON.stringify(body) }, this.opts);
+    } catch (err) {
+      throw version2 === "v1beta" ? betaError(err, path, method) : err;
+    }
   }
-  async paginate(quota, path, key) {
+  async paginate(quota, path, key, opts = {}) {
     const out = [];
     let pageToken;
     do {
-      const qs = new URLSearchParams({ pageSize: "1000" });
+      const qs = new URLSearchParams({ pageSize: "1000", ...opts.params });
       if (pageToken) qs.set("pageToken", pageToken);
-      const page = await this.request(quota, "GET", `${path}?${qs}`);
+      const page = await this.request(quota, "GET", `${path}?${qs}`, void 0, opts.version);
       out.push(...page?.[key] ?? []);
       pageToken = page?.nextPageToken || void 0;
     } while (pageToken);
@@ -12496,7 +12581,48 @@ var AdmobClient = class {
     const raw = await this.request("reporting", "POST", `${accountName(account)}/mediationReport:generate`, { reportSpec: spec });
     return parseReport(raw);
   }
+  // ── v1beta reads ──────────────────────────────────────────────────
+  listAdSources(account) {
+    return this.paginate("inventory", `${accountName(account)}/adSources`, "adSources", { version: "v1beta" });
+  }
+  listAdapters(account, adSourceId) {
+    return this.paginate("inventory", `${accountName(account)}/adSources/${adSourceId}/adapters`, "adapters", { version: "v1beta" });
+  }
+  /** `filter` uses the API's EBNF syntax, e.g. IN(FORMAT, "BANNER") AND CONTAINS_ANY(APP_IDS, "…"). */
+  listMediationGroups(account, filter) {
+    return this.paginate("inventory", `${accountName(account)}/mediationGroups`, "mediationGroups", {
+      version: "v1beta",
+      params: filter ? { filter } : void 0
+    });
+  }
+  /** `adUnit` is the ad unit's resource name, accounts/{pub}/adUnits/{fragment}. */
+  listAdUnitMappings(adUnit) {
+    return this.paginate("inventory", `${adUnit}/adUnitMappings`, "adUnitMappings", { version: "v1beta" });
+  }
+  async campaignReport(account, spec) {
+    const raw = await this.request("reporting", "POST", `${accountName(account)}/campaignReport:generate`, { reportSpec: spec }, "v1beta");
+    return parseReport(raw);
+  }
 };
+function methodName(path, httpMethod) {
+  const segments = path.split("?")[0].split("/");
+  const last = segments[segments.length - 1];
+  if (last.includes(":")) return last.replace(":", ".");
+  const collection = segments.length % 2 === 1 ? last : segments[segments.length - 2];
+  return `${collection}.${httpMethod === "GET" ? "list" : httpMethod === "PATCH" ? "patch" : "create"}`;
+}
+function betaError(err, path, httpMethod) {
+  if (!(err instanceof AdmobctlError) || err.code !== "PERMISSION_DENIED") return err;
+  return new AdmobctlError(
+    "BETA_ACCESS_DENIED",
+    `Permission denied for ${methodName(path, httpMethod)} (AdMob API v1beta). Google limits several v1beta methods to allowlisted accounts.`,
+    {
+      status: err.status,
+      cause: err,
+      fix: "If `admobctl accounts list` works, ask your Google AdMob account manager to enable AdMob API (v1beta) access for this publisher account."
+    }
+  );
+}
 
 // src/core/freshness.ts
 var MEDIATION_DETAIL_START = { year: 2019, month: 10, day: 20 };
@@ -12527,7 +12653,10 @@ var METRIC_KEYS = {
   SHOW_RATE: "show_rate",
   IMPRESSION_CTR: "ctr",
   IMPRESSION_RPM: "rpm",
-  OBSERVED_ECPM: "ecpm"
+  OBSERVED_ECPM: "ecpm",
+  CLICK_THROUGH_RATE: "ctr",
+  ESTIMATED_COST: "cost",
+  AVERAGE_CPI: "cpi"
 };
 function metricKey(metric2) {
   return METRIC_KEYS[metric2] ?? metric2.toLowerCase();
@@ -12600,6 +12729,16 @@ function computeTotals(report, metrics) {
   if (has("OBSERVED_ECPM") && has("IMPRESSIONS") && has("ESTIMATED_EARNINGS")) {
     t.ecpm = microsToAmount(Math.round(ratio2(earnings, impressions) * 1e3));
   }
+  const installs = sum("INSTALLS");
+  const cost = sum("ESTIMATED_COST");
+  if (has("INSTALLS")) t.installs = installs;
+  if (has("INTERACTIONS")) t.interactions = sum("INTERACTIONS");
+  if (has("ESTIMATED_COST")) {
+    t.cost = microsToAmount(cost);
+    t.cost_micros = cost;
+  }
+  if (has("CLICK_THROUGH_RATE") && has("CLICKS") && has("IMPRESSIONS")) t.ctr = ratio2(clicks, impressions);
+  if (has("AVERAGE_CPI") && has("ESTIMATED_COST") && has("INSTALLS")) t.cpi = microsToAmount(Math.round(ratio2(cost, installs)));
   return t;
 }
 function shownRows(r) {
@@ -12619,8 +12758,11 @@ var DEFAULT_METRICS = {
     "IMPRESSION_CTR",
     "IMPRESSION_RPM"
   ],
-  mediation: ["ESTIMATED_EARNINGS", "AD_REQUESTS", "MATCHED_REQUESTS", "IMPRESSIONS", "CLICKS", "MATCH_RATE", "OBSERVED_ECPM"]
+  mediation: ["ESTIMATED_EARNINGS", "AD_REQUESTS", "MATCHED_REQUESTS", "IMPRESSIONS", "CLICKS", "MATCH_RATE", "OBSERVED_ECPM"],
+  campaign: ["IMPRESSIONS", "CLICKS", "CLICK_THROUGH_RATE", "INSTALLS", "ESTIMATED_COST", "AVERAGE_CPI"]
 };
+var CAMPAIGN_MAX_DAYS = 30;
+var filterValue = (v) => `"${v.replace(/["\\]/g, (c) => `\\${c}`)}"`;
 var AdmobService = class _AdmobService {
   constructor(profile, client, tokenProvider, accountOverride, now) {
     this.profile = profile;
@@ -12637,6 +12779,7 @@ var AdmobService = class _AdmobService {
   accountPromise;
   appsPromise;
   adUnitsPromise;
+  adSourcesPromise;
   static create(opts = {}, deps = {}) {
     const dir = deps.configDir ?? configDir();
     const profile = resolveProfile(loadConfig(dir), opts.profile);
@@ -12721,6 +12864,163 @@ var AdmobService = class _AdmobService {
       adTypes: u.adTypes ?? []
     }));
   }
+  /** Resolve an ad unit by ad unit ID, its numeric fragment or its exact name. */
+  async resolveAdUnit(input2) {
+    const q = input2.trim();
+    const units = await this.rawAdUnits();
+    const exact = units.find((u) => u.adUnitId === q || u.name === q || u.adUnitId.endsWith(`/${q}`));
+    if (exact) return exact;
+    const byName = units.filter((u) => u.displayName.toLowerCase() === q.toLowerCase());
+    if (byName.length === 1) return byName[0];
+    if (byName.length > 1) throw usageError(`Ad unit name "${input2}" is ambiguous: ${byName.map((u) => u.adUnitId).join(", ")}`);
+    throw usageError(`Unknown ad unit "${input2}". Run: admobctl ad-units list`);
+  }
+  // ── v1beta reads ──────────────────────────────────────────────────
+  adSources() {
+    if (this.adSourcesPromise) return this.adSourcesPromise;
+    const p = (async () => this.client.listAdSources((await this.account()).name))();
+    this.adSourcesPromise = p;
+    p.catch(() => {
+      if (this.adSourcesPromise === p) this.adSourcesPromise = void 0;
+    });
+    return p;
+  }
+  /** Resolve an ad source by ID or title (case-insensitive). */
+  async resolveAdSource(input2) {
+    const q = input2.trim().toLowerCase();
+    const sources = await this.adSources();
+    const hit = sources.find((s) => s.adSourceId === input2.trim() || s.title.toLowerCase() === q);
+    if (hit) return hit;
+    throw usageError(`Unknown ad source "${input2}". Ad sources: ${sources.map((s) => s.title).join(", ") || "(none)"}`);
+  }
+  async adapters(adSource) {
+    const source = await this.resolveAdSource(adSource);
+    const adapters = await this.client.listAdapters((await this.account()).name, source.adSourceId);
+    return adapters.map((a) => ({
+      adapterId: a.adapterId,
+      title: a.title,
+      adSource: source.title,
+      adSourceId: source.adSourceId,
+      platform: a.platform,
+      formats: a.formats ?? [],
+      settings: (a.adapterConfigMetadata ?? []).map((m) => ({
+        id: m.adapterConfigMetadataId,
+        label: m.adapterConfigMetadataLabel,
+        required: Boolean(m.isRequired)
+      }))
+    }));
+  }
+  async mediationGroups(f = {}) {
+    const parts = [];
+    if (f.app) parts.push(`CONTAINS_ANY(APP_IDS, ${filterValue((await this.resolveApp(f.app)).appId)})`);
+    if (f.adSource) parts.push(`CONTAINS_ANY(AD_SOURCE_IDS, ${filterValue((await this.resolveAdSource(f.adSource)).adSourceId)})`);
+    if (f.format) parts.push(`IN(FORMAT, ${filterValue(f.format.toUpperCase())})`);
+    if (f.platform) parts.push(`IN(PLATFORM, ${filterValue(f.platform.toUpperCase())})`);
+    if (f.state) parts.push(`IN(STATE, ${filterValue(f.state.toUpperCase())})`);
+    const acct = await this.account();
+    const [groups, sources, units, apps] = await Promise.all([
+      this.client.listMediationGroups(acct.name, parts.join(" AND ") || void 0),
+      this.adSources().catch(() => []),
+      this.rawAdUnits(),
+      this.apps()
+    ]);
+    const sourceTitle = new Map(sources.map((s) => [s.adSourceId, s.title]));
+    const unitById = new Map(units.map((u) => [u.adUnitId, u]));
+    const aliasById = new Map(apps.map((a) => [a.appId, a.alias]));
+    const MODE_ORDER = { LIVE: 0, MANUAL: 1 };
+    return groups.map((g) => {
+      const lines = Object.values(g.mediationGroupLines ?? {}).filter((l) => l.state !== "REMOVED").map((l) => {
+        const line = {
+          id: l.id,
+          name: l.displayName ?? l.id,
+          adSource: sourceTitle.get(l.adSourceId) ?? l.adSourceId,
+          adSourceId: l.adSourceId,
+          cpmMode: l.cpmMode ?? "",
+          state: l.state ?? "",
+          mappings: l.adUnitMappings ?? {}
+        };
+        if (l.cpmMode !== "LIVE" && l.cpmMicros !== void 0) {
+          line.cpm_micros = Number(l.cpmMicros);
+          line.cpm = line.cpm_micros / 1e6;
+        }
+        if (l.experimentVariant === "VARIANT_A") line.variant = "A";
+        if (l.experimentVariant === "VARIANT_B") line.variant = "B";
+        return line;
+      }).sort((a, b) => (MODE_ORDER[a.cpmMode] ?? 2) - (MODE_ORDER[b.cpmMode] ?? 2) || (b.cpm_micros ?? 0) - (a.cpm_micros ?? 0));
+      const t = g.targeting ?? {};
+      const view = {
+        id: g.mediationGroupId,
+        name: g.displayName,
+        state: g.state ?? "",
+        platform: t.platform ?? "",
+        format: t.format ?? "",
+        adUnits: (t.adUnitIds ?? []).map((id) => {
+          const u = unitById.get(id);
+          return { adUnitId: id, name: u?.displayName ?? id, app: u ? aliasById.get(u.appId) ?? u.appId : "" };
+        }),
+        regions: t.targetedRegionCodes ?? [],
+        excludedRegions: t.excludedRegionCodes ?? [],
+        experiment: g.mediationAbExperimentState === "RUNNING" ? "running" : g.mediationAbExperimentState === "NOT_RUNNING" ? "none" : "unknown",
+        lines,
+        resource: g.name
+      };
+      if (t.idfaTargeting && t.idfaTargeting !== "IDFA_TARGETING_UNSPECIFIED") view.idfa = t.idfaTargeting;
+      return view;
+    });
+  }
+  async adUnitMappings(adUnit) {
+    const unit = await this.resolveAdUnit(adUnit);
+    const mappings = await this.client.listAdUnitMappings(unit.name);
+    return mappings.map((m) => ({
+      id: m.name.split("/").pop() ?? m.name,
+      name: m.displayName ?? "",
+      adUnit: unit.displayName,
+      adUnitId: unit.adUnitId,
+      adapterId: m.adapterId,
+      state: m.state ?? "",
+      settings: m.adUnitConfigurations ?? {},
+      resource: m.name
+    }));
+  }
+  /**
+   * AdMob app-promotion campaign report (v1beta). The API takes at most 30 days per request, so longer
+   * ranges are fetched in chunks and added up (or concatenated when the report is by date).
+   */
+  async campaignReport(q) {
+    const range = q.dateRange ?? dateRangeFromArgs(q.from ?? "", q.to ?? q.from ?? "");
+    const dimensions = q.by.map((d) => normalizeDimension(d, "campaign"));
+    const metrics = (q.metrics?.length ? q.metrics : DEFAULT_METRICS.campaign).map((m) => normalizeMetric(m, "campaign"));
+    checkCombination(dimensions, metrics);
+    const chunks = splitRange(range, CAMPAIGN_MAX_DAYS);
+    const merge2 = chunks.length > 1 && !dimensions.includes("DATE");
+    const fetchMetrics = merge2 ? [.../* @__PURE__ */ new Set([...metrics, ...metrics.flatMap((m) => RATIO_BASES[m] ?? [])])] : metrics;
+    const acct = await this.account();
+    const reports = await Promise.all(
+      chunks.map((dateRange) => this.client.campaignReport(acct.name, { dateRange, dimensions, metrics: fetchMetrics }))
+    );
+    const report = merge2 ? mergeCampaignChunks(reports, dimensions) : { rows: reports.flatMap((r) => r.rows), warnings: reports.flatMap((r) => r.warnings) };
+    const truncated = reports.some((r) => r.rows.length >= API_MAX_ROWS);
+    const notices = [
+      "Cost and CPI are in the campaigns' reporting currency. These are AdMob app-promotion campaigns, where you are the advertiser."
+    ];
+    if (chunks.length > 1) notices.push(`Campaign reports cover at most ${CAMPAIGN_MAX_DAYS} days; fetched as ${chunks.length} requests of at most ${CAMPAIGN_MAX_DAYS} days.`);
+    notices.push(...freshnessNotices("campaign", range, todayIn(acct.reportingTimeZone, this.now())));
+    const result = {
+      kind: "campaign",
+      account: acct.publisherId,
+      timeZone: acct.reportingTimeZone,
+      from: formatDate(range.startDate),
+      to: formatDate(range.endDate),
+      dimensions: dimensions.map(dimensionKey),
+      metrics: metrics.map(metricKey),
+      rows: toViewRows(report, dimensions, metrics),
+      truncated,
+      warnings: report.warnings,
+      notices
+    };
+    if (!truncated) result.totals = computeTotals(report, metrics);
+    return result;
+  }
   networkReport(q) {
     return this.report("network", q);
   }
@@ -12744,6 +13044,7 @@ var AdmobService = class _AdmobService {
     const filters = await this.resolveFilters(kind, q.filters ?? {});
     const spec = buildReportSpec(kind, { dateRange: range, dimensions, metrics, filters, maxRows: q.maxRows, currency: q.currency });
     const acct = await this.account();
+    if (kind === "campaign") throw usageError("Use campaignReport() for campaign reports.");
     const report = kind === "network" ? await this.client.networkReport(acct.name, spec) : await this.client.mediationReport(acct.name, spec);
     notices.push(...freshnessNotices(kind, range, todayIn(acct.reportingTimeZone, this.now())));
     return { report, dimensions, metrics, range, notices };
@@ -12920,9 +13221,11 @@ var METRIC_LABELS = {
   show_rate: "Show rate",
   ctr: "CTR",
   rpm: "RPM",
-  ecpm: "eCPM"
+  ecpm: "eCPM",
+  cost: "Cost",
+  cpi: "CPI"
 };
-var MONEY_KEYS = /* @__PURE__ */ new Set(["earnings", "rpm", "ecpm"]);
+var MONEY_KEYS = /* @__PURE__ */ new Set(["earnings", "rpm", "ecpm", "cost", "cpi"]);
 var RATE_KEYS = /* @__PURE__ */ new Set(["match_rate", "show_rate", "ctr"]);
 function titleCase(key) {
   const s = key.replace(/_/g, " ");
@@ -12945,7 +13248,7 @@ function reportView(r) {
     const label2 = METRIC_LABELS[key] ?? titleCase(key);
     columns.push({ key, label: MONEY_KEYS.has(key) && r.currency ? `${label2} (${r.currency})` : label2, align: "right" });
   }
-  const notes = [`${r.kind === "network" ? "Network" : "Mediation"} report ${r.from} \u2192 ${r.to}, ${r.timeZone ?? ""}. ${ESTIMATE_NOTE}`];
+  const notes = [`${titleCase(r.kind)} report ${r.from} \u2192 ${r.to}, ${r.timeZone ?? ""}.${r.kind === "campaign" ? "" : ` ${ESTIMATE_NOTE}`}`];
   if (r.truncated) {
     notes.push(`Truncated: ${shownRows(r)}. Raise --max-rows or narrow the query.`);
   }
@@ -13134,6 +13437,90 @@ function waterfallView(r) {
     notes: [...r.summary, ...r.notices]
   };
 }
+function adSourcesView(sources) {
+  return {
+    data: sources,
+    table: {
+      columns: [
+        { key: "title", label: "Ad source" },
+        { key: "adSourceId", label: "Ad source ID" }
+      ],
+      rows: sources
+    }
+  };
+}
+function adaptersView(adapters) {
+  return {
+    data: adapters,
+    table: {
+      columns: [
+        { key: "title", label: "Adapter" },
+        { key: "adapterId", label: "Adapter ID" },
+        { key: "platform", label: "Platform" },
+        { key: "formats", label: "Formats" },
+        { key: "settings", label: "Mapping settings (* required)" }
+      ],
+      rows: adapters.map((a) => ({ ...a, settings: a.settings.map((x) => `${x.label}${x.required ? "*" : ""}`).join(", ") }))
+    }
+  };
+}
+function mediationGroupsView(groups) {
+  return {
+    data: groups,
+    table: {
+      columns: [
+        { key: "name", label: "Mediation group" },
+        { key: "id", label: "ID" },
+        { key: "state", label: "State" },
+        { key: "platform", label: "Platform" },
+        { key: "format", label: "Format" },
+        { key: "adUnits", label: "Ad units", align: "right" },
+        { key: "lines", label: "Lines", align: "right" },
+        { key: "experiment", label: "A/B test" }
+      ],
+      rows: groups.map((g) => ({ ...g, adUnits: g.adUnits.length, lines: g.lines.length }))
+    }
+  };
+}
+function mediationGroupView(g) {
+  const notes = [
+    `${g.name} (${g.id}): ${g.state}, ${g.platform} ${g.format}, A/B test ${g.experiment}.`,
+    `Ad units: ${g.adUnits.map((u) => u.app ? `${u.name} (${u.app})` : u.name).join(", ") || "(none)"}.`,
+    `Regions: ${g.regions.join(", ") || "all"}${g.excludedRegions.length ? `; excluding ${g.excludedRegions.join(", ")}` : ""}.`
+  ];
+  if (g.lines.some((l) => l.cpm !== void 0)) notes.push("Manual CPMs are in USD, the only currency the API supports for mediation lines.");
+  return {
+    data: g,
+    table: {
+      columns: [
+        { key: "name", label: "Line" },
+        { key: "adSource", label: "Ad source" },
+        { key: "cpmMode", label: "CPM mode" },
+        { key: "cpm", label: "CPM (USD)", align: "right" },
+        { key: "state", label: "State" },
+        { key: "variant", label: "Variant" },
+        { key: "id", label: "Line ID" }
+      ],
+      rows: g.lines.map((l) => ({ ...l, cpm: l.cpm_micros === void 0 ? "" : formatMicros(l.cpm_micros) }))
+    },
+    notes
+  };
+}
+function mappingsView(mappings) {
+  return {
+    data: mappings,
+    table: {
+      columns: [
+        { key: "name", label: "Mapping" },
+        { key: "id", label: "ID" },
+        { key: "adapterId", label: "Adapter ID" },
+        { key: "state", label: "State" },
+        { key: "settings", label: "Settings" }
+      ],
+      rows: mappings.map((m) => ({ ...m, settings: Object.entries(m.settings).map(([k, v]) => `${k}=${v}`).join(", ") }))
+    }
+  };
+}
 
 // src/cli/program.ts
 var list = (v, prev = []) => [...prev, ...v.split(",").map((s) => s.trim()).filter(Boolean)];
@@ -13156,6 +13543,12 @@ function positiveInt(v) {
   const n = Number(v);
   if (!Number.isInteger(n) || n <= 0) throw new AdmobctlError("USAGE", `Expected a positive integer, got "${v}"`);
   return n;
+}
+function findGroup(groups, input2) {
+  const q = input2.trim().toLowerCase();
+  const hit = groups.find((g) => g.id === input2.trim() || g.name.toLowerCase() === q);
+  if (hit) return hit;
+  throw new AdmobctlError("USAGE", `Unknown mediation group "${input2}". Groups: ${groups.map((g) => g.name).join(", ") || "(none)"}`);
 }
 function buildProgram(io) {
   const program2 = new Command("admobctl");
@@ -13220,14 +13613,25 @@ function buildProgram(io) {
       quotaProject: s.profile.quotaProject ?? tp.quotaProject(),
       listAccounts: () => s.listAccounts(),
       account: () => s.account(),
-      listApps: () => s.apps()
+      listApps: () => s.apps(),
+      betaProbes: { "ad sources": () => s.adSources(), "mediation groups": () => s.mediationGroups() }
     });
     emit(cmd, doctorView(checks));
     if (checks.some((c) => c.status === "fail")) process.exitCode = 1;
   });
   program2.command("accounts").description("AdMob publisher accounts").command("list").description("List accessible publisher accounts").action(async (_o, cmd) => emit(cmd, accountsView(await svc(cmd).listAccounts())));
   program2.command("apps").description("Apps in the account").command("list").description("List apps with their aliases").action(async (_o, cmd) => emit(cmd, appsView(await svc(cmd).apps())));
-  program2.command("ad-units").description("Ad units in the account").command("list").description("List ad units").option("--app <alias|id>", "only ad units of this app").action(async (o, cmd) => emit(cmd, adUnitsView(await svc(cmd).adUnits({ app: o.app }))));
+  const adUnits = program2.command("ad-units").description("Ad units in the account");
+  adUnits.command("list").description("List ad units").option("--app <alias|id>", "only ad units of this app").action(async (o, cmd) => emit(cmd, adUnitsView(await svc(cmd).adUnits({ app: o.app }))));
+  adUnits.command("mappings <ad-unit>").description("Third-party ad unit mappings of an ad unit (name or ID; AdMob API v1beta)").action(async (adUnit, _o, cmd) => emit(cmd, mappingsView(await svc(cmd).adUnitMappings(adUnit))));
+  const adSources = program2.command("ad-sources").description("Mediation ad sources and their adapters (AdMob API v1beta)");
+  adSources.command("list").description("List the ad sources available for mediation").action(async (_o, cmd) => emit(cmd, adSourcesView(await svc(cmd).adSources())));
+  adSources.command("adapters <ad-source>").description("List an ad source's adapters and the settings an ad unit mapping needs").action(async (source, _o, cmd) => emit(cmd, adaptersView(await svc(cmd).adapters(source))));
+  const groups = program2.command("mediation-groups").description("Mediation groups (AdMob API v1beta; may need Google allowlisting)");
+  groups.command("list").description("List mediation groups with their targeting, lines and A/B experiment state").option("--app <alias|id>", "only groups targeting this app").option("--ad-source <name|id>", "only groups with a line for this ad source").option("--format <format>", "e.g. banner, interstitial, rewarded").option("--platform <platform>", "ios or android").option("--state <state>", "enabled or disabled").action(
+    async (o, cmd) => emit(cmd, mediationGroupsView(await svc(cmd).mediationGroups(o)))
+  );
+  groups.command("show <group>").description("Show one mediation group's lines (name or ID)").action(async (group, _o, cmd) => emit(cmd, mediationGroupView(findGroup(await svc(cmd).mediationGroups(), group))));
   const report = program2.command("report").description("Network and mediation reports");
   for (const kind of ["network", "mediation"]) {
     report.command(kind).description(`Generate a ${kind} report`).requiredOption("--from <date>", "start, YYYY-MM or YYYY-MM-DD").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD (default: same as --from)").option("--by <dims>", `dimensions, comma-separated (e.g. app,country${kind === "mediation" ? ",ad-source" : ""})`, list).option("--metrics <metrics>", "metrics, comma-separated (default: all common ones)", list).option("--filter <k=v,\u2026>", "filter, repeatable (e.g. country=NO,SE or app=<alias>)", (v, p = []) => [...p, v]).option("--max-rows <n>", "cap the number of rows", positiveInt).option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)").action(async (o, cmd) => {
@@ -13244,6 +13648,10 @@ function buildProgram(io) {
       emit(cmd, reportView(kind === "network" ? await s.networkReport(q) : await s.mediationReport(q)));
     });
   }
+  report.command("campaign").description("AdMob app-promotion campaign report: impressions, clicks, installs, cost, CPI (AdMob API v1beta)").requiredOption("--from <date>", "start, YYYY-MM or YYYY-MM-DD").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD (default: same as --from); ranges over 30 days are fetched in chunks").option("--by <dims>", "dimensions, comma-separated (e.g. campaign, ad, placement, country, format, date)", list).option("--metrics <metrics>", "metrics: impressions, clicks, ctr, installs, cost, cpi, interactions", list).action(async (o, cmd) => {
+    const r = await svc(cmd).campaignReport({ from: o.from, to: o.to ?? o.from, by: o.by?.length ? o.by : ["campaign"], metrics: o.metrics });
+    emit(cmd, reportView(r));
+  });
   const AS_FORMATS = ["summary", "journal", "csv", "json"];
   const asOption = () => new Option("--as <kind>", "summary (default), journal (paste-ready TSV rows), csv or json").choices(AS_FORMATS).default("summary");
   const emitFinance = (cmd, as, summary, journal) => {
@@ -42658,6 +43066,8 @@ var INSTRUCTIONS = `Read-only access to the user's Google AdMob account via admo
 - All earnings are ESTIMATES. When reporting money, say so and that they should be reconciled against AdMob Payments (finalized).
 - For "what did I earn in <month>" use admobctl_finance_month; for trends and recommendations use admobctl_insights.
 - For SDK/app-version problems, consent impact or mediation waterfalls use the admobctl_analyze_* tools.
+- Ad sources, adapters, mediation groups, ad unit mappings and campaign reports use AdMob API v1beta. Google limits some of
+  these to allowlisted accounts; a "v1beta" permission error is not a setup mistake, so pass its Fix line on and move on.
 - Errors include a "Fix:" line with the exact command the user should run.`;
 var annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 var accountArg = { account: external_exports.string().optional().describe("Publisher ID (pub-\u2026). Defaults to the configured or only account.") };
@@ -42882,6 +43292,78 @@ function createMcpServer(deps) {
       const r = await insights(svc(a), { last: a.last_days, from: a.from, to: a.to, by: a.by ?? "ad-unit", currency: a.currency });
       return fitRows({ ...r });
     })
+  );
+  server.registerTool(
+    "admobctl_campaign_report",
+    {
+      title: "AdMob campaign report",
+      description: "Report on the user's AdMob app-promotion campaigns (the user as advertiser): impressions, clicks, CTR, installs, estimated cost and average CPI by campaign, ad, placement, country, format or date. AdMob API v1beta; ranges over 30 days are fetched in chunks. Cost is in the campaigns' reporting currency.",
+      inputSchema: {
+        from: external_exports.string().describe("Start date, YYYY-MM (whole month) or YYYY-MM-DD"),
+        to: external_exports.string().optional().describe("End date, YYYY-MM or YYYY-MM-DD. Defaults to `from`."),
+        by: external_exports.array(external_exports.string()).optional().describe('Dimensions: campaign, campaign-id, ad, ad-id, placement, placement-id, placement-platform, country, format, date. Default ["campaign"].'),
+        metrics: external_exports.array(external_exports.string()).optional().describe("Metrics: impressions, clicks, ctr, installs, cost, cpi, interactions. Default: all but interactions."),
+        ...accountArg
+      },
+      outputSchema: reportOutput,
+      annotations
+    },
+    wrap(
+      async (a) => reportPayload(await svc(a).campaignReport({ from: a.from, to: a.to ?? a.from, by: a.by?.length ? a.by : ["campaign"], metrics: a.metrics }))
+    )
+  );
+  server.registerTool(
+    "admobctl_list_ad_sources",
+    {
+      title: "List AdMob mediation ad sources",
+      description: "List the ad sources (ad networks) available for AdMob mediation, with their IDs. AdMob API v1beta.",
+      inputSchema: { ...accountArg },
+      outputSchema: loose({ adSources: external_exports.array(anyRecord) }),
+      annotations
+    },
+    wrap(async (a) => ({ adSources: await svc(a).adSources() }))
+  );
+  server.registerTool(
+    "admobctl_list_adapters",
+    {
+      title: "List an ad source's adapters",
+      description: "List the adapters of one mediation ad source (per platform and format) and the settings an ad unit mapping for each adapter needs. AdMob API v1beta.",
+      inputSchema: { ad_source: external_exports.string().describe("Ad source title or ID, from admobctl_list_ad_sources"), ...accountArg },
+      outputSchema: loose({ adapters: external_exports.array(anyRecord) }),
+      annotations
+    },
+    wrap(async (a) => ({ adapters: await svc(a).adapters(a.ad_source) }))
+  );
+  server.registerTool(
+    "admobctl_list_mediation_groups",
+    {
+      title: "List AdMob mediation groups",
+      description: "List mediation groups with their targeting (platform, format, ad units, regions), their lines (ad source, CPM mode, manual CPM in USD, state, A/B variant) and whether a mediation A/B experiment is running. AdMob API v1beta; Google may require allowlisting.",
+      inputSchema: {
+        app: external_exports.string().optional().describe("Only groups targeting this app (alias, app ID or name)"),
+        ad_source: external_exports.string().optional().describe("Only groups with a line for this ad source (title or ID)"),
+        format: external_exports.string().optional().describe("e.g. BANNER, INTERSTITIAL, REWARDED"),
+        platform: external_exports.string().optional().describe("IOS or ANDROID"),
+        state: external_exports.string().optional().describe("ENABLED or DISABLED"),
+        ...accountArg
+      },
+      outputSchema: loose({ mediationGroups: external_exports.array(anyRecord) }),
+      annotations
+    },
+    wrap(async (a) => ({
+      mediationGroups: await svc(a).mediationGroups({ app: a.app, adSource: a.ad_source, format: a.format, platform: a.platform, state: a.state })
+    }))
+  );
+  server.registerTool(
+    "admobctl_list_ad_unit_mappings",
+    {
+      title: "List an ad unit's mappings",
+      description: "List the third-party ad unit mappings of one ad unit: adapter ID, state and the network-specific settings (e.g. placement IDs). AdMob API v1beta; Google may require allowlisting.",
+      inputSchema: { ad_unit: external_exports.string().describe("Ad unit name or ID, from admobctl_list_ad_units"), ...accountArg },
+      outputSchema: loose({ adUnitMappings: external_exports.array(anyRecord) }),
+      annotations
+    },
+    wrap(async (a) => ({ adUnitMappings: await svc(a).adUnitMappings(a.ad_unit) }))
   );
   const rangeInput = {
     last_days: external_exports.number().int().min(1).max(366).optional().describe("The last N complete days (default 30)"),

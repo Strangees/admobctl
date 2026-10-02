@@ -6,7 +6,8 @@ import type { InsightsResult } from "../core/insights.js";
 import type { PublisherAccount } from "../core/client.js";
 import { formatMicros } from "../core/money.js";
 import { shownRows, type ViewRow } from "../core/report-view.js";
-import type { AdUnitView, ReportResult } from "../core/service.js";
+import type { AdapterView, AdUnitMappingView, AdUnitView, MediationGroupView, ReportResult } from "../core/service.js";
+import type { AdSource } from "../core/client.js";
 import type { Column, Output } from "../output/format.js";
 
 export const ESTIMATE_NOTE = "Estimated earnings — reconcile against AdMob Payments (finalized).";
@@ -72,8 +73,10 @@ const METRIC_LABELS: Record<string, string> = {
   ctr: "CTR",
   rpm: "RPM",
   ecpm: "eCPM",
+  cost: "Cost",
+  cpi: "CPI",
 };
-const MONEY_KEYS = new Set(["earnings", "rpm", "ecpm"]);
+const MONEY_KEYS = new Set(["earnings", "rpm", "ecpm", "cost", "cpi"]);
 const RATE_KEYS = new Set(["match_rate", "show_rate", "ctr"]);
 
 function titleCase(key: string): string {
@@ -100,7 +103,7 @@ export function reportView(r: ReportResult): Output {
     const label = METRIC_LABELS[key] ?? titleCase(key);
     columns.push({ key, label: MONEY_KEYS.has(key) && r.currency ? `${label} (${r.currency})` : label, align: "right" });
   }
-  const notes = [`${r.kind === "network" ? "Network" : "Mediation"} report ${r.from} → ${r.to}, ${r.timeZone ?? ""}. ${ESTIMATE_NOTE}`];
+  const notes = [`${titleCase(r.kind)} report ${r.from} → ${r.to}, ${r.timeZone ?? ""}.${r.kind === "campaign" ? "" : ` ${ESTIMATE_NOTE}`}`];
   if (r.truncated) {
     notes.push(`Truncated: ${shownRows(r)}. Raise --max-rows or narrow the query.`);
   }
@@ -298,5 +301,94 @@ export function waterfallView(r: WaterfallResult): Output {
       })),
     },
     notes: [...r.summary, ...r.notices],
+  };
+}
+
+export function adSourcesView(sources: AdSource[]): Output {
+  return {
+    data: sources,
+    table: {
+      columns: [
+        { key: "title", label: "Ad source" },
+        { key: "adSourceId", label: "Ad source ID" },
+      ],
+      rows: sources as unknown as Array<Record<string, unknown>>,
+    },
+  };
+}
+
+export function adaptersView(adapters: AdapterView[]): Output {
+  return {
+    data: adapters,
+    table: {
+      columns: [
+        { key: "title", label: "Adapter" },
+        { key: "adapterId", label: "Adapter ID" },
+        { key: "platform", label: "Platform" },
+        { key: "formats", label: "Formats" },
+        { key: "settings", label: "Mapping settings (* required)" },
+      ],
+      rows: adapters.map((a) => ({ ...a, settings: a.settings.map((x) => `${x.label}${x.required ? "*" : ""}`).join(", ") })),
+    },
+  };
+}
+
+export function mediationGroupsView(groups: MediationGroupView[]): Output {
+  return {
+    data: groups,
+    table: {
+      columns: [
+        { key: "name", label: "Mediation group" },
+        { key: "id", label: "ID" },
+        { key: "state", label: "State" },
+        { key: "platform", label: "Platform" },
+        { key: "format", label: "Format" },
+        { key: "adUnits", label: "Ad units", align: "right" },
+        { key: "lines", label: "Lines", align: "right" },
+        { key: "experiment", label: "A/B test" },
+      ],
+      rows: groups.map((g) => ({ ...g, adUnits: g.adUnits.length, lines: g.lines.length })),
+    },
+  };
+}
+
+export function mediationGroupView(g: MediationGroupView): Output {
+  const notes = [
+    `${g.name} (${g.id}): ${g.state}, ${g.platform} ${g.format}, A/B test ${g.experiment}.`,
+    `Ad units: ${g.adUnits.map((u) => (u.app ? `${u.name} (${u.app})` : u.name)).join(", ") || "(none)"}.`,
+    `Regions: ${g.regions.join(", ") || "all"}${g.excludedRegions.length ? `; excluding ${g.excludedRegions.join(", ")}` : ""}.`,
+  ];
+  if (g.lines.some((l) => l.cpm !== undefined)) notes.push("Manual CPMs are in USD, the only currency the API supports for mediation lines.");
+  return {
+    data: g,
+    table: {
+      columns: [
+        { key: "name", label: "Line" },
+        { key: "adSource", label: "Ad source" },
+        { key: "cpmMode", label: "CPM mode" },
+        { key: "cpm", label: "CPM (USD)", align: "right" },
+        { key: "state", label: "State" },
+        { key: "variant", label: "Variant" },
+        { key: "id", label: "Line ID" },
+      ],
+      rows: g.lines.map((l) => ({ ...l, cpm: l.cpm_micros === undefined ? "" : formatMicros(l.cpm_micros) })),
+    },
+    notes,
+  };
+}
+
+export function mappingsView(mappings: AdUnitMappingView[]): Output {
+  return {
+    data: mappings,
+    table: {
+      columns: [
+        { key: "name", label: "Mapping" },
+        { key: "id", label: "ID" },
+        { key: "adapterId", label: "Adapter ID" },
+        { key: "state", label: "State" },
+        { key: "settings", label: "Settings" },
+      ],
+      rows: mappings.map((m) => ({ ...m, settings: Object.entries(m.settings).map(([k, v]) => `${k}=${v}`).join(", ") })),
+    },
   };
 }

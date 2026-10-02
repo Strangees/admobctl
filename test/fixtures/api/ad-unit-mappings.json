@@ -1,0 +1,11 @@
+{
+  "adUnitMappings": [
+    {
+      "name": "accounts/pub-0000000000000001/adUnits/9000000001/adUnitMappings/5000000001",
+      "adapterId": "2000000001",
+      "displayName": "Quiz banner - Example Bidder",
+      "state": "ENABLED",
+      "adUnitConfigurations": { "3000000001": "placement-quiz-banner" }
+    }
+  ]
+}

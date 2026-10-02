@@ -1,0 +1,1 @@
+{"adUnitMappings":[{"id":"5000000001","name":"Quiz banner - Example Bidder","adUnit":"Quiz banner","adUnitId":"ca-app-pub-0000000000000001/9000000001","adapterId":"2000000001","state":"ENABLED","settings":{"3000000001":"placement-quiz-banner"},"resource":"accounts/pub-0000000000000001/adUnits/9000000001/adUnitMappings/5000000001"}]}

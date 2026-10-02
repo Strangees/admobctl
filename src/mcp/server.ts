@@ -32,6 +32,8 @@ const INSTRUCTIONS = `Read-only access to the user's Google AdMob account via ad
 - All earnings are ESTIMATES. When reporting money, say so and that they should be reconciled against AdMob Payments (finalized).
 - For "what did I earn in <month>" use admobctl_finance_month; for trends and recommendations use admobctl_insights.
 - For SDK/app-version problems, consent impact or mediation waterfalls use the admobctl_analyze_* tools.
+- Ad sources, adapters, mediation groups, ad unit mappings and campaign reports use AdMob API v1beta. Google limits some of
+  these to allowlisted accounts; a "v1beta" permission error is not a setup mistake, so pass its Fix line on and move on.
 - Errors include a "Fix:" line with the exact command the user should run.`;
 
 const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } as const;
@@ -301,6 +303,87 @@ export function createMcpServer(deps: McpDeps): McpServer {
       const r = await insights(svc(a), { last: a.last_days, from: a.from, to: a.to, by: a.by ?? "ad-unit", currency: a.currency });
       return fitRows({ ...r }) as unknown as Record<string, unknown>;
     }),
+  );
+
+  server.registerTool(
+    "admobctl_campaign_report",
+    {
+      title: "AdMob campaign report",
+      description:
+        "Report on the user's AdMob app-promotion campaigns (the user as advertiser): impressions, clicks, CTR, installs, estimated cost and average CPI by campaign, ad, placement, country, format or date. AdMob API v1beta; ranges over 30 days are fetched in chunks. Cost is in the campaigns' reporting currency.",
+      inputSchema: {
+        from: z.string().describe("Start date, YYYY-MM (whole month) or YYYY-MM-DD"),
+        to: z.string().optional().describe("End date, YYYY-MM or YYYY-MM-DD. Defaults to `from`."),
+        by: z.array(z.string()).optional().describe('Dimensions: campaign, campaign-id, ad, ad-id, placement, placement-id, placement-platform, country, format, date. Default ["campaign"].'),
+        metrics: z.array(z.string()).optional().describe("Metrics: impressions, clicks, ctr, installs, cost, cpi, interactions. Default: all but interactions."),
+        ...accountArg,
+      },
+      outputSchema: reportOutput,
+      annotations,
+    },
+    wrap(async (a: { from: string; to?: string; by?: string[]; metrics?: string[]; account?: string }) =>
+      reportPayload(await svc(a).campaignReport({ from: a.from, to: a.to ?? a.from, by: a.by?.length ? a.by : ["campaign"], metrics: a.metrics })),
+    ),
+  );
+
+  server.registerTool(
+    "admobctl_list_ad_sources",
+    {
+      title: "List AdMob mediation ad sources",
+      description: "List the ad sources (ad networks) available for AdMob mediation, with their IDs. AdMob API v1beta.",
+      inputSchema: { ...accountArg },
+      outputSchema: loose({ adSources: z.array(anyRecord) }),
+      annotations,
+    },
+    wrap(async (a: { account?: string }) => ({ adSources: await svc(a).adSources() })),
+  );
+
+  server.registerTool(
+    "admobctl_list_adapters",
+    {
+      title: "List an ad source's adapters",
+      description:
+        "List the adapters of one mediation ad source (per platform and format) and the settings an ad unit mapping for each adapter needs. AdMob API v1beta.",
+      inputSchema: { ad_source: z.string().describe("Ad source title or ID, from admobctl_list_ad_sources"), ...accountArg },
+      outputSchema: loose({ adapters: z.array(anyRecord) }),
+      annotations,
+    },
+    wrap(async (a: { ad_source: string; account?: string }) => ({ adapters: await svc(a).adapters(a.ad_source) })),
+  );
+
+  server.registerTool(
+    "admobctl_list_mediation_groups",
+    {
+      title: "List AdMob mediation groups",
+      description:
+        "List mediation groups with their targeting (platform, format, ad units, regions), their lines (ad source, CPM mode, manual CPM in USD, state, A/B variant) and whether a mediation A/B experiment is running. AdMob API v1beta; Google may require allowlisting.",
+      inputSchema: {
+        app: z.string().optional().describe("Only groups targeting this app (alias, app ID or name)"),
+        ad_source: z.string().optional().describe("Only groups with a line for this ad source (title or ID)"),
+        format: z.string().optional().describe("e.g. BANNER, INTERSTITIAL, REWARDED"),
+        platform: z.string().optional().describe("IOS or ANDROID"),
+        state: z.string().optional().describe("ENABLED or DISABLED"),
+        ...accountArg,
+      },
+      outputSchema: loose({ mediationGroups: z.array(anyRecord) }),
+      annotations,
+    },
+    wrap(async (a: { app?: string; ad_source?: string; format?: string; platform?: string; state?: string; account?: string }) => ({
+      mediationGroups: await svc(a).mediationGroups({ app: a.app, adSource: a.ad_source, format: a.format, platform: a.platform, state: a.state }),
+    })),
+  );
+
+  server.registerTool(
+    "admobctl_list_ad_unit_mappings",
+    {
+      title: "List an ad unit's mappings",
+      description:
+        "List the third-party ad unit mappings of one ad unit: adapter ID, state and the network-specific settings (e.g. placement IDs). AdMob API v1beta; Google may require allowlisting.",
+      inputSchema: { ad_unit: z.string().describe("Ad unit name or ID, from admobctl_list_ad_units"), ...accountArg },
+      outputSchema: loose({ adUnitMappings: z.array(anyRecord) }),
+      annotations,
+    },
+    wrap(async (a: { ad_unit: string; account?: string }) => ({ adUnitMappings: await svc(a).adUnitMappings(a.ad_unit) })),
   );
 
   const rangeInput = {

@@ -19,6 +19,10 @@ Read-only access to the user's AdMob account through the `admobctl` MCP tools (p
 | Mediation waterfall, which lines earn, idle lines | `admobctl_analyze_waterfall` | `admobctl analyze waterfall` |
 | Did an SDK upgrade or app release hurt fill / show rate | `admobctl_analyze_versions` | `admobctl analyze versions --by sdk\|app\|os` |
 | Consent / non-personalized ads / RDP impact on eCPM | `admobctl_analyze_consent` | `admobctl analyze consent` |
+| How mediation is set up: groups, lines, A/B tests | `admobctl_list_mediation_groups` | `admobctl mediation-groups list` / `show <group>` |
+| Which ad networks / adapters exist, mapping settings | `admobctl_list_ad_sources`, `admobctl_list_adapters` | `admobctl ad-sources list` / `adapters <source>` |
+| An ad unit's third-party mappings | `admobctl_list_ad_unit_mappings` | `admobctl ad-units mappings <ad-unit>` |
+| App-promotion campaigns: installs, cost, CPI | `admobctl_campaign_report` | `admobctl report campaign --from …` |
 | Which apps / ad units exist | `admobctl_list_apps`, `admobctl_list_ad_units` | `admobctl apps list` |
 
 Refer to apps by their alias (e.g. `my-game-ios`) from `admobctl_list_apps`. Dates are `YYYY-MM` or `YYYY-MM-DD`;
@@ -37,5 +41,9 @@ If the MCP tools are not available, run the CLI with `-o json` and read the JSON
 Every error ends with `Fix: <command>`. Show the user that exact command; do not paraphrase it or invent another.
 For anything auth-related, suggest `admobctl auth doctor`, which checks credentials, scope, quota project, API access
 and account, and prints a fix for each failure. Service accounts are not supported by the AdMob API.
+
+Ad sources, adapters, mediation groups, ad unit mappings and campaign reports use AdMob API v1beta, which Google
+limits to allowlisted accounts for some methods. A "v1beta" permission error means the account lacks that access,
+not that setup is wrong: show its fix line and answer from the other tools.
 
 Full command and flag reference: `references/commands.md`.

@@ -22,6 +22,11 @@ async function cli(args: string[], opts: { isTTY?: boolean; dir?: string } = {})
       return jsonResponse(fixture(dims.includes("MONTH") ? "network-report-by-month-app.json" : "network-report-by-app.json"));
     },
     "POST /mediationReport:generate": () => jsonResponse(fixture("mediation-report-waterfall.json")),
+    "GET /v1beta/accounts/pub-0000000000000001/adSources?": () => jsonResponse(fixture("ad-sources.json")),
+    "GET /adSources/1000000000000000001/adapters": () => jsonResponse(fixture("adapters.json")),
+    "GET /v1beta/accounts/pub-0000000000000001/mediationGroups": () => jsonResponse(fixture("mediation-groups.json")),
+    "GET /adUnits/9000000001/adUnitMappings": () => jsonResponse(fixture("ad-unit-mappings.json")),
+    "POST /campaignReport:generate": () => jsonResponse(fixture("campaign-report.json")),
     "POST /tokeninfo": () => jsonResponse({ scope: "https://www.googleapis.com/auth/admob.readonly", expires_in: "3000" }),
   });
   let stdout = "";
@@ -239,5 +244,36 @@ describe("cli", () => {
     const r = await cli(["analyze", "waterfall", "--group", "Nope"]);
     expect(r.code).toBe(2);
     expect(r.stderr).toMatch(/Banners, Interstitials/);
+  });
+
+  it("lists ad sources and an ad source's adapters with their settings", async () => {
+    const sources = await cli(["ad-sources", "list", "-o", "csv"]);
+    expect(sources.stdout.split("\n")[1]).toBe("AdMob Network,1000000000000000000");
+    const adapters = await cli(["ad-sources", "adapters", "Example Bidder"], { isTTY: true });
+    expect(adapters.code, adapters.stderr).toBe(0);
+    expect(adapters.stdout).toMatch(/Example Bidder \(iOS\)\s+2000000001\s+IOS\s+BANNER, INTERSTITIAL\s+Placement ID\*, Reporting key/);
+  });
+
+  it("lists mediation groups and shows one group's lines", async () => {
+    const list = await cli(["mediation-groups", "list"], { isTTY: true });
+    expect(list.code, list.stderr).toBe(0);
+    expect(list.stdout).toMatch(/Interstitials\s+1000000002\s+ENABLED\s+IOS\s+INTERSTITIAL\s+1\s+2\s+running/);
+    const show = await cli(["mediation-groups", "show", "banners"], { isTTY: true });
+    expect(show.code, show.stderr).toBe(0);
+    expect(show.stdout).toMatch(/Waterfall 3\.00\s+Example Waterfall\s+MANUAL\s+3\.00/);
+    expect(show.stdout).toMatch(/Regions: NO, SE/);
+  });
+
+  it("lists an ad unit's mappings", async () => {
+    const r = await cli(["ad-units", "mappings", "Quiz banner", "-o", "json"]);
+    expect(r.code, r.stderr).toBe(0);
+    expect(JSON.parse(r.stdout)[0].settings).toEqual({ "3000000001": "placement-quiz-banner" });
+  });
+
+  it("runs a campaign report", async () => {
+    const r = await cli(["report", "campaign", "--from", "2026-09", "--by", "campaign", "-o", "csv"]);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout.split("\n")[0]).toBe("Campaign name,Impressions,Clicks,CTR,Installs,Cost,CPI");
+    expect(r.stdout.split("\n")[1]).toBe("Quiz cross-promo,50000,500,1.0%,40,80.00,2.00");
   });
 });

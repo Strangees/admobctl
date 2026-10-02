@@ -105,9 +105,25 @@ All earnings are **estimates**. Reconcile them against AdMob Payments, because t
 
 `apps list` shows each app's approval state, and `auth doctor` warns about apps marked *action required* in AdMob.
 
+### Mediation setup and campaigns (AdMob API v1beta)
+
+```bash
+admobctl ad-sources list                             # ad networks available for mediation
+admobctl ad-sources adapters "Example Bidder"         # adapters per platform/format and the settings a mapping needs
+admobctl mediation-groups list --format banner        # targeting, lines and A/B experiment state
+admobctl mediation-groups show "Banners"              # one group's lines: ad source, CPM mode, manual CPM (USD)
+admobctl ad-units mappings "Quiz banner"              # third-party mappings of an ad unit
+admobctl report campaign --from 2026-07 --to 2026-09 --by campaign   # app-promotion campaigns: installs, cost, CPI
+```
+
+These read-only commands use the AdMob API's v1beta surface with the same `admob.readonly` scope. Google limits some
+v1beta methods (mediation groups and ad unit mappings in particular) to allowlisted accounts; when access is denied the
+error says so and points to your AdMob account manager, and `auth doctor` shows which v1beta reads your account can
+use. Campaign reports take at most 30 days per request, so longer ranges are fetched in 30-day chunks and added up.
+
 ## MCP server
 
-`admobctl mcp` serves eleven read-only tools over stdio: `admobctl_list_accounts`, `admobctl_list_apps`, `admobctl_list_ad_units`, `admobctl_network_report`, `admobctl_mediation_report`, `admobctl_finance_month`, `admobctl_finance_range`, `admobctl_insights`, `admobctl_analyze_versions`, `admobctl_analyze_consent` and `admobctl_analyze_waterfall`. Reports default to 200 rows and are trimmed with a notice to stay within roughly 25k tokens.
+`admobctl mcp` serves sixteen read-only tools over stdio: `admobctl_list_accounts`, `admobctl_list_apps`, `admobctl_list_ad_units`, `admobctl_network_report`, `admobctl_mediation_report`, `admobctl_finance_month`, `admobctl_finance_range`, `admobctl_insights`, `admobctl_analyze_versions`, `admobctl_analyze_consent`, `admobctl_analyze_waterfall`, `admobctl_campaign_report`, `admobctl_list_ad_sources`, `admobctl_list_adapters`, `admobctl_list_mediation_groups` and `admobctl_list_ad_unit_mappings`. Reports default to 200 rows and are trimmed with a notice to stay within roughly 25k tokens.
 
 ## Agent plugin (Claude Code and Codex)
 

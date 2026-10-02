@@ -12,6 +12,7 @@ export type ErrorCode =
   | "AUTH_SERVICE_ACCOUNT"
   | "API_NOT_ENABLED"
   | "PERMISSION_DENIED"
+  | "BETA_ACCESS_DENIED"
   | "NOT_FOUND"
   | "RATE_LIMITED"
   | "API_ERROR";

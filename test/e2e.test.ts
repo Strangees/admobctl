@@ -23,7 +23,7 @@ describe.skipIf(!existsSync(bin))("built bundle", () => {
     const client = new Client({ name: "e2e", version: "0" });
     await client.connect(transport);
     const { tools } = await client.listTools();
-    expect(tools.length).toBe(11);
+    expect(tools.length).toBe(16);
     await client.close();
   }, 20_000);
 });

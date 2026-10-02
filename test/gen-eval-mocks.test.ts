@@ -58,6 +58,11 @@ it.skipIf(!process.env.GEN_MOCKS)("generate eval mocks", async () => {
       if (spec.dimensions.includes("SERVING_RESTRICTION")) return jsonResponse(fixture("network-report-by-serving-restriction.json"));
       return jsonResponse(fixture(spec.dimensions.includes("MONTH") ? "network-report-by-month-app.json" : "network-report-by-app.json"));
     },
+    "GET /v1beta/accounts/pub-0000000000000001/adSources?": () => jsonResponse(fixture("ad-sources.json")),
+    "GET /adSources/1000000000000000001/adapters": () => jsonResponse(fixture("adapters.json")),
+    "GET /v1beta/accounts/pub-0000000000000001/mediationGroups": () => jsonResponse(fixture("mediation-groups.json")),
+    "GET /adUnits/9000000001/adUnitMappings": () => jsonResponse(fixture("ad-unit-mappings.json")),
+    "POST /campaignReport:generate": () => jsonResponse(fixture("campaign-report.json")),
     "POST /mediationReport:generate": (c: RecordedCall) => {
       const dims = (c.body as { reportSpec: { dimensions: string[] } }).reportSpec.dimensions;
       return jsonResponse(fixture(dims.includes("MEDIATION_GROUP") ? "mediation-report-waterfall.json" : "network-report-by-app.json"));
@@ -90,6 +95,11 @@ it.skipIf(!process.env.GEN_MOCKS)("generate eval mocks", async () => {
     admobctl_analyze_versions: { by: "sdk", last_days: 30 },
     admobctl_analyze_consent: { last_days: 30 },
     admobctl_analyze_waterfall: { last_days: 30 },
+    admobctl_campaign_report: { from: "2026-09", by: ["campaign"] },
+    admobctl_list_ad_sources: {},
+    admobctl_list_adapters: { ad_source: "Example Bidder" },
+    admobctl_list_mediation_groups: {},
+    admobctl_list_ad_unit_mappings: { ad_unit: "Quiz banner" },
   };
   for (const [name, args] of Object.entries(calls)) {
     const r = (await client.callTool({ name, arguments: args })) as { content: Array<{ text: string }> };

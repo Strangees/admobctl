@@ -1,0 +1,26 @@
+{
+  "rows": [
+    {
+      "dimensionValues": { "CAMPAIGN_ID": { "value": "6000000001" }, "CAMPAIGN_NAME": { "value": "Quiz cross-promo" } },
+      "metricValues": {
+        "IMPRESSIONS": { "integerValue": "50000" },
+        "CLICKS": { "integerValue": "500" },
+        "CLICK_THROUGH_RATE": { "doubleValue": 0.01 },
+        "INSTALLS": { "integerValue": "40" },
+        "ESTIMATED_COST": { "microsValue": "80000000" },
+        "AVERAGE_CPI": { "microsValue": "2000000" }
+      }
+    },
+    {
+      "dimensionValues": { "CAMPAIGN_ID": { "value": "6000000002" }, "CAMPAIGN_NAME": { "value": "Timer launch" } },
+      "metricValues": {
+        "IMPRESSIONS": { "integerValue": "10000" },
+        "CLICKS": { "integerValue": "50" },
+        "CLICK_THROUGH_RATE": { "doubleValue": 0.005 },
+        "INSTALLS": { "integerValue": "5" },
+        "ESTIMATED_COST": { "microsValue": "15000000" },
+        "AVERAGE_CPI": { "microsValue": "3000000" }
+      }
+    }
+  ]
+}

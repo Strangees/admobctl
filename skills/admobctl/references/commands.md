@@ -7,7 +7,7 @@ Global flags (any command): `-o json|table|csv|markdown` (default: table on a TT
 
 | Command | Purpose |
 |---|---|
-| `admobctl auth doctor` | Checks credentials → token → scope → quota project → API → account → apps (warns about apps marked action required); prints `fix:` for each failure. Exit 1 if any check fails. |
+| `admobctl auth doctor` | Checks credentials → token → scope → quota project → API → account → apps (warns about apps marked action required) → beta (which v1beta reads the account can use; warning only); prints `fix:` for each failure. Exit 1 if any check fails. |
 | `admobctl auth status` | Active mode (adc/oauth), quota project, scopes, account |
 | `admobctl auth login --client-id <id> --client-secret <s>` | Own Desktop OAuth client; refresh token goes to the macOS Keychain. Switches the profile to `oauth`. |
 | `admobctl auth logout` | Revoke and forget the OAuth login; back to gcloud ADC |
@@ -29,6 +29,16 @@ Service accounts are not supported by the AdMob API.
 | `admobctl accounts list` | publisherId, currencyCode, reportingTimeZone |
 | `admobctl apps list` | alias, name, platform, appId, storeId, approval (JSON: APPROVED, IN_REVIEW, ACTION_REQUIRED) |
 | `admobctl ad-units list [--app <alias>]` | app alias, name, format, adUnitId |
+
+v1beta (read-only, `admob.readonly`; Google may require allowlisting, a 403 says so):
+
+| Command | Output |
+|---|---|
+| `admobctl ad-units mappings <ad-unit>` | id, name, adapterId, state, settings (adapter setting ID → value) |
+| `admobctl ad-sources list` | title, adSourceId |
+| `admobctl ad-sources adapters <ad-source>` | adapter title, adapterId, platform, formats, settings (id, label, required) |
+| `admobctl mediation-groups list [--app] [--ad-source] [--format] [--platform] [--state]` | name, id, state, platform, format, adUnits, regions, experiment (running/none), lines |
+| `admobctl mediation-groups show <group>` | the group's lines: name, adSource, cpmMode, cpm (USD, manual lines only), state, variant (A/B) |
 
 Apps take an alias (`<name>-<platform>`, e.g. `my-game-ios`), app ID, numeric ID or exact name.
 Custom alias: `admobctl config set aliases.<alias> <appId>`.
@@ -56,6 +66,18 @@ admobctl report mediation --from … [--to …] --by ad-source,app
   metrics that do not fit the dimensions are left out and listed in `notices`.
 - `notices` also flags data still arriving: today (AdMob, ~4h delay) and, for mediation, the last day (third-party
   sources lag 8-24h). `warnings` are the API's own (e.g. DATA_DELAYED).
+
+### Campaign report (v1beta)
+
+```bash
+admobctl report campaign --from YYYY-MM[-DD] [--to …] [--by campaign,country] [--metrics installs,cost,cpi]
+```
+
+- AdMob app-promotion campaigns, where the user is the advertiser. Dimensions: campaign (name), campaign-id, ad,
+  ad-id, placement, placement-id, placement-platform, country, format, date. Metrics: impressions, clicks, ctr,
+  installs, cost, cpi, interactions.
+- At most 30 days per API request: longer ranges are fetched in chunks and added up (CTR and CPI recomputed).
+- Cost and CPI are in the campaigns' reporting currency (`cost_micros`, `cpi` in JSON).
 
 ## Finance
 
@@ -102,7 +124,9 @@ admobctl analyze waterfall [--app <alias>] [--group <name|id>] [--currency X] [-
 
 admobctl_list_accounts, admobctl_list_apps, admobctl_list_ad_units, admobctl_network_report,
 admobctl_mediation_report, admobctl_finance_month, admobctl_finance_range, admobctl_insights,
-admobctl_analyze_versions, admobctl_analyze_consent, admobctl_analyze_waterfall.
+admobctl_analyze_versions, admobctl_analyze_consent, admobctl_analyze_waterfall, admobctl_campaign_report,
+admobctl_list_ad_sources, admobctl_list_adapters (`ad_source`), admobctl_list_mediation_groups,
+admobctl_list_ad_unit_mappings (`ad_unit`).
 They take the same arguments as the CLI, in snake_case: `max_rows`, `include_journal`, `last_days`.
 Reports default to 200 rows.
 
