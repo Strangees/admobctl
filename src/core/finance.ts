@@ -1,8 +1,8 @@
 import type { AppRef } from "./aliases.js";
 import type { FinanceConfig } from "./config.js";
-import { formatDate, formatMonth, isMonthComplete, monthEnd, monthRange, parseMonth, todayIn, type YearMonth } from "./dates.js";
+import { addDays, compareDates, formatDate, formatMonth, isMonthComplete, monthEnd, monthRange, parseMonth, todayIn, type YearMonth } from "./dates.js";
 import { usageError } from "./errors.js";
-import { sumMicros } from "./money.js";
+import { microsToAmount, sumMicros } from "./money.js";
 import type { AdmobService } from "./service.js";
 
 export const ESTIMATE_LABEL = "Estimated earnings, reconcile against AdMob Payments (finalized).";
@@ -183,6 +183,114 @@ export async function financeRange(svc: AdmobService, from: string, to: string):
     total,
     totalMicros,
     months,
+    notes,
+  };
+}
+
+export interface ForecastApp {
+  alias: string;
+  name: string;
+  appId: string;
+  platform?: string;
+  /** Rounded so that the apps sum exactly to the totals. */
+  month_to_date: number;
+  month_to_date_micros: number;
+  projected: number;
+  projected_micros: number;
+}
+
+export interface FinanceForecast {
+  month: string;
+  from: string;
+  to: string;
+  currency: string;
+  timeZone: string;
+  complete: boolean;
+  estimate: true;
+  /** False once the month has ended: `projected` is then the actual estimate. */
+  projection: boolean;
+  /** Complete days counted (today is left out: its data is still arriving). */
+  days_elapsed: number;
+  days_in_month: number;
+  days_remaining: number;
+  month_to_date: number;
+  month_to_date_micros: number;
+  daily_average: number;
+  projected: number;
+  projected_micros: number;
+  apps: ForecastApp[];
+  notes: string[];
+}
+
+/**
+ * Month-end pacing: earnings over the month's complete days, scaled to the whole month per app.
+ * `month` defaults to the current month in the account's time zone.
+ */
+export async function financeForecast(svc: AdmobService, month?: string): Promise<FinanceForecast> {
+  const acct = await svc.account();
+  const today = todayIn(acct.reportingTimeZone, svc.now());
+  const ym = month ? parseMonth(month) : { year: today.year, month: today.month };
+  const label = formatMonth(ym);
+  const start = { ...ym, day: 1 };
+  const end = monthEnd(ym);
+  if (compareDates(start, today) > 0) throw usageError(`${label} has not started yet, so there is nothing to project from.`);
+  const complete = isMonthComplete(ym, today);
+  const lastDay = complete ? end : addDays(today, -1);
+  if (compareDates(lastDay, start) < 0) {
+    throw usageError(`${label} has no complete day yet (today's data is still arriving). Try again tomorrow, or: admobctl finance month <last month>`);
+  }
+  const [{ report }, index] = await Promise.all([
+    svc.rawReport("network", { dateRange: { startDate: start, endDate: lastDay }, by: ["app"], metrics: ["earnings"] }),
+    svc.apps(),
+  ]);
+  const elapsed = lastDay.day;
+  const scale = (micros: number) => Math.round((micros * end.day) / elapsed);
+  const toDate = new Map<string, number>();
+  for (const row of report.rows) {
+    const id = row.dimensions.APP?.value ?? "unknown";
+    toDate.set(id, (toDate.get(id) ?? 0) + (row.metrics.ESTIMATED_EARNINGS ?? 0));
+  }
+  const actual = appsFromMicros(toDate, index);
+  const projected = appsFromMicros(new Map([...toDate].map(([id, m]) => [id, scale(m)])), index);
+  const projectedById = new Map(projected.apps.map((a) => [a.appId, a]));
+  const toDateMicros = sumMicros(toDate.values());
+  const notes = [ESTIMATE_LABEL];
+  if (!complete) {
+    notes.unshift(
+      `Projection: the daily average of ${elapsed} of ${end.day} days (${formatDate(start)} → ${formatDate(lastDay)}) carried to month-end. It assumes the rest of the month earns like the days so far; do not book it.`,
+    );
+  } else notes.unshift(`${label} has ended: this is the month's estimate, not a projection.`);
+  return {
+    month: label,
+    from: formatDate(start),
+    to: formatDate(end),
+    currency: report.currency ?? acct.currencyCode,
+    timeZone: report.timeZone ?? acct.reportingTimeZone,
+    complete,
+    estimate: true,
+    projection: !complete,
+    days_elapsed: elapsed,
+    days_in_month: end.day,
+    days_remaining: end.day - elapsed,
+    month_to_date: actual.total,
+    month_to_date_micros: toDateMicros,
+    daily_average: microsToAmount(Math.round(toDateMicros / elapsed)),
+    projected: projected.total,
+    projected_micros: sumMicros(projected.apps.map((a) => a.earningsMicros)),
+    apps: actual.apps.map((a) => {
+      const p = projectedById.get(a.appId)!;
+      const app: ForecastApp = {
+        alias: a.alias,
+        name: a.name,
+        appId: a.appId,
+        month_to_date: a.earnings,
+        month_to_date_micros: a.earningsMicros,
+        projected: p.earnings,
+        projected_micros: p.earningsMicros,
+      };
+      if (a.platform) app.platform = a.platform;
+      return app;
+    }),
     notes,
   };
 }

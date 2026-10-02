@@ -11499,6 +11499,74 @@ async function financeRange(svc, from, to) {
     notes
   };
 }
+async function financeForecast(svc, month) {
+  const acct = await svc.account();
+  const today = todayIn(acct.reportingTimeZone, svc.now());
+  const ym = month ? parseMonth(month) : { year: today.year, month: today.month };
+  const label2 = formatMonth(ym);
+  const start = { ...ym, day: 1 };
+  const end = monthEnd(ym);
+  if (compareDates(start, today) > 0) throw usageError(`${label2} has not started yet, so there is nothing to project from.`);
+  const complete = isMonthComplete(ym, today);
+  const lastDay = complete ? end : addDays(today, -1);
+  if (compareDates(lastDay, start) < 0) {
+    throw usageError(`${label2} has no complete day yet (today's data is still arriving). Try again tomorrow, or: admobctl finance month <last month>`);
+  }
+  const [{ report }, index] = await Promise.all([
+    svc.rawReport("network", { dateRange: { startDate: start, endDate: lastDay }, by: ["app"], metrics: ["earnings"] }),
+    svc.apps()
+  ]);
+  const elapsed = lastDay.day;
+  const scale = (micros) => Math.round(micros * end.day / elapsed);
+  const toDate = /* @__PURE__ */ new Map();
+  for (const row of report.rows) {
+    const id = row.dimensions.APP?.value ?? "unknown";
+    toDate.set(id, (toDate.get(id) ?? 0) + (row.metrics.ESTIMATED_EARNINGS ?? 0));
+  }
+  const actual = appsFromMicros(toDate, index);
+  const projected = appsFromMicros(new Map([...toDate].map(([id, m]) => [id, scale(m)])), index);
+  const projectedById = new Map(projected.apps.map((a) => [a.appId, a]));
+  const toDateMicros = sumMicros(toDate.values());
+  const notes = [ESTIMATE_LABEL];
+  if (!complete) {
+    notes.unshift(
+      `Projection: the daily average of ${elapsed} of ${end.day} days (${formatDate(start)} \u2192 ${formatDate(lastDay)}) carried to month-end. It assumes the rest of the month earns like the days so far; do not book it.`
+    );
+  } else notes.unshift(`${label2} has ended: this is the month's estimate, not a projection.`);
+  return {
+    month: label2,
+    from: formatDate(start),
+    to: formatDate(end),
+    currency: report.currency ?? acct.currencyCode,
+    timeZone: report.timeZone ?? acct.reportingTimeZone,
+    complete,
+    estimate: true,
+    projection: !complete,
+    days_elapsed: elapsed,
+    days_in_month: end.day,
+    days_remaining: end.day - elapsed,
+    month_to_date: actual.total,
+    month_to_date_micros: toDateMicros,
+    daily_average: microsToAmount(Math.round(toDateMicros / elapsed)),
+    projected: projected.total,
+    projected_micros: sumMicros(projected.apps.map((a) => a.earningsMicros)),
+    apps: actual.apps.map((a) => {
+      const p = projectedById.get(a.appId);
+      const app = {
+        alias: a.alias,
+        name: a.name,
+        appId: a.appId,
+        month_to_date: a.earnings,
+        month_to_date_micros: a.earningsMicros,
+        projected: p.earnings,
+        projected_micros: p.earningsMicros
+      };
+      if (a.platform) app.platform = a.platform;
+      return app;
+    }),
+    notes
+  };
+}
 var JOURNAL_COLUMNS = [
   "Bilag",
   "Dato",
@@ -14149,6 +14217,26 @@ function financeMonthView(m) {
     notes: [`${m.month} (${m.from} \u2192 ${m.to}, ${m.timeZone}), booking date ${m.bookingDate}.`, ...m.notes]
   };
 }
+function financeForecastView(f) {
+  const cur = f.currency;
+  return {
+    data: f,
+    table: {
+      columns: [
+        { key: "alias", label: "App" },
+        { key: "platform", label: "Platform" },
+        { key: "month_to_date", label: `Month to date (${cur})`, align: "right" },
+        { key: "projected", label: `${f.projection ? "Projected" : "Month"} (${cur})`, align: "right" }
+      ],
+      rows: f.apps.map((a) => ({ ...a, month_to_date: a.month_to_date.toFixed(2), projected: a.projected.toFixed(2) })),
+      footer: [{ alias: "Total", month_to_date: f.month_to_date.toFixed(2), projected: f.projected.toFixed(2) }]
+    },
+    notes: [
+      `${f.month}: ${f.days_elapsed} of ${f.days_in_month} days, ${f.daily_average.toFixed(2)} ${cur} per day (${f.timeZone}).`,
+      ...f.notes
+    ]
+  };
+}
 function financeRangeView(r) {
   return {
     data: r,
@@ -14669,6 +14757,7 @@ function buildProgram(io) {
     const m = await financeMonth(s, month);
     emitFinance(cmd, o.as, financeMonthView(m), () => journalView(journalRows(m, s.profile.finance), m.notes));
   });
+  finance.command("forecast [YYYY-MM]").description("Month-to-date earnings per app and a month-end projection from the daily average (default: this month)").action(async (month, _o, cmd) => emit(cmd, financeForecastView(await financeForecast(svc(cmd), month))));
   finance.command("export").description("Export accrual vouchers in the Revenue Journal format (spec/SPEC.md), for accounting imports").option("--month <YYYY-MM>", "one month").option("--from <YYYY-MM>", "first month of a range").option("--to <YYYY-MM>", "last month of a range").option("--as <format>", `export format: ${EXPORT_FORMATS.join(", ")}`, "revenue-journal-json").option("--integer-amounts", "write amounts as JSON integers instead of decimal strings (JSON only)").option("--scale <digits>", "decimal places the integers carry, 0-6 (default 2; 6 = micros)", (v) => Number(v)).option("--out <file>", "write to this file (readable only by you) instead of stdout").action(
     async (o, cmd) => {
       const { content, notes } = await exportJournal(svc(cmd), o);
@@ -44299,6 +44388,29 @@ function createMcpServer(deps) {
       annotations
     },
     wrap(async (a) => ({ ...await financeRange(svc(a), a.from, a.to) }))
+  );
+  server.registerTool(
+    "admobctl_finance_forecast",
+    {
+      title: "AdMob month-end projection",
+      description: "Month-to-date estimated earnings per app and a month-end projection: the daily average of the month's complete days carried to the end of the month. Defaults to the current month. A projection of estimates, for pacing only: never book it or present it as earnings. For a month that has ended it returns that month's estimate (projection=false).",
+      inputSchema: { month: external_exports.string().optional().describe("YYYY-MM. Default: the current month."), ...accountArg },
+      outputSchema: loose({
+        month: external_exports.string(),
+        currency: external_exports.string(),
+        complete: external_exports.boolean(),
+        estimate: external_exports.literal(true),
+        projection: external_exports.boolean(),
+        days_elapsed: external_exports.number(),
+        days_in_month: external_exports.number(),
+        month_to_date: external_exports.number(),
+        projected: external_exports.number(),
+        apps: external_exports.array(anyRecord),
+        notes: external_exports.array(external_exports.string())
+      }),
+      annotations
+    },
+    wrap(async (a) => ({ ...await financeForecast(svc(a), a.month) }))
   );
   server.registerTool(
     "admobctl_finance_export",

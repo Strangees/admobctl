@@ -677,6 +677,98 @@
       }
     },
     {
+      "name": "admobctl_finance_forecast",
+      "title": "AdMob month-end projection",
+      "description": "Month-to-date estimated earnings per app and a month-end projection: the daily average of the month's complete days carried to the end of the month. Defaults to the current month. A projection of estimates, for pacing only: never book it or present it as earnings. For a month that has ended it returns that month's estimate (projection=false).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "month": {
+            "description": "YYYY-MM. Default: the current month.",
+            "type": "string"
+          },
+          "account": {
+            "description": "Publisher ID (pub-…). Defaults to the configured or only account.",
+            "type": "string"
+          }
+        },
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "month": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "estimate": {
+            "type": "boolean",
+            "const": true
+          },
+          "projection": {
+            "type": "boolean"
+          },
+          "days_elapsed": {
+            "type": "number"
+          },
+          "days_in_month": {
+            "type": "number"
+          },
+          "month_to_date": {
+            "type": "number"
+          },
+          "projected": {
+            "type": "number"
+          },
+          "apps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "month",
+          "currency",
+          "complete",
+          "estimate",
+          "projection",
+          "days_elapsed",
+          "days_in_month",
+          "month_to_date",
+          "projected",
+          "apps",
+          "notes"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
       "name": "admobctl_finance_export",
       "title": "Export AdMob accruals as Revenue Journal",
       "description": "Accrual vouchers for one month or a range of months in the Revenue Journal format (an open format for platform revenue bookkeeping): one balanced voucher per month, debit the receivable, credit revenue per app. Returns `content`, the complete file as text (JSON document or CSV), to save or pass to an accounting import verbatim. Give either `month` or both `from` and `to`. Figures are estimates, not finalized payments.",

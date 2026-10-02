@@ -4,7 +4,7 @@ import { z } from "zod";
 import { analyzeConsent, analyzeVersions, analyzeWaterfall, VERSION_KINDS } from "../core/analyze.js";
 import { checkAppAds } from "../core/app-ads.js";
 import { AdmobctlError } from "../core/errors.js";
-import { financeMonth, financeRange, JOURNAL_COLUMNS, journalRows } from "../core/finance.js";
+import { financeForecast, financeMonth, financeRange, JOURNAL_COLUMNS, journalRows } from "../core/finance.js";
 import { exportJournal } from "../core/journal.js";
 import { INSIGHT_DIMENSIONS, insights } from "../core/insights.js";
 import { log } from "../core/log.js";
@@ -310,6 +310,31 @@ export function createMcpServer(deps: McpDeps): McpServer {
       annotations,
     },
     wrap(async (a: { from: string; to: string; account?: string }) => ({ ...(await financeRange(svc(a), a.from, a.to)) })),
+  );
+
+  server.registerTool(
+    "admobctl_finance_forecast",
+    {
+      title: "AdMob month-end projection",
+      description:
+        "Month-to-date estimated earnings per app and a month-end projection: the daily average of the month's complete days carried to the end of the month. Defaults to the current month. A projection of estimates, for pacing only: never book it or present it as earnings. For a month that has ended it returns that month's estimate (projection=false).",
+      inputSchema: { month: z.string().optional().describe("YYYY-MM. Default: the current month."), ...accountArg },
+      outputSchema: loose({
+        month: z.string(),
+        currency: z.string(),
+        complete: z.boolean(),
+        estimate: z.literal(true),
+        projection: z.boolean(),
+        days_elapsed: z.number(),
+        days_in_month: z.number(),
+        month_to_date: z.number(),
+        projected: z.number(),
+        apps: z.array(anyRecord),
+        notes: z.array(z.string()),
+      }),
+      annotations,
+    },
+    wrap(async (a: { month?: string; account?: string }) => ({ ...(await financeForecast(svc(a), a.month)) })),
   );
 
   server.registerTool(

@@ -95,12 +95,16 @@ admobctl report campaign --from YYYY-MM[-DD] [--to …] [--by campaign,country] 
 ```bash
 admobctl finance month YYYY-MM [--as summary|journal|csv|json]
 admobctl finance range --from YYYY-MM --to YYYY-MM [--as …]
+admobctl finance forecast [YYYY-MM]                    # month to date + month-end projection (default: this month)
 admobctl finance export (--month YYYY-MM | --from YYYY-MM --to YYYY-MM) [--as revenue-journal-json|revenue-journal-csv]
                         [--integer-amounts [--scale 0-6]] [--out file]   # Revenue Journal (spec/SPEC.md)
 ```
 
 - Per-app amounts are rounded so they sum exactly to the total.
 - `complete: false` means the month has not ended (account time zone).
+- `forecast`: per app `month_to_date` and `projected` (the daily average of the month's complete days carried to
+  month-end), plus `days_elapsed`, `days_in_month`, `daily_average`. `projection: false` for a month that has ended.
+  Pacing only, never a booking figure.
 - `--as journal` prints tab-separated Bilagsjournal rows (Bilag, Dato, Kilde, Beskrivelse, Konto, Kontonavn,
   Debet, Kredit, MVA-behandling, Motpart, Status, Merknad), dated at month-end: debit the receivable (default 1509),
   credit revenue (default 3120) per app.
@@ -136,7 +140,8 @@ admobctl analyze waterfall [--app <alias>] [--group <name|id>] [--currency X] [-
 ## MCP tools (`admobctl mcp`)
 
 admobctl_list_accounts, admobctl_list_apps, admobctl_list_ad_units, admobctl_network_report,
-admobctl_mediation_report, admobctl_finance_month, admobctl_finance_range, admobctl_finance_export, admobctl_insights,
+admobctl_mediation_report, admobctl_finance_month, admobctl_finance_range, admobctl_finance_export, admobctl_finance_forecast,
+admobctl_insights,
 admobctl_analyze_versions, admobctl_analyze_consent, admobctl_analyze_waterfall, admobctl_campaign_report,
 admobctl_list_ad_sources, admobctl_list_adapters (`ad_source`), admobctl_list_mediation_groups,
 admobctl_list_ad_unit_mappings (`ad_unit`), admobctl_check_app_ads.

@@ -3,7 +3,7 @@ import type { ConsentResult, VersionsResult, WaterfallResult } from "../core/ana
 import type { AppAdsResult } from "../core/app-ads.js";
 import type { AuditLog } from "../core/audit.js";
 import type { Check } from "../core/auth/doctor.js";
-import { JOURNAL_COLUMNS, type FinanceMonth, type FinanceRange, type JournalRow } from "../core/finance.js";
+import { JOURNAL_COLUMNS, type FinanceForecast, type FinanceMonth, type FinanceRange, type JournalRow } from "../core/finance.js";
 import type { InsightsResult } from "../core/insights.js";
 import type { PublisherAccount } from "../core/client.js";
 import { formatMicros } from "../core/money.js";
@@ -205,6 +205,27 @@ export function financeMonthView(m: FinanceMonth): Output {
       footer: [{ alias: "Total", earnings: m.total.toFixed(2) }],
     },
     notes: [`${m.month} (${m.from} → ${m.to}, ${m.timeZone}), booking date ${m.bookingDate}.`, ...m.notes],
+  };
+}
+
+export function financeForecastView(f: FinanceForecast): Output {
+  const cur = f.currency;
+  return {
+    data: f,
+    table: {
+      columns: [
+        { key: "alias", label: "App" },
+        { key: "platform", label: "Platform" },
+        { key: "month_to_date", label: `Month to date (${cur})`, align: "right" },
+        { key: "projected", label: `${f.projection ? "Projected" : "Month"} (${cur})`, align: "right" },
+      ],
+      rows: f.apps.map((a) => ({ ...a, month_to_date: a.month_to_date.toFixed(2), projected: a.projected.toFixed(2) })),
+      footer: [{ alias: "Total", month_to_date: f.month_to_date.toFixed(2), projected: f.projected.toFixed(2) }],
+    },
+    notes: [
+      `${f.month}: ${f.days_elapsed} of ${f.days_in_month} days, ${f.daily_average.toFixed(2)} ${cur} per day (${f.timeZone}).`,
+      ...f.notes,
+    ],
   };
 }
 
