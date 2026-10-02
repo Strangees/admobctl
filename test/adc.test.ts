@@ -51,6 +51,20 @@ describe("AdcTokenProvider", () => {
     expect(runs).toBe(1);
   });
 
+  it("points gcloud at the same credentials file we inspected", async () => {
+    let env: NodeJS.ProcessEnv | undefined;
+    const p = new AdcTokenProvider({
+      info: () => ({ path: "/inspected/adc.json", type: "authorized_user", quotaProjectId: "qp" }),
+      exec: async (_cmd, _args, opts) => {
+        env = opts?.env;
+        return { code: 0, stdout: "ya29.token\n", stderr: "" };
+      },
+    });
+    await p.getToken();
+    expect(env?.GOOGLE_APPLICATION_CREDENTIALS).toBe("/inspected/adc.json");
+    expect(env?.PATH).toBe(process.env.PATH);
+  });
+
   it("refuses service-account credentials", async () => {
     const p = new AdcTokenProvider({
       info: () => ({ path: "/f", type: "service_account" }),

@@ -83,10 +83,13 @@ export class AdcTokenProvider implements TokenProvider {
 
   async getToken(): Promise<string> {
     if (this.cached && this.now() - this.cached.at < TOKEN_TTL_MS) return this.cached.token;
-    this.checkCredentials();
+    const info = this.checkCredentials();
     let res;
     try {
-      res = await this.exec("gcloud", ["auth", "application-default", "print-access-token"], { timeoutMs: 30_000 });
+      // Pin gcloud to the exact file we just inspected, so the credential-type
+      // check, the quota project and the token all describe the same identity.
+      const env = { ...process.env, GOOGLE_APPLICATION_CREDENTIALS: info.path };
+      res = await this.exec("gcloud", ["auth", "application-default", "print-access-token"], { timeoutMs: 30_000, env });
     } catch (err) {
       throw new AdmobctlError("AUTH_NO_CREDENTIALS", "Could not run gcloud (is the Google Cloud CLI installed and on PATH?).", {
         cause: err,

@@ -10899,7 +10899,7 @@ function setProfileValue(config2, profile, key, value) {
 // src/core/exec.ts
 import { spawn } from "node:child_process";
 var exec = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
-  const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"], shell: false });
+  const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"], shell: false, env: opts.env ?? process.env });
   let stdout = "";
   let stderr = "";
   const timer = opts.timeoutMs ? setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs) : void 0;
@@ -11728,10 +11728,11 @@ var AdcTokenProvider = class {
   }
   async getToken() {
     if (this.cached && this.now() - this.cached.at < TOKEN_TTL_MS) return this.cached.token;
-    this.checkCredentials();
+    const info = this.checkCredentials();
     let res;
     try {
-      res = await this.exec("gcloud", ["auth", "application-default", "print-access-token"], { timeoutMs: 3e4 });
+      const env = { ...process.env, GOOGLE_APPLICATION_CREDENTIALS: info.path };
+      res = await this.exec("gcloud", ["auth", "application-default", "print-access-token"], { timeoutMs: 3e4, env });
     } catch (err) {
       throw new AdmobctlError("AUTH_NO_CREDENTIALS", "Could not run gcloud (is the Google Cloud CLI installed and on PATH?).", {
         cause: err,
