@@ -67,15 +67,57 @@ describe("insights", () => {
     const ranges = calls
       .filter((c) => c.url.includes("networkReport"))
       .map((c) => (c.body as { reportSpec: { dateRange: unknown } }).reportSpec.dateRange);
-    expect(ranges).toEqual([
-      { startDate: { year: 2026, month: 9, day: 2 }, endDate: { year: 2026, month: 10, day: 1 } },
-      { startDate: { year: 2026, month: 8, day: 3 }, endDate: { year: 2026, month: 9, day: 1 } },
-    ]);
+    // The two reports are fetched concurrently, so their order is not fixed.
+    expect(ranges).toHaveLength(2);
+    expect(ranges).toEqual(
+      expect.arrayContaining([
+        { startDate: { year: 2026, month: 9, day: 2 }, endDate: { year: 2026, month: 10, day: 1 } },
+        { startDate: { year: 2026, month: 8, day: 3 }, endDate: { year: 2026, month: 9, day: 1 } },
+      ]),
+    );
     expect(r.from).toBe("2026-09-02");
     expect(r.previous.from).toBe("2026-08-03");
     expect(r.totals.earnings).toBe(100);
     expect(r.previous.earnings).toBe(71.5);
     expect(r.totals.change).toBeCloseTo(0.3986, 3);
+  });
+
+  it("fetches both reports and the apps list concurrently", async () => {
+    // Each request is held until all three (current report, previous report, apps) are in flight.
+    // If they are fetched one after another, the first is released by a short fallback timer instead.
+    const dir = mkdtempSync(join(tmpdir(), "admobctl-ins-"));
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const held: Array<() => void> = [];
+    const releaseAll = () => held.splice(0).forEach((r) => r());
+    const gate = (respond: () => Response) =>
+      new Promise<Response>((resolve) => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        held.push(() => {
+          inFlight--;
+          resolve(respond());
+        });
+        if (held.length === 3) releaseAll();
+        else setTimeout(releaseAll, 200);
+      });
+    const f = fakeFetch({
+      "GET /v1/accounts?": () => jsonResponse(fixture("accounts.json")),
+      "GET /apps": (c) =>
+        c.url.includes("pageToken=page2")
+          ? jsonResponse(fixture("apps-page2.json"))
+          : gate(() => jsonResponse(fixture("apps-page1.json"))),
+      "POST /networkReport:generate": (c: RecordedCall) => {
+        const spec = (c.body as { reportSpec: { dateRange: { startDate: { month: number } } } }).reportSpec;
+        return gate(() => jsonResponse(report(spec.dateRange.startDate.month === 9 ? current : previous)));
+      },
+    });
+    const svc = AdmobService.create(
+      {},
+      { configDir: dir, tokenProvider: token, fetch: f.fetch, sleep: noSleep, now: () => new Date("2026-10-02T08:00:00Z") },
+    );
+    await insights(svc, { last: 30, by: "app" });
+    expect(maxInFlight).toBe(3);
   });
 
   it("computes per-row ratios from counts", async () => {

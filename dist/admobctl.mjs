@@ -11499,9 +11499,11 @@ async function insights(svc, opts) {
   const prevRange = previousPeriod(range);
   const metrics = ["earnings", "requests", "matched-requests", "impressions", "clicks"];
   const dim = DIM_API[opts.by];
-  const cur = await svc.rawReport("network", { dateRange: range, by: [opts.by], metrics });
-  const prev = await svc.rawReport("network", { dateRange: prevRange, by: [opts.by], metrics });
-  const apps = opts.by === "app" ? await svc.apps() : [];
+  const [cur, prev, apps] = await Promise.all([
+    svc.rawReport("network", { dateRange: range, by: [opts.by], metrics }),
+    svc.rawReport("network", { dateRange: prevRange, by: [opts.by], metrics }),
+    opts.by === "app" ? svc.apps() : []
+  ]);
   const aliasOf = (id) => apps.find((a) => a.appId === id)?.alias;
   const curAgg = aggregate(cur.report, dim, aliasOf);
   const prevAgg = aggregate(prev.report, dim, aliasOf);
