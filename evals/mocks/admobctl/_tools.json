@@ -1786,6 +1786,102 @@
       }
     },
     {
+      "name": "admobctl_lint",
+      "title": "Lint the AdMob setup",
+      "description": "Check the account's setup for things that are broken or unused. Problems (they limit or stop ad serving): apps marked action required, enabled mediation groups that target an ad unit that does not exist or have no enabled line. Notes (worth a look, often intentional): apps in review, ad units with no ad requests in the period, ad units in no enabled mediation group. `problems` counts the problems; each finding has a kind, severity, target and message. Mediation checks are skipped with a notice when the account cannot read mediation groups (AdMob API v1beta).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "description": "Only this app (alias, app ID or name)",
+            "type": "string"
+          },
+          "last_days": {
+            "description": "The last N complete days (default 30)",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 366
+          },
+          "from": {
+            "description": "Start, YYYY-MM or YYYY-MM-DD (instead of last_days)",
+            "type": "string"
+          },
+          "to": {
+            "description": "End, YYYY-MM or YYYY-MM-DD",
+            "type": "string"
+          },
+          "account": {
+            "description": "Publisher ID (pub-…). Defaults to the configured or only account.",
+            "type": "string"
+          }
+        },
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "checked": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "problems": {
+            "type": "number"
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "summary": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "notices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "checked",
+          "problems",
+          "findings",
+          "summary",
+          "notices"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
       "name": "admobctl_analyze_trend",
       "title": "AdMob daily trend",
       "description": "Daily earnings as a series, to answer \"when did it change?\": per series the day earnings moved to a new level (`shift`: date, before and after per day, change), the average per weekday, and the first day with traffic. One series for the whole account or one app, or split by app, format, country or platform (the ten biggest). Days without traffic before a series starts are left out of the averages. Set include_days for the day-by-day rows. Earnings are estimates.",

@@ -12631,6 +12631,110 @@ async function exportJournal(svc, q) {
   return { content, notes };
 }
 
+// src/core/lint.ts
+async function lint(svc, opts = {}) {
+  const acct = await svc.account();
+  const range = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
+  const from = formatDate(range.startDate);
+  const to = formatDate(range.endDate);
+  const only = opts.app ? await svc.resolveApp(opts.app) : void 0;
+  const notices = [];
+  const [allApps, units, allUnits, traffic, groups] = await Promise.all([
+    svc.apps(),
+    svc.adUnits({ app: opts.app }),
+    svc.adUnits(),
+    svc.rawReport("network", { dateRange: range, by: ["ad-unit"], metrics: ["requests"], filters: opts.app ? { app: [opts.app] } : void 0 }),
+    // Mediation groups are v1beta, which Google limits to allowlisted accounts: lint what can be read.
+    svc.mediationGroups().catch((err) => {
+      if (!(err instanceof AdmobctlError) || err.code !== "BETA_ACCESS_DENIED") throw err;
+      notices.push("Mediation groups were not checked: this account cannot read them (AdMob API v1beta, allowlisted accounts only).");
+      return null;
+    })
+  ]);
+  const apps = only ? allApps.filter((a) => a.appId === only.appId) : allApps;
+  notices.push(...traffic.report.warnings.map((w) => `API warning: ${w}`), ...traffic.notices);
+  const findings = [];
+  for (const a of apps) {
+    if (a.approval === "ACTION_REQUIRED") {
+      findings.push({
+        kind: "app-action-required",
+        severity: "problem",
+        target: a.alias,
+        app: a.alias,
+        message: `${a.alias} is marked ${approvalLabel(a.approval)} in AdMob; ad serving may be limited until it is fixed (AdMob \u2192 Apps \u2192 View all apps).`
+      });
+    } else if (a.approval === "IN_REVIEW") {
+      findings.push({ kind: "app-in-review", severity: "note", target: a.alias, app: a.alias, message: `${a.alias} is still in AdMob review; ad serving is limited until it is approved.` });
+    }
+  }
+  if (groups) {
+    const known = new Set(allUnits.map((u) => u.adUnitId));
+    const mine = new Set(units.map((u) => u.adUnitId));
+    for (const g of groups.filter((x) => x.state === "ENABLED")) {
+      if (only && !g.adUnits.some((u) => mine.has(u.adUnitId))) continue;
+      const missing = g.adUnits.filter((u) => !known.has(u.adUnitId));
+      if (missing.length) {
+        findings.push({
+          kind: "missing-ad-unit",
+          severity: "problem",
+          target: g.name,
+          message: `Mediation group "${g.name}" targets ${missing.length === 1 ? "an ad unit that does" : "ad units that do"} not exist in the account: ${missing.map((u) => u.adUnitId).join(", ")}.`
+        });
+      }
+      if (!g.lines.some((l) => l.state === "ENABLED")) {
+        findings.push({ kind: "no-enabled-lines", severity: "problem", target: g.name, message: `Mediation group "${g.name}" is enabled but has no enabled line, so it cannot serve an ad.` });
+      }
+    }
+  }
+  const requests = /* @__PURE__ */ new Map();
+  for (const row of traffic.report.rows) {
+    const id = row.dimensions.AD_UNIT?.value ?? "";
+    requests.set(id, (requests.get(id) ?? 0) + (row.metrics.AD_REQUESTS ?? 0));
+  }
+  for (const u of units) {
+    if (!requests.get(u.adUnitId)) {
+      findings.push({
+        kind: "unused-ad-unit",
+        severity: "note",
+        target: u.name,
+        app: u.app,
+        message: `${u.app} / ${u.name} (${u.format}) sent no ad requests from ${from} to ${to}: not in a released build, or no longer used.`
+      });
+    }
+  }
+  const enabled = (groups ?? []).filter((g) => g.state === "ENABLED");
+  if (enabled.length) {
+    const grouped = new Set(enabled.flatMap((g) => g.adUnits.map((u) => u.adUnitId)));
+    for (const u of units) {
+      if (!grouped.has(u.adUnitId)) {
+        findings.push({
+          kind: "ungrouped-ad-unit",
+          severity: "note",
+          target: u.name,
+          app: u.app,
+          message: `${u.app} / ${u.name} (${u.format}) is in no enabled mediation group, so only the AdMob Network serves it.`
+        });
+      }
+    }
+  }
+  const rank = { problem: 0, note: 1 };
+  findings.sort((a, b) => rank[a.severity] - rank[b.severity]);
+  const problems = findings.filter((f) => f.severity === "problem").length;
+  const notes = findings.length - problems;
+  const count = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  return {
+    from,
+    to,
+    checked: { apps: apps.length, ad_units: units.length, mediation_groups: groups ? groups.length : null },
+    problems,
+    findings,
+    summary: [
+      findings.length ? `${count(problems, "problem")} and ${count(notes, "note")} in ${count(apps.length, "app")}, ${count(units.length, "ad unit")}${groups ? ` and ${count(groups.length, "mediation group")}` : ""}.` : `Nothing to report in ${count(apps.length, "app")}, ${count(units.length, "ad unit")}${groups ? ` and ${count(groups.length, "mediation group")}` : ""}.`
+    ],
+    notices
+  };
+}
+
 // src/core/write.ts
 var MAPPING_BATCH_MAX = 100;
 var usd = (micros) => `${formatMicros(micros)} USD`;
@@ -14858,6 +14962,21 @@ function trendView(r) {
     notes
   };
 }
+function lintView(r) {
+  return {
+    data: r,
+    table: {
+      columns: [
+        { key: "severity", label: "Severity" },
+        { key: "kind", label: "Finding" },
+        { key: "target", label: "Target" },
+        { key: "message", label: "Detail" }
+      ],
+      rows: r.findings
+    },
+    notes: [...r.summary, `Traffic checked ${r.from} \u2192 ${r.to}.`, ...r.notices]
+  };
+}
 
 // src/cli/program.ts
 var list = (v, prev = []) => [...prev, ...v.split(",").map((s) => s.trim()).filter(Boolean)];
@@ -15154,6 +15273,13 @@ function buildProgram(io) {
   });
   const withRange = (cmd) => cmd.option("--last <Nd>", "the last N complete days (default 30d)", (v) => parseDays(v)).option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD");
   const range = (o) => ({ last: o.last, from: o.from, to: o.to });
+  withRange(
+    program2.command("lint").description("Check the setup: apps needing action, broken mediation groups, ad units that are unused or in no group; exits 1 on a problem").option("--app <alias|id>", "only this app")
+  ).action(async (o, cmd) => {
+    const r = await lint(svc(cmd), { ...range(o), app: o.app });
+    emit(cmd, lintView(r));
+    if (r.problems) process.exitCode = 1;
+  });
   const analyze = program2.command("analyze").description("Curated analyses: SDK/app/OS version health, consent (serving restriction) impact, mediation waterfall, daily trend");
   withRange(
     analyze.command("versions").description("Match and show rate per SDK, app or OS version, flagging versions that do worse than the rest").addOption(new Option("--by <kind>", "which version").choices([...VERSION_KINDS]).default("sdk")).option("--app <alias|id>", "only this app")
@@ -44994,6 +45120,17 @@ function createMcpServer(deps) {
     wrap(
       async (a) => fitRows({ ...await analyzeWaterfall(svc(a), { ...range(a), app: a.app, group: a.group, currency: a.currency }) })
     )
+  );
+  server.registerTool(
+    "admobctl_lint",
+    {
+      title: "Lint the AdMob setup",
+      description: "Check the account's setup for things that are broken or unused. Problems (they limit or stop ad serving): apps marked action required, enabled mediation groups that target an ad unit that does not exist or have no enabled line. Notes (worth a look, often intentional): apps in review, ad units with no ad requests in the period, ad units in no enabled mediation group. `problems` counts the problems; each finding has a kind, severity, target and message. Mediation checks are skipped with a notice when the account cannot read mediation groups (AdMob API v1beta).",
+      inputSchema: { ...appArg, ...rangeInput, ...accountArg },
+      outputSchema: loose({ from: external_exports.string(), to: external_exports.string(), checked: anyRecord, problems: external_exports.number(), findings: external_exports.array(anyRecord), summary: external_exports.array(external_exports.string()), notices: external_exports.array(external_exports.string()) }),
+      annotations
+    },
+    wrap(async (a) => ({ ...await lint(svc(a), { ...range(a), app: a.app }) }))
   );
   server.registerTool(
     "admobctl_analyze_trend",

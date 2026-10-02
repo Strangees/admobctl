@@ -82,6 +82,7 @@ describe("mcp server", () => {
         "admobctl_finance_month",
         "admobctl_finance_range",
         "admobctl_insights",
+        "admobctl_lint",
         "admobctl_list_accounts",
         "admobctl_list_ad_units",
         "admobctl_list_apps",

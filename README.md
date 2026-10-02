@@ -117,6 +117,10 @@ admobctl check || echo "AdMob dropped" | mail -s "AdMob check" you@example.com
 
 Apps with fewer than 1000 baseline requests are listed as `too little data` and not judged (`--min-requests`). Save your own defaults with `admobctl config set check.drop 40` (also `check.window`, `check.baseline`, `check.minRequests`).
 
+### Lint
+
+`admobctl lint` checks the setup rather than the numbers. It exits 1 on a problem: an app marked *action required*, or an enabled mediation group that targets an ad unit that does not exist or has no enabled line. It also lists notes that are often intentional: apps still in review, ad units with no ad requests in the last 30 days, and ad units in no enabled mediation group. Mediation groups need AdMob API v1beta; without access those checks are skipped with a notice.
+
 ### Analyze
 
 - `analyze versions --by sdk|app|os` shows match rate, show rate and CTR per Google Mobile Ads SDK version (grouped by platform), app version (grouped by app; `--app` narrows it) or OS version, and flags versions that fill or show at least 20% worse than the rest of their group. Versions with fewer than 1,000 requests are marked as thin data and not judged. It uses traffic metrics only, because Google documents the version dimensions as incompatible with earnings.
@@ -180,7 +184,7 @@ The MCP server stays read-only: no write is exposed as an MCP tool.
 
 ## MCP server
 
-`admobctl mcp` serves read-only tools over stdio: `admobctl_list_accounts`, `admobctl_list_apps`, `admobctl_list_ad_units`, `admobctl_network_report`, `admobctl_mediation_report`, `admobctl_finance_month`, `admobctl_finance_range`, `admobctl_finance_export`, `admobctl_finance_forecast`, `admobctl_insights`, `admobctl_check`, `admobctl_analyze_versions`, `admobctl_analyze_consent`, `admobctl_analyze_waterfall`, `admobctl_analyze_trend`, `admobctl_campaign_report`, `admobctl_list_ad_sources`, `admobctl_list_adapters`, `admobctl_list_mediation_groups`, `admobctl_list_ad_unit_mappings` and `admobctl_check_app_ads`. Reports default to 200 rows and are trimmed with a notice to stay within roughly 25k tokens.
+`admobctl mcp` serves read-only tools over stdio: `admobctl_list_accounts`, `admobctl_list_apps`, `admobctl_list_ad_units`, `admobctl_network_report`, `admobctl_mediation_report`, `admobctl_finance_month`, `admobctl_finance_range`, `admobctl_finance_export`, `admobctl_finance_forecast`, `admobctl_insights`, `admobctl_check`, `admobctl_lint`, `admobctl_analyze_versions`, `admobctl_analyze_consent`, `admobctl_analyze_waterfall`, `admobctl_analyze_trend`, `admobctl_campaign_report`, `admobctl_list_ad_sources`, `admobctl_list_adapters`, `admobctl_list_mediation_groups`, `admobctl_list_ad_unit_mappings` and `admobctl_check_app_ads`. Reports default to 200 rows and are trimmed with a notice to stay within roughly 25k tokens.
 
 ## Agent plugin (Claude Code and Codex)
 

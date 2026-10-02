@@ -12,6 +12,7 @@ import { AdmobctlError } from "../core/errors.js";
 import { financeForecast, financeMonth, financeRange, journalRows } from "../core/finance.js";
 import { EXPORT_FORMATS, exportJournal } from "../core/journal.js";
 import { INSIGHT_DIMENSIONS, insights, type InsightDimension } from "../core/insights.js";
+import { lint } from "../core/lint.js";
 import { log } from "../core/log.js";
 import {
   applyPlan,
@@ -49,6 +50,7 @@ import {
   insightsView,
   journalView,
   keyValueView,
+  lintView,
   mappingsView,
   mediationGroupsView,
   mediationGroupView,
@@ -595,6 +597,17 @@ export function buildProgram(io: CliIO): Command {
       .option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)")
       .option("--to <date>", "end, YYYY-MM or YYYY-MM-DD");
   const range = (o: RangeOpts) => ({ last: o.last, from: o.from, to: o.to });
+  withRange(
+    program
+      .command("lint")
+      .description("Check the setup: apps needing action, broken mediation groups, ad units that are unused or in no group; exits 1 on a problem")
+      .option("--app <alias|id>", "only this app"),
+  ).action(async (o: RangeOpts & { app?: string }, cmd: Command) => {
+    const r = await lint(svc(cmd), { ...range(o), app: o.app });
+    emit(cmd, lintView(r));
+    if (r.problems) process.exitCode = 1;
+  });
+
   const analyze = program
     .command("analyze")
     .description("Curated analyses: SDK/app/OS version health, consent (serving restriction) impact, mediation waterfall, daily trend");
