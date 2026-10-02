@@ -39,6 +39,7 @@ v1beta (read-only, `admob.readonly`; Google may require allowlisting, a 403 says
 | `admobctl ad-sources list` | title, adSourceId |
 | `admobctl ad-sources adapters <ad-source>` | adapter title, adapterId, platform, formats, settings (id, label, required) |
 | `admobctl mediation-groups list [--app] [--ad-source] [--format] [--platform] [--state]` | name, id, state, platform, format, adUnits, regions, experiment (running/none), lines |
+| `admobctl mediation-groups export [group] [--name <n>] [--with-admob-line] [--out <file>]` | the group as MediationGroup JSON for `mediation-groups create --file` (all groups: a JSON array); always JSON |
 | `admobctl mediation-groups show <group>` | the group's lines: name, adSource, cpmMode, cpm (USD, manual lines only), state, variant (A/B) |
 
 Apps take an alias (`<name>-<platform>`, e.g. `my-game-ios`), app ID, numeric ID or exact name.
@@ -47,6 +48,11 @@ Custom alias: `admobctl config set aliases.<alias> <appId>`.
 app-ads.txt: iOS websites come from the App Store listing's marketing URL. Google Play listings cannot be read, so Android
 apps use `--website` (this run), then `admobctl config set websites.<alias> <url>` (per app), then `admobctl config set website <url>`
 (all apps); without one they show `unknown-website`. Ask the user for the website instead of guessing it.
+
+`mediation-groups export` drops IDs and output-only fields, keys the lines "-1", "-2"…, and leaves out the AdMob Network
+line (a new group gets its own; `--with-admob-line` keeps it) and the treatment lines of a running A/B experiment. It
+reads only. To clone a group to other ad units, edit `displayName`, `targeting.adUnitIds` and each line's
+`adUnitMappings` in the file, then run `mediation-groups create --file <file>` (a dry run without `--yes`).
 
 ## Reports
 

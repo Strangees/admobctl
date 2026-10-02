@@ -2,7 +2,7 @@ import { buildAppIndex, resolveApp, type AppRef } from "./aliases.js";
 import { resolveTokenProvider } from "./auth/index.js";
 import type { TokenProvider } from "./auth/types.js";
 import { mergeCampaignChunks, RATIO_BASES } from "./campaign.js";
-import { AdmobClient, type AdSource, type AdUnit, type PublisherAccount } from "./client.js";
+import { AdmobClient, type AdSource, type AdUnit, type MediationGroup, type PublisherAccount } from "./client.js";
 import { configDir, loadConfig, resolveProfile, type ResolvedProfile } from "./config.js";
 import { dateRangeFromArgs, formatDate, previousPeriod, splitRange, todayIn, type DateRange } from "./dates.js";
 import { AdmobctlError, usageError } from "./errors.js";
@@ -334,6 +334,11 @@ export class AdmobService {
         required: Boolean(m.isRequired),
       })),
     }));
+  }
+
+  /** Every mediation group as the API returns it (for export; the views below are for reading). */
+  async rawMediationGroups(): Promise<MediationGroup[]> {
+    return this.client.listMediationGroups((await this.account()).name);
   }
 
   async mediationGroups(f: MediationGroupFilter = {}): Promise<MediationGroupView[]> {

@@ -12853,6 +12853,61 @@ async function lint(svc, opts = {}) {
   };
 }
 
+// src/core/mediation-export.ts
+var ADMOB_NETWORK = "admob network";
+async function exportMediationGroups(svc, opts = {}) {
+  if (opts.name !== void 0 && !opts.group) throw usageError("--name needs a group: it renames one exported copy.");
+  const [all, sources] = await Promise.all([svc.rawMediationGroups(), svc.adSources().catch(() => [])]);
+  let picked = all;
+  if (opts.group) {
+    const q = opts.group.trim().toLowerCase();
+    picked = all.filter((g) => g.mediationGroupId === opts.group.trim() || g.displayName.toLowerCase() === q);
+    if (!picked.length) throw usageError(`Unknown mediation group "${opts.group}". Groups: ${all.map((g) => g.displayName).join(", ") || "(none)"}`);
+    if (picked.length > 1) throw usageError(`Mediation group name "${opts.group}" is ambiguous; use the ID: ${picked.map((g) => g.mediationGroupId).join(", ")}`);
+  }
+  const admob = new Set(sources.filter((s) => s.title.trim().toLowerCase() === ADMOB_NETWORK).map((s) => s.adSourceId));
+  const notes = [];
+  let droppedAdmob = 0;
+  const groups = picked.map((g) => {
+    const lines = Object.values(g.mediationGroupLines ?? {}).filter((l) => l.state !== "REMOVED");
+    const treatment = lines.filter((l) => l.experimentVariant === "VARIANT_B");
+    if (treatment.length) {
+      notes.push(`${g.displayName} has a running A/B experiment; its ${treatment.length} treatment ${treatment.length === 1 ? "line" : "lines"} (variant B) ${treatment.length === 1 ? "was" : "were"} left out.`);
+    }
+    const kept = lines.filter((l) => {
+      if (l.experimentVariant === "VARIANT_B") return false;
+      if (!opts.admobLine && admob.has(l.adSourceId)) {
+        droppedAdmob++;
+        return false;
+      }
+      return true;
+    });
+    const exported = {};
+    kept.forEach((l, i) => {
+      const line = {};
+      if (l.displayName !== void 0) line.displayName = l.displayName;
+      line.adSourceId = l.adSourceId;
+      if (l.cpmMode !== void 0) line.cpmMode = l.cpmMode;
+      if (l.cpmMode !== "LIVE" && l.cpmMicros !== void 0) line.cpmMicros = l.cpmMicros;
+      if (l.state !== void 0) line.state = l.state;
+      if (l.adUnitMappings && Object.keys(l.adUnitMappings).length) line.adUnitMappings = l.adUnitMappings;
+      exported[String(-(i + 1))] = line;
+    });
+    const out = { displayName: opts.name ?? g.displayName };
+    if (g.state !== void 0) out.state = g.state;
+    if (g.targeting) out.targeting = g.targeting;
+    out.mediationGroupLines = exported;
+    return out;
+  });
+  if (droppedAdmob) {
+    notes.push(`The AdMob Network line of ${droppedAdmob === 1 ? "1 group" : `${droppedAdmob} groups`} was left out: a new group gets its own. Pass --with-admob-line to keep it.`);
+  } else if (!opts.admobLine && !admob.size) {
+    notes.push("Ad sources could not be read, so the AdMob Network line could not be recognised and every line was kept.");
+  }
+  notes.push("To create a copy: edit displayName (it must be unique), targeting.adUnitIds and each line's adUnitMappings for the target ad units, then admobctl mediation-groups create --file <file>.");
+  return { groups, notes };
+}
+
 // src/core/write.ts
 var MAPPING_BATCH_MAX = 100;
 var usd = (micros) => `${formatMicros(micros)} USD`;
@@ -14076,6 +14131,10 @@ var AdmobService = class _AdmobService {
         required: Boolean(m.isRequired)
       }))
     }));
+  }
+  /** Every mediation group as the API returns it (for export; the views below are for reading). */
+  async rawMediationGroups() {
+    return this.client.listMediationGroups((await this.account()).name);
   }
   async mediationGroups(f = {}) {
     const parts = [];
@@ -15307,6 +15366,19 @@ function buildProgram(io) {
     async (o, cmd) => emit(cmd, mediationGroupsView(await svc(cmd).mediationGroups(o)))
   );
   groups.command("show <group>").description("Show one mediation group's lines (name or ID)").action(async (group, _o, cmd) => emit(cmd, mediationGroupView(await svc(cmd).mediationGroup(group))));
+  groups.command("export [group]").description("Print a group (or all groups) as the JSON that `mediation-groups create --file` takes, for backup or cloning").option("--name <name>", "display name for the exported copy (one group)").option("--with-admob-line", "keep the AdMob Network line (left out by default: a new group gets its own)").option("--out <file>", "write to this file (readable only by you) instead of stdout").action(async (group, o, cmd) => {
+    const r = await exportMediationGroups(svc(cmd), { group, name: o.name, admobLine: o.withAdmobLine });
+    const content = `${JSON.stringify(group ? r.groups[0] : r.groups, null, 2)}
+`;
+    if (o.out) {
+      writeFileSync3(o.out, content, { mode: 384 });
+      chmodSync5(o.out, 384);
+      io.stderr(`Wrote ${o.out}
+`);
+    } else io.stdout(content);
+    for (const n of r.notes) io.stderr(`${n}
+`);
+  });
   groups.command("create").description("Create a mediation group from a MediationGroup JSON file (v1beta write)").requiredOption("--file <path>", 'MediationGroup JSON; new lines keyed "-1", "-2"\u2026').addOption(yesOption()).action(async (o, cmd) => {
     const s = svc(cmd);
     await runWrite(cmd, s, [await planCreateMediationGroup(s, readJsonFile(o.file))], o.yes);
