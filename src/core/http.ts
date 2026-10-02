@@ -9,9 +9,16 @@ export interface HttpOptions {
   baseDelayMs?: number;
   /** Per-attempt timeout; a stalled request is aborted and retried. Default 30s. */
   timeoutMs?: number;
+  /**
+   * Longest server-requested Retry-After we will sleep for. If a 429/5xx asks us to wait longer,
+   * stop retrying and throw the diagnosed error immediately (fail fast with "retry later") rather
+   * than silently sleeping. A value exactly equal to the cap is still honoured. Default 60s.
+   */
+  maxRetryAfterMs?: number;
 }
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
+export const DEFAULT_MAX_RETRY_AFTER_MS = 60_000;
 
 /** Combine the caller's signal (if any) with the per-attempt timeout signal. */
 function combineSignals(timeout: AbortSignal, caller?: AbortSignal | null): AbortSignal {
@@ -60,6 +67,7 @@ export async function requestJson<T = unknown>(url: string, init: RequestInit, o
   const retries = opts.retries ?? 4;
   const base = opts.baseDelayMs ?? 500;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const maxRetryAfterMs = opts.maxRetryAfterMs ?? DEFAULT_MAX_RETRY_AFTER_MS;
 
   for (let attempt = 0; ; attempt++) {
     const backoff = base * 2 ** attempt + Math.floor(Math.random() * base * 0.25);
@@ -99,7 +107,12 @@ export async function requestJson<T = unknown>(url: string, init: RequestInit, o
     if (res.ok) return (await readBody(res)) as T;
 
     if (isRetryableStatus(res.status) && attempt < retries) {
-      const wait = retryAfterMs(res) ?? backoff;
+      const retryAfter = retryAfterMs(res);
+      if (retryAfter !== undefined && retryAfter > maxRetryAfterMs) {
+        log.debug(`HTTP ${res.status}; Retry-After ${retryAfter}ms exceeds cap ${maxRetryAfterMs}ms; not retrying`);
+        throw diagnoseApiError(res.status, await readBody(res));
+      }
+      const wait = retryAfter ?? backoff;
       log.debug(`HTTP ${res.status}; retrying in ${wait}ms`);
       await res.body?.cancel().catch(() => {});
       await sleep(wait);

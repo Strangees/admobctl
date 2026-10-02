@@ -52,6 +52,35 @@ describe("requestJson", () => {
     expect(s.delays).toEqual([7000]);
   });
 
+  it("fails fast with RATE_LIMITED when Retry-After seconds exceed the cap, instead of sleeping", async () => {
+    const s = sequence([jsonResponse({ error: { message: "slow down" } }, 429, { "retry-after": "3600" }), jsonResponse({ ok: 1 })]);
+    const err = (await requestJson("https://x/y", {}, s).catch((e) => e)) as AdmobctlError;
+    expect(err).toBeInstanceOf(AdmobctlError);
+    expect(err.code).toBe("RATE_LIMITED");
+    expect(err.message).toContain("slow down");
+    expect(s.count()).toBe(1);
+    expect(s.delays).toEqual([]);
+  });
+
+  it("fails fast when a Retry-After HTTP-date is beyond the cap", async () => {
+    const later = new Date(Date.now() + 3_600_000).toUTCString();
+    const s = sequence([jsonResponse({}, 429, { "retry-after": later }), jsonResponse({ ok: 1 })]);
+    const err = (await requestJson("https://x/y", {}, s).catch((e) => e)) as AdmobctlError;
+    expect(err).toBeInstanceOf(AdmobctlError);
+    expect(err.code).toBe("RATE_LIMITED");
+    expect(s.count()).toBe(1);
+    expect(s.delays).toEqual([]);
+  });
+
+  it("takes the Retry-After cap from maxRetryAfterMs", async () => {
+    const s = sequence([jsonResponse({}, 429, { "retry-after": "7" }), jsonResponse({ ok: 1 })]);
+    const err = (await requestJson("https://x/y", {}, { ...s, maxRetryAfterMs: 5000 }).catch((e) => e)) as AdmobctlError;
+    expect(err).toBeInstanceOf(AdmobctlError);
+    expect(err.code).toBe("RATE_LIMITED");
+    expect(s.count()).toBe(1);
+    expect(s.delays).toEqual([]);
+  });
+
   it("retries transient network errors", async () => {
     const s = sequence([new TypeError("fetch failed"), jsonResponse({ ok: 1 })]);
     await expect(requestJson("https://x/y", {}, s)).resolves.toEqual({ ok: 1 });

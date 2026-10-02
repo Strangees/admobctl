@@ -11763,6 +11763,7 @@ function resolveTokenProvider(profile, deps) {
 
 // src/core/http.ts
 var DEFAULT_TIMEOUT_MS = 3e4;
+var DEFAULT_MAX_RETRY_AFTER_MS = 6e4;
 function combineSignals(timeout, caller) {
   if (!caller) return timeout;
   if (typeof AbortSignal.any === "function") return AbortSignal.any([caller, timeout]);
@@ -11802,6 +11803,7 @@ async function requestJson(url2, init, opts = {}) {
   const retries = opts.retries ?? 4;
   const base = opts.baseDelayMs ?? 500;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const maxRetryAfterMs = opts.maxRetryAfterMs ?? DEFAULT_MAX_RETRY_AFTER_MS;
   for (let attempt = 0; ; attempt++) {
     const backoff = base * 2 ** attempt + Math.floor(Math.random() * base * 0.25);
     const timer = new AbortController();
@@ -11837,7 +11839,12 @@ async function requestJson(url2, init, opts = {}) {
     }
     if (res.ok) return await readBody(res);
     if (isRetryableStatus(res.status) && attempt < retries) {
-      const wait = retryAfterMs(res) ?? backoff;
+      const retryAfter = retryAfterMs(res);
+      if (retryAfter !== void 0 && retryAfter > maxRetryAfterMs) {
+        log.debug(`HTTP ${res.status}; Retry-After ${retryAfter}ms exceeds cap ${maxRetryAfterMs}ms; not retrying`);
+        throw diagnoseApiError(res.status, await readBody(res));
+      }
+      const wait = retryAfter ?? backoff;
       log.debug(`HTTP ${res.status}; retrying in ${wait}ms`);
       await res.body?.cancel().catch(() => {
       });
