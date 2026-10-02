@@ -641,6 +641,84 @@
       }
     },
     {
+      "name": "admobctl_finance_export",
+      "title": "Export AdMob accruals as Revenue Journal",
+      "description": "Accrual vouchers for one month or a range of months in the Revenue Journal format (an open format for platform revenue bookkeeping): one balanced voucher per month, debit the receivable, credit revenue per app. Returns `content`, the complete file as text (JSON document or CSV), to save or pass to an accounting import verbatim. Give either `month` or both `from` and `to`. Figures are estimates, not finalized payments.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "month": {
+            "description": "One month, YYYY-MM",
+            "type": "string"
+          },
+          "from": {
+            "description": "First month of a range, YYYY-MM (with `to`, instead of `month`)",
+            "type": "string"
+          },
+          "to": {
+            "description": "Last month of a range, YYYY-MM",
+            "type": "string"
+          },
+          "as": {
+            "description": "File format: json (default) or csv",
+            "type": "string",
+            "enum": [
+              "json",
+              "csv"
+            ]
+          },
+          "integer_amounts": {
+            "description": "JSON only: write amounts as integers instead of decimal strings",
+            "type": "boolean"
+          },
+          "scale": {
+            "description": "Decimal places the integers carry (default 2; 6 = micros). Needs integer_amounts.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6
+          },
+          "account": {
+            "description": "Publisher ID (pub-…). Defaults to the configured or only account.",
+            "type": "string"
+          }
+        },
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "as": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "as",
+          "content",
+          "notes"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
       "name": "admobctl_insights",
       "title": "AdMob monetization insights",
       "description": "Analyze monetization: earnings, eCPM, request RPM, match (fill) rate, show rate and CTR per app/ad-unit/country/format/platform, compared with the previous period. Returns highlights (top and bottom earners, low fill, low show rate, big swings) and a plain-language summary with the numbers behind each claim.",

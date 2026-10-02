@@ -75,6 +75,7 @@ describe("mcp server", () => {
         "admobctl_list_ad_unit_mappings",
         "admobctl_list_adapters",
         "admobctl_list_mediation_groups",
+        "admobctl_finance_export",
         "admobctl_finance_month",
         "admobctl_finance_range",
         "admobctl_insights",
@@ -172,6 +173,29 @@ describe("mcp server", () => {
     expect(tsv.filter(Boolean)).toHaveLength(5);
     expect(tsv[1]!.split("\t")).toHaveLength(12);
     expect(JSON.stringify(r.structuredContent!.notes)).toMatch(/finalized/);
+  });
+
+  it("exports Revenue Journal vouchers as file content", async () => {
+    const { client } = await connect();
+    const json = (await client.callTool({ name: "admobctl_finance_export", arguments: { month: "2026-09" } })) as ToolResult;
+    expect(json.isError).toBeFalsy();
+    expect(json.structuredContent!.as).toBe("revenue-journal-json");
+    const doc = JSON.parse(String(json.structuredContent!.content)) as { format: string; vouchers: Array<{ lines: unknown[] }> };
+    expect(doc.format).toBe("revenue-journal/1");
+    expect(doc.vouchers).toHaveLength(1);
+    expect(doc.vouchers[0]!.lines).toHaveLength(4);
+    expect(JSON.stringify(json.structuredContent!.notes)).toMatch(/finalized/);
+
+    const csv = (await client.callTool({ name: "admobctl_finance_export", arguments: { month: "2026-09", as: "csv" } })) as ToolResult;
+    expect(csv.structuredContent!.as).toBe("revenue-journal-csv");
+    expect(String(csv.structuredContent!.content).split("\n")[0]).toMatch(/^format,voucher_id,/);
+
+    const ints = (await client.callTool({ name: "admobctl_finance_export", arguments: { month: "2026-09", integer_amounts: true, scale: 6 } })) as ToolResult;
+    expect(JSON.parse(String(ints.structuredContent!.content)).amounts).toEqual({ encoding: "integer", scale: 6 });
+
+    const bad = (await client.callTool({ name: "admobctl_finance_export", arguments: {} })) as ToolResult;
+    expect(bad.isError).toBe(true);
+    expect(bad.content[0]!.text).toMatch(/month/);
   });
 
   it("returns actionable errors as tool errors, not protocol errors", async () => {

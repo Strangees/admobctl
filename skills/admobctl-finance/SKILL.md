@@ -19,6 +19,12 @@ If the tool returns `complete: false`, say the month is not over yet and the fig
 
 For a range or year-to-date, use `admobctl_finance_range` (CLI: `admobctl finance range --from YYYY-MM --to YYYY-MM`).
 
+## A file for an accounting import
+
+When the user wants a file their accounting system can import (not rows to paste), call `admobctl_finance_export` with
+`month` (or `from` and `to`) and `as: "json"` or `"csv"`. It returns the whole Revenue Journal file as `content`: save
+or show it unchanged, do not rebuild it from other tools' numbers. CLI: `admobctl finance export --month YYYY-MM --out <file>`.
+
 ## Journal rows (bilagsjournal)
 
 Call `admobctl_finance_month` with `include_journal: true` and show the returned `journal_tsv` **verbatim** inside a

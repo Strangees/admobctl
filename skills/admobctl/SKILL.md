@@ -13,6 +13,7 @@ Read-only access to the user's AdMob account through the `admobctl` MCP tools (p
 |---|---|---|
 | Earnings for a month, per app, for bookkeeping | `admobctl_finance_month` (then follow admobctl-finance) | `admobctl finance month YYYY-MM` |
 | Earnings over several months / year to date | `admobctl_finance_range` | `admobctl finance range --from … --to …` |
+| A file for an accounting import (Revenue Journal JSON/CSV) | `admobctl_finance_export` | `admobctl finance export --month YYYY-MM` |
 | How is monetization doing, what underperforms, why did revenue change | `admobctl_insights` (then follow admobctl-insights) | `admobctl insights --last 30d` |
 | A specific breakdown (by country, format, date, ad unit…) | `admobctl_network_report` | `admobctl report network --from … --by …` |
 | Ad sources / mediation | `admobctl_mediation_report` | `admobctl report mediation --from … --by ad-source` |

@@ -43927,6 +43927,7 @@ var INSTRUCTIONS = `Read-only access to the user's Google AdMob account via admo
 - Apps are referred to by alias (e.g. "my-game-ios"); call admobctl_list_apps to see them.
 - All earnings are ESTIMATES. When reporting money, say so and that they should be reconciled against AdMob Payments (finalized).
 - For "what did I earn in <month>" use admobctl_finance_month; for trends and recommendations use admobctl_insights.
+- For a file an accounting system can import, use admobctl_finance_export and hand over its \`content\` unchanged.
 - For SDK/app-version problems, consent impact or mediation waterfalls use the admobctl_analyze_* tools.
 - For "is my app-ads.txt OK?" or unexplained "limited ad serving" use admobctl_check_app_ads. Google Play listings cannot be
   read, so Android apps show unknown-website until their developer website is added by hand. Never guess a website: ask the
@@ -44147,6 +44148,29 @@ function createMcpServer(deps) {
       annotations
     },
     wrap(async (a) => ({ ...await financeRange(svc(a), a.from, a.to) }))
+  );
+  server.registerTool(
+    "admobctl_finance_export",
+    {
+      title: "Export AdMob accruals as Revenue Journal",
+      description: "Accrual vouchers for one month or a range of months in the Revenue Journal format (an open format for platform revenue bookkeeping): one balanced voucher per month, debit the receivable, credit revenue per app. Returns `content`, the complete file as text (JSON document or CSV), to save or pass to an accounting import verbatim. Give either `month` or both `from` and `to`. Figures are estimates, not finalized payments.",
+      inputSchema: {
+        month: external_exports.string().optional().describe("One month, YYYY-MM"),
+        from: external_exports.string().optional().describe("First month of a range, YYYY-MM (with `to`, instead of `month`)"),
+        to: external_exports.string().optional().describe("Last month of a range, YYYY-MM"),
+        as: external_exports.enum(["json", "csv"]).optional().describe("File format: json (default) or csv"),
+        integer_amounts: external_exports.boolean().optional().describe("JSON only: write amounts as integers instead of decimal strings"),
+        scale: external_exports.number().int().min(0).max(6).optional().describe("Decimal places the integers carry (default 2; 6 = micros). Needs integer_amounts."),
+        ...accountArg
+      },
+      outputSchema: loose({ as: external_exports.string(), content: external_exports.string(), notes: external_exports.array(external_exports.string()) }),
+      annotations
+    },
+    wrap(async (a) => {
+      const as = `revenue-journal-${a.as ?? "json"}`;
+      const r = await exportJournal(svc(a), { as, month: a.month, from: a.from, to: a.to, integerAmounts: a.integer_amounts, scale: a.scale });
+      return { as, ...r };
+    })
   );
   server.registerTool(
     "admobctl_insights",
