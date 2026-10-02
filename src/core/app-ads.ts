@@ -170,7 +170,12 @@ function fallbackSite(opts: AppAdsOptions, configured: string | undefined, notes
   return { status: "unknown-website", detail: unknownDetail, notes };
 }
 
-const SET_WEBSITE = "pass --website <url> or run: admobctl config set website <url>";
+const SET_WEBSITE = "pass --website <url> or run: admobctl config set websites.<alias> <url>";
+
+/** The configured website for one app: per-app (by alias, then app ID), then profile-wide. */
+function configuredWebsite(app: AppRef, profile: { website?: string; websites?: Record<string, string> }): string | undefined {
+  return profile.websites?.[app.alias] ?? profile.websites?.[app.appId] ?? profile.website;
+}
 
 function siteFor(app: AppRef, ios: Map<string, string | null> | undefined, opts: AppAdsOptions, configured: string | undefined): Site {
   if (!app.storeId) {
@@ -264,7 +269,7 @@ export async function checkAppAds(svc: AdmobService, opts: AppAdsOptions): Promi
   const results = await Promise.all(
     apps.map(async (app): Promise<AppAdsAppResult> => {
       const base = { app: app.alias, appId: app.appId, name: app.name, platform: app.platform };
-      const site = siteFor(app, ios, opts, svc.profile.website);
+      const site = siteFor(app, ios, opts, configuredWebsite(app, svc.profile));
       if (site.status) return { ...base, status: site.status, detail: site.detail!, checked: [], notes: site.notes };
       const where = { website: site.website!, websiteSource: site.source! };
       const host = appAdsHost(site.website!);

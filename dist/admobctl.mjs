@@ -11030,7 +11030,7 @@ function resolveProfile(config2, name) {
 var SCALAR_KEYS = /* @__PURE__ */ new Set(["account", "quotaProject", "authMode", "oauthClientId", "website"]);
 var MAP_KEYS = new Set(Object.keys(DEFAULT_FINANCE).map((k) => `finance.${k}`));
 var AUTH_MODES = ["auto", "adc", "oauth"];
-var SETTABLE_KEYS = [...SCALAR_KEYS, ...MAP_KEYS, "aliases.<alias>"];
+var SETTABLE_KEYS = [...SCALAR_KEYS, ...MAP_KEYS, "aliases.<alias>", "websites.<alias>"];
 function setProfileValue(config2, profile, key, value) {
   const p = config2.profiles[profile] ??= {};
   if (SCALAR_KEYS.has(key)) {
@@ -11045,7 +11045,7 @@ function setProfileValue(config2, profile, key, value) {
     throw usageError('finance.decimalSeparator must be "." or ","');
   }
   const [head, sub, ...rest] = key.split(".");
-  if (rest.length === 0 && sub && (MAP_KEYS.has(key) || head === "aliases")) {
+  if (rest.length === 0 && sub && (MAP_KEYS.has(key) || head === "aliases" || head === "websites")) {
     const target = p[head] ??= {};
     if (value === void 0) delete target[sub];
     else target[sub] = value;
@@ -12160,7 +12160,10 @@ function fallbackSite(opts, configured, notes, unknownDetail) {
   if (configured) return { website: configured, source: "config", notes };
   return { status: "unknown-website", detail: unknownDetail, notes };
 }
-var SET_WEBSITE = "pass --website <url> or run: admobctl config set website <url>";
+var SET_WEBSITE = "pass --website <url> or run: admobctl config set websites.<alias> <url>";
+function configuredWebsite(app, profile) {
+  return profile.websites?.[app.alias] ?? profile.websites?.[app.appId] ?? profile.website;
+}
 function siteFor(app, ios, opts, configured) {
   if (!app.storeId) {
     return { status: "not-linked", detail: "Not linked to an app store; AdMob verifies app-ads.txt only for store-linked apps.", notes: [] };
@@ -12240,7 +12243,7 @@ async function checkAppAds(svc, opts) {
   const results = await Promise.all(
     apps.map(async (app) => {
       const base = { app: app.alias, appId: app.appId, name: app.name, platform: app.platform };
-      const site = siteFor(app, ios, opts, svc.profile.website);
+      const site = siteFor(app, ios, opts, configuredWebsite(app, svc.profile));
       if (site.status) return { ...base, status: site.status, detail: site.detail, checked: [], notes: site.notes };
       const where = { website: site.website, websiteSource: site.source };
       const host = appAdsHost(site.website);

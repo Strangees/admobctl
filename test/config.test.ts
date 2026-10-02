@@ -53,11 +53,13 @@ describe("config", () => {
     setProfileValue(cfg, "default", "aliases.quiz", "ca-app-pub-1~2");
     setProfileValue(cfg, "default", "quotaProject", "my-proj");
     setProfileValue(cfg, "default", "finance.decimalSeparator", ",");
+    setProfileValue(cfg, "default", "websites.quiz-android", "example.com");
     expect(cfg).toEqual({
       profiles: {
         default: {
           finance: { revenueAccount: "3100", decimalSeparator: "," },
           aliases: { quiz: "ca-app-pub-1~2" },
+          websites: { "quiz-android": "example.com" },
           quotaProject: "my-proj",
         },
       },

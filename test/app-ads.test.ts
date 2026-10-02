@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { appAdsHost, checkAppAds, GOOGLE_CERT_ID, parseAppAds } from "../src/core/app-ads.js";
-import { saveConfig } from "../src/core/config.js";
+import { saveConfig, type ProfileConfig } from "../src/core/config.js";
 import { AdmobService } from "../src/core/service.js";
 import type { TokenProvider } from "../src/core/auth/types.js";
 import { fakeFetch, fixture, jsonResponse, noSleep, type RecordedCall } from "./helpers.js";
@@ -14,9 +14,9 @@ const LINE = `google.com, ${PUB}, DIRECT, ${GOOGLE_CERT_ID}`;
 
 const text = (body: string, status = 200, type = "text/plain") => new Response(body, { status, headers: { "content-type": type } });
 
-function service(routes: Parameters<typeof fakeFetch>[0], website?: string) {
+function service(routes: Parameters<typeof fakeFetch>[0], website?: string | ProfileConfig) {
   const dir = mkdtempSync(join(tmpdir(), "admobctl-app-ads-"));
-  if (website) saveConfig(dir, { profiles: { default: { website } } });
+  if (website) saveConfig(dir, { profiles: { default: typeof website === "string" ? { website } : website } });
   const f = fakeFetch({
     "GET /v1/accounts?": () => jsonResponse(fixture("accounts.json")),
     "GET /apps": (c) => jsonResponse(fixture(c.url.includes("pageToken=page2") ? "apps-page2.json" : "apps-page1.json")),
@@ -98,6 +98,34 @@ describe("checkAppAds", () => {
     const { svc } = service({ "GET https://other.example/app-ads.txt": () => text(LINE) }, "example.com");
     const res = await checkAppAds(svc, { app: "example-quiz-android", website: "https://other.example" });
     expect(res.apps[0]).toMatchObject({ status: "ok", websiteSource: "flag", website: "https://other.example" });
+  });
+
+  it("uses a per-app website from config ahead of the profile-wide one", async () => {
+    const { svc, calls } = service(
+      { "GET https://other.example/app-ads.txt": () => text(LINE) },
+      { website: "example.com", websites: { "example-quiz-android": "https://www.other.example" } },
+    );
+    const res = await checkAppAds(svc, { app: "example-quiz-android" });
+    expect(res.apps[0]).toMatchObject({ status: "ok", websiteSource: "config", website: "https://www.other.example" });
+    expect(appAdsCalls(calls)).toEqual(["https://other.example/app-ads.txt"]);
+  });
+
+  it("also finds a per-app website keyed by app ID", async () => {
+    const { svc } = service(
+      { "GET https://other.example/app-ads.txt": () => text(LINE) },
+      { websites: { "ca-app-pub-0000000000000001~2222222222": "other.example" } },
+    );
+    const res = await checkAppAds(svc, { app: "example-quiz-android" });
+    expect(res.apps[0]).toMatchObject({ status: "ok", website: "other.example" });
+  });
+
+  it("lets --website override a per-app website for this run", async () => {
+    const { svc } = service(
+      { "GET https://example.com/app-ads.txt": () => text(LINE) },
+      { websites: { "example-quiz-android": "other.example" } },
+    );
+    const res = await checkAppAds(svc, { app: "example-quiz-android", website: "example.com" });
+    expect(res.apps[0]).toMatchObject({ status: "ok", websiteSource: "flag" });
   });
 
   it("says the website is unknown for Android without --website or config", async () => {

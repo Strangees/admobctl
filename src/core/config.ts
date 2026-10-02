@@ -31,6 +31,8 @@ export interface ProfileConfig {
   aliases?: Record<string, string>;
   /** Developer website for the app-ads.txt check, used where the store listing cannot be read (Android). */
   website?: string;
+  /** Per-app developer website (alias or app ID → URL); wins over `website`. */
+  websites?: Record<string, string>;
 }
 
 export interface ConfigFile {
@@ -105,7 +107,7 @@ const SCALAR_KEYS = new Set(["account", "quotaProject", "authMode", "oauthClient
 const MAP_KEYS = new Set(Object.keys(DEFAULT_FINANCE).map((k) => `finance.${k}`));
 const AUTH_MODES: AuthMode[] = ["auto", "adc", "oauth"];
 
-export const SETTABLE_KEYS = [...SCALAR_KEYS, ...MAP_KEYS, "aliases.<alias>"];
+export const SETTABLE_KEYS = [...SCALAR_KEYS, ...MAP_KEYS, "aliases.<alias>", "websites.<alias>"];
 
 /** Set (or with value undefined, unset) a dotted key on a profile. */
 export function setProfileValue(config: ConfigFile, profile: string, key: string, value: string | undefined): void {
@@ -122,7 +124,7 @@ export function setProfileValue(config: ConfigFile, profile: string, key: string
     throw usageError('finance.decimalSeparator must be "." or ","');
   }
   const [head, sub, ...rest] = key.split(".");
-  if (rest.length === 0 && sub && (MAP_KEYS.has(key) || head === "aliases")) {
+  if (rest.length === 0 && sub && (MAP_KEYS.has(key) || head === "aliases" || head === "websites")) {
     const target = ((p as Record<string, unknown>)[head!] ??= {}) as Record<string, string>;
     if (value === undefined) delete target[sub];
     else target[sub] = value;
