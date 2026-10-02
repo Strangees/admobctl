@@ -55,6 +55,13 @@ describe("financeForecast", () => {
     expect(r.notes.join(" ")).toMatch(/finalized/);
   });
 
+  it("warns when the projection rests on less than a week", async () => {
+    const { svc } = setup("2026-09-04T08:00:00Z");
+    expect((await financeForecast(svc)).notes.join(" ")).toMatch(/Only 3 days/);
+    const later = setup("2026-09-11T08:00:00Z");
+    expect((await financeForecast(later.svc)).notes.join(" ")).not.toMatch(/Only/);
+  });
+
   it("returns the actual figure for a month that has ended", async () => {
     const { svc, calls } = setup("2026-10-02T08:00:00Z");
     const r = await financeForecast(svc, "2026-09");

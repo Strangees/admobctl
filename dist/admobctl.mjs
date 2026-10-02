@@ -11532,6 +11532,7 @@ async function financeForecast(svc, month) {
     notes.unshift(
       `Projection: the daily average of ${elapsed} of ${end.day} days (${formatDate(start)} \u2192 ${formatDate(lastDay)}) carried to month-end. It assumes the rest of the month earns like the days so far; do not book it.`
     );
+    if (elapsed < 7) notes.splice(1, 0, `Only ${elapsed} ${elapsed === 1 ? "day" : "days"} of data so far: a rough figure that will move a lot.`);
   } else notes.unshift(`${label2} has ended: this is the month's estimate, not a projection.`);
   return {
     month: label2,
