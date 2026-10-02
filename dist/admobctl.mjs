@@ -12066,10 +12066,10 @@ async function analyzeWaterfall(svc, opts) {
 }
 
 // src/core/audit.ts
-import { appendFileSync, chmodSync as chmodSync4, mkdirSync as mkdirSync2 } from "node:fs";
+import { appendFileSync, chmodSync as chmodSync4 } from "node:fs";
 import { join as join3 } from "node:path";
 function appendAudit(dir, entry) {
-  mkdirSync2(dir, { recursive: true, mode: 448 });
+  ensurePrivateDir(dir);
   const file2 = join3(dir, "audit.log");
   appendFileSync(file2, `${JSON.stringify(entry)}
 `, { mode: 384 });

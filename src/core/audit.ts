@@ -1,5 +1,6 @@
-import { appendFileSync, chmodSync, mkdirSync } from "node:fs";
+import { appendFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
+import { ensurePrivateDir } from "./fs.js";
 
 export interface AuditEntry {
   time: string;
@@ -17,7 +18,7 @@ export interface AuditEntry {
 
 /** Append one JSON line per applied write to <configDir>/audit.log (0600). */
 export function appendAudit(dir: string, entry: AuditEntry): void {
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  ensurePrivateDir(dir);
   const file = join(dir, "audit.log");
   appendFileSync(file, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
   chmodSync(file, 0o600);
