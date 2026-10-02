@@ -10918,7 +10918,7 @@ var exec = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
 
 // src/core/auth/oauth.ts
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { chmodSync as chmodSync2, existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync as renameSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
 import { createServer } from "node:http";
 import { join as join2 } from "node:path";
 var AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -10962,8 +10962,13 @@ var FileSecretStore = class {
     return existsSync2(f) ? readFileSync2(f, "utf8") : void 0;
   }
   async set(profile, value) {
-    mkdirSync2(this.dir, { recursive: true, mode: 448 });
-    writeFileSync2(this.file(profile), value, { mode: 384 });
+    if (mkdirSync2(this.dir, { recursive: true, mode: 448 }) !== void 0) chmodSync2(this.dir, 448);
+    const file2 = this.file(profile);
+    const tmp = `${file2}.${process.pid}.tmp`;
+    rmSync(tmp, { force: true });
+    writeFileSync2(tmp, value, { mode: 384, flag: "wx" });
+    renameSync2(tmp, file2);
+    chmodSync2(file2, 384);
   }
   async delete(profile) {
     rmSync(this.file(profile), { force: true });

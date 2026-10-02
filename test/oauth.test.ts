@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -101,6 +101,17 @@ describe("FileSecretStore", () => {
     expect(readFileSync(file, "utf8")).toContain("s3cret");
     await store.delete("default");
     expect(await store.get("default")).toBeUndefined();
+  });
+
+  it.skipIf(process.platform === "win32")("tightens a pre-existing world-readable credentials file to 0600", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "admobctl-sec-"));
+    const file = join(dir, "credentials-default.json");
+    writeFileSync(file, "old", { mode: 0o644 });
+    chmodSync(file, 0o644);
+    const store = new FileSecretStore(dir);
+    await store.set("default", "n3w");
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(readFileSync(file, "utf8")).toBe("n3w");
   });
 });
 

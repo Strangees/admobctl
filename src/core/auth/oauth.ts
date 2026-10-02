@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { AdmobctlError, ADMOB_SCOPE } from "../errors.js";
@@ -65,8 +65,15 @@ export class FileSecretStore implements SecretStore {
   }
 
   async set(profile: string, value: string): Promise<void> {
-    mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-    writeFileSync(this.file(profile), value, { mode: 0o600 });
+    // Only tighten a dir we just created; never chmod a pre-existing one (ADMOBCTL_HOME could be $HOME or /tmp).
+    if (mkdirSync(this.dir, { recursive: true, mode: 0o700 }) !== undefined) chmodSync(this.dir, 0o700);
+    const file = this.file(profile);
+    // `mode` only applies on create, so write a fresh 0600 temp file (wx: never reuse a stale one) and rename over the target.
+    const tmp = `${file}.${process.pid}.tmp`;
+    rmSync(tmp, { force: true });
+    writeFileSync(tmp, value, { mode: 0o600, flag: "wx" });
+    renameSync(tmp, file);
+    chmodSync(file, 0o600);
   }
 
   async delete(profile: string): Promise<void> {
