@@ -35,6 +35,15 @@ describe("PKCE + auth URL", () => {
       state: "st",
     });
     expect(url.searchParams.get("scope")).toContain("admob.readonly");
+    expect(url.searchParams.get("scope")).not.toContain("admob.monetization");
+  });
+
+  it("asks for the monetization scope too when write access is wanted", () => {
+    const url = new URL(buildAuthUrl({ clientId: "cid", redirectUri: "http://127.0.0.1:5555", pkce: createPkce(), state: "st", write: true }));
+    expect(url.searchParams.get("scope")!.split(" ")).toEqual([
+      "https://www.googleapis.com/auth/admob.readonly",
+      "https://www.googleapis.com/auth/admob.monetization",
+    ]);
   });
 });
 

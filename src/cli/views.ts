@@ -7,7 +7,8 @@ import type { PublisherAccount } from "../core/client.js";
 import { formatMicros } from "../core/money.js";
 import { shownRows, type ViewRow } from "../core/report-view.js";
 import type { AdapterView, AdUnitMappingView, AdUnitView, MediationGroupView, ReportResult } from "../core/service.js";
-import type { AdSource } from "../core/client.js";
+import { API_BASE_BETA, type AdSource } from "../core/client.js";
+import type { WritePlan } from "../core/write.js";
 import type { Column, Output } from "../output/format.js";
 
 export const ESTIMATE_NOTE = "Estimated earnings — reconcile against AdMob Payments (finalized).";
@@ -390,5 +391,33 @@ export function mappingsView(mappings: AdUnitMappingView[]): Output {
       ],
       rows: mappings.map((m) => ({ ...m, settings: Object.entries(m.settings).map(([k, v]) => `${k}=${v}`).join(", ") })),
     },
+  };
+}
+
+function requestLine(p: WritePlan): string {
+  // Shown unencoded so the update mask stays readable; the request itself is encoded.
+  const qs = p.query ? `?${Object.entries(p.query).map(([k, v]) => `${k}=${v}`).join("&")}` : "";
+  return `${p.method} ${API_BASE_BETA}/${p.path}${qs}`;
+}
+
+/** A write's plan (dry run) or, once applied, the plan plus what the API returned. */
+export function writeView(plans: WritePlan[], results?: unknown[]): Output {
+  const applied = results !== undefined;
+  const rows = plans.flatMap((p, i) =>
+    p.summary.map((line, j) => ({
+      step: j === 0 ? `${i + 1}. ${p.action}` : "",
+      change: line,
+      result: j === 0 && applied ? String((results![i] as { name?: unknown } | undefined)?.name ?? "done") : "",
+    })),
+  );
+  const columns: Column[] = [
+    { key: "step", label: "Step" },
+    { key: "change", label: "Change" },
+  ];
+  if (applied) columns.push({ key: "result", label: "Result" });
+  return {
+    data: applied ? { applied: true, plans, results } : { applied: false, plans },
+    table: { columns, rows },
+    notes: applied ? [] : plans.flatMap((p) => [requestLine(p), JSON.stringify(p.body, null, 2)]),
   };
 }

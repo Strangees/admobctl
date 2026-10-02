@@ -1,6 +1,9 @@
 export const ADMOB_SCOPE = "https://www.googleapis.com/auth/admob.readonly";
 export const CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
 export const LOGIN_COMMAND = `gcloud auth application-default login --scopes=${ADMOB_SCOPE},${CLOUD_PLATFORM_SCOPE}`;
+/** Needed only for the write commands (create apps, ad units, mappings; change mediation). */
+export const MONETIZATION_SCOPE = "https://www.googleapis.com/auth/admob.monetization";
+export const WRITE_LOGIN_COMMAND = `gcloud auth application-default login --scopes=${ADMOB_SCOPE},${MONETIZATION_SCOPE},${CLOUD_PLATFORM_SCOPE}`;
 
 export type ErrorCode =
   | "USAGE"

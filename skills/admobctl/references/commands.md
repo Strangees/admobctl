@@ -9,7 +9,7 @@ Global flags (any command): `-o json|table|csv|markdown` (default: table on a TT
 |---|---|
 | `admobctl auth doctor` | Checks credentials → token → scope → quota project → API → account → apps (warns about apps marked action required) → beta (which v1beta reads the account can use; warning only); prints `fix:` for each failure. Exit 1 if any check fails. |
 | `admobctl auth status` | Active mode (adc/oauth), quota project, scopes, account |
-| `admobctl auth login --client-id <id> --client-secret <s>` | Own Desktop OAuth client; refresh token goes to the macOS Keychain. Switches the profile to `oauth`. |
+| `admobctl auth login --client-id <id> --client-secret <s> [--write]` | Own Desktop OAuth client; refresh token goes to the macOS Keychain. Switches the profile to `oauth`. `--write` also grants admob.monetization. |
 | `admobctl auth logout` | Revoke and forget the OAuth login; back to gcloud ADC |
 
 gcloud ADC setup (the default):
@@ -129,6 +129,26 @@ admobctl_list_ad_sources, admobctl_list_adapters (`ad_source`), admobctl_list_me
 admobctl_list_ad_unit_mappings (`ad_unit`).
 They take the same arguments as the CLI, in snake_case: `max_rows`, `include_journal`, `last_days`.
 Reports default to 200 rows.
+
+## Write commands (v1beta; CLI only)
+
+Need the `admob.monetization` scope (`gcloud auth application-default login --scopes=…admob.readonly,…admob.monetization,…cloud-platform`
+or `admobctl auth login --write`) and Google allowlisting (403 → contact the AdMob account manager).
+**Without `--yes` every write is a dry run**: it prints the request and a summary (JSON: `{applied: false, plans}`).
+With `--yes` it applies them in order (JSON: `{applied: true, plans, results}`) and appends each to `~/.admobctl/audit.log`.
+
+| Command | Does |
+|---|---|
+| `apps create --platform ios\|android (--name <n> \| --store-id <id>)` | Create an app (manual or store-linked) |
+| `ad-units create --app <a> --name <n> --format <f> [--ad-types rich-media,video] [--reward 10:coins]` | Create an ad unit; formats: app-open, banner, interstitial, native, rewarded, rewarded-interstitial |
+| `ad-units map <ad-unit> --ad-source <s> --adapter <a> [--name] --set "Label=value"…` | Create an ad unit mapping; settings by label or ID, required ones checked |
+| `ad-units map-batch --file <json>` | Many mappings, 100 per request (each request all-or-nothing) |
+| `mediation-groups create --file <json>` | Create a group from MediationGroup JSON (new lines keyed "-1", "-2"…) |
+| `mediation-groups set-line <group> <line> [--cpm <usd>] [--state enabled\|disabled] [--name]` | Update one line (CPM only on MANUAL lines; USD) |
+| `mediation-groups add-line <group> --ad-source <s> --name <n> [--cpm <usd>] [--mapping <ad-unit>=<mapping>]…` | Add a line (LIVE without --cpm) |
+| `mediation-groups set-ad-units <group> <ad-unit>…` | Replace the group's targeted ad units |
+| `mediation-groups experiment start <group> --name <n> --percent <1-99> --lines <json>` | Start an A/B experiment with treatment lines |
+| `mediation-groups experiment stop <group> --keep A\|B` | Stop it, keeping the original (A) or treatment (B) lines |
 
 ## Errors
 

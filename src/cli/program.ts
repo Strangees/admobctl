@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { Command, CommanderError, Option } from "commander";
 import { fetchTokenInfo, runDoctor } from "../core/auth/doctor.js";
 import { login, logout } from "../core/auth/login.js";
@@ -8,7 +9,22 @@ import { AdmobctlError } from "../core/errors.js";
 import { financeMonth, financeRange, journalRows } from "../core/finance.js";
 import { INSIGHT_DIMENSIONS, insights, type InsightDimension } from "../core/insights.js";
 import { log } from "../core/log.js";
-import { AdmobService, type MediationGroupView, type ServiceDeps, type ServiceOptions } from "../core/service.js";
+import {
+  applyPlan,
+  parseMappingEntries,
+  planAddLine,
+  planCreateAdUnit,
+  planCreateApp,
+  planCreateMapping,
+  planCreateMappings,
+  planCreateMediationGroup,
+  planSetGroupAdUnits,
+  planStartExperiment,
+  planStopExperiment,
+  planUpdateLine,
+  type WritePlan,
+} from "../core/write.js";
+import { AdmobService, type ServiceDeps, type ServiceOptions } from "../core/service.js";
 import { defaultFormat, OUTPUT_FORMATS, render, renderTsv, type Output, type OutputFormat } from "../output/format.js";
 import { VERSION } from "../version.js";
 import {
@@ -30,6 +46,7 @@ import {
   reportView,
   versionsView,
   waterfallView,
+  writeView,
 } from "./views.js";
 
 export interface CliIO {
@@ -70,17 +87,41 @@ function parseDays(v: string): number {
   return Number(m[1]);
 }
 
+function readJsonFile(path: string): unknown {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (err) {
+    throw new AdmobctlError("USAGE", `Cannot read ${path}: ${(err as Error).message}`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    throw new AdmobctlError("USAGE", `${path} is not valid JSON: ${(err as Error).message}`);
+  }
+}
+
+/** "Label=value" pairs from repeated --set / --mapping options. */
+function parsePairs(values: string[] = [], flag: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const v of values) {
+    const eq = v.indexOf("=");
+    if (eq <= 0) throw new AdmobctlError("USAGE", `${flag} expects key=value, got "${v}"`);
+    out[v.slice(0, eq).trim()] = v.slice(eq + 1).trim();
+  }
+  return out;
+}
+
+function positiveAmount(v: string): number {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) throw new AdmobctlError("USAGE", `Expected a positive amount, got "${v}"`);
+  return n;
+}
+
 function positiveInt(v: string): number {
   const n = Number(v);
   if (!Number.isInteger(n) || n <= 0) throw new AdmobctlError("USAGE", `Expected a positive integer, got "${v}"`);
   return n;
-}
-
-function findGroup(groups: MediationGroupView[], input: string): MediationGroupView {
-  const q = input.trim().toLowerCase();
-  const hit = groups.find((g) => g.id === input.trim() || g.name.toLowerCase() === q);
-  if (hit) return hit;
-  throw new AdmobctlError("USAGE", `Unknown mediation group "${input}". Groups: ${groups.map((g) => g.name).join(", ") || "(none)"}`);
 }
 
 export function buildProgram(io: CliIO): Command {
@@ -89,6 +130,26 @@ export function buildProgram(io: CliIO): Command {
   const svc = (cmd: Command) => AdmobService.create({ profile: g(cmd).profile, account: g(cmd).account }, io.service);
   const dir = () => io.service?.configDir ?? configDir();
   const emit = (cmd: Command, out: Output) => io.stdout(render(out, g(cmd).output ?? defaultFormat(io.isTTY)));
+  const repeat = (v: string, p: string[] = []) => [...p, v];
+  /** Writes are dry runs unless --yes: print the plan, or apply each plan in order and print what the API returned. */
+  const runWrite = async (cmd: Command, s: AdmobService, plans: WritePlan[], yes: boolean | undefined) => {
+    if (!yes) {
+      emit(cmd, writeView(plans));
+      io.stderr("Dry run: nothing was sent. Re-run with --yes to apply.\n");
+      return;
+    }
+    const results: unknown[] = [];
+    for (const [i, plan] of plans.entries()) {
+      try {
+        results.push(await applyPlan(s, plan));
+      } catch (err) {
+        if (i > 0) io.stderr(`Applied ${i} of ${plans.length} steps before this failure (see ${s.configDir}/audit.log).\n`);
+        throw err;
+      }
+    }
+    emit(cmd, writeView(plans, results));
+  };
+  const yesOption = () => new Option("--yes", "apply the change (without it, only print what would be sent)");
 
   program
     .description("Fast CLI for the Google AdMob API (unofficial, not affiliated with Google)")
@@ -110,7 +171,8 @@ export function buildProgram(io: CliIO): Command {
     .description("Sign in with your own OAuth client (Desktop app) instead of gcloud ADC")
     .option("--client-id <id>", "OAuth client ID (Desktop app) from Google Cloud Console")
     .option("--client-secret <secret>", "OAuth client secret (or env ADMOBCTL_OAUTH_CLIENT_SECRET)")
-    .action(async (o: { clientId?: string; clientSecret?: string }, cmd: Command) => {
+    .option("--write", "also grant admob.monetization, needed by the write commands (create, mediation changes)")
+    .action(async (o: { clientId?: string; clientSecret?: string; write?: boolean }, cmd: Command) => {
       const profileName = g(cmd).profile ?? loadConfig(dir()).defaultProfile ?? "default";
       const clientId = o.clientId ?? resolveProfile(loadConfig(dir()), g(cmd).profile).oauthClientId;
       if (!clientId) {
@@ -126,6 +188,7 @@ export function buildProgram(io: CliIO): Command {
         store: defaultSecretStore(dir(), io.service?.exec),
         fetch: io.service?.fetch,
         print: io.stderr,
+        write: o.write,
       });
       io.stderr(`Signed in. Profile "${r.profile}" now uses admobctl OAuth. Run: admobctl auth doctor\n`);
     });
@@ -190,12 +253,22 @@ export function buildProgram(io: CliIO): Command {
     .description("List accessible publisher accounts")
     .action(async (_o, cmd: Command) => emit(cmd, accountsView(await svc(cmd).listAccounts())));
 
-  program
-    .command("apps")
-    .description("Apps in the account")
+  const apps = program.command("apps").description("Apps in the account");
+  apps
     .command("list")
     .description("List apps with their aliases")
     .action(async (_o, cmd: Command) => emit(cmd, appsView(await svc(cmd).apps())));
+  apps
+    .command("create")
+    .description("Create an app (v1beta write; needs admob.monetization and Google allowlisting)")
+    .requiredOption("--platform <platform>", "ios or android")
+    .option("--name <name>", "name of an app that is not in a store yet")
+    .option("--store-id <id>", "App Store ID or Android package name of a published app")
+    .addOption(yesOption())
+    .action(async (o: { platform: string; name?: string; storeId?: string; yes?: boolean }, cmd: Command) => {
+      const s = svc(cmd);
+      await runWrite(cmd, s, [await planCreateApp(s, o)], o.yes);
+    });
 
   const adUnits = program.command("ad-units").description("Ad units in the account");
   adUnits
@@ -203,6 +276,47 @@ export function buildProgram(io: CliIO): Command {
     .description("List ad units")
     .option("--app <alias|id>", "only ad units of this app")
     .action(async (o: { app?: string }, cmd: Command) => emit(cmd, adUnitsView(await svc(cmd).adUnits({ app: o.app }))));
+  adUnits
+    .command("create")
+    .description("Create an ad unit (v1beta write; needs admob.monetization and Google allowlisting)")
+    .requiredOption("--app <alias|id>", "the app")
+    .requiredOption("--name <name>", "display name")
+    .requiredOption("--format <format>", "app-open, banner, interstitial, native, rewarded or rewarded-interstitial")
+    .option("--ad-types <types>", "rich-media and/or video, comma-separated", list)
+    .option("--reward <amount:item>", "reward settings for rewarded units, e.g. 10:coins")
+    .addOption(yesOption())
+    .action(async (o: { app: string; name: string; format: string; adTypes?: string[]; reward?: string; yes?: boolean }, cmd: Command) => {
+      let reward: { amount: number; item: string } | undefined;
+      if (o.reward) {
+        const m = /^(\d+):(.+)$/.exec(o.reward.trim());
+        if (!m) throw new AdmobctlError("USAGE", `--reward expects amount:item like 10:coins, got "${o.reward}"`);
+        reward = { amount: Number(m[1]), item: m[2]!.trim() };
+      }
+      const s = svc(cmd);
+      await runWrite(cmd, s, [await planCreateAdUnit(s, { app: o.app, name: o.name, format: o.format, adTypes: o.adTypes, reward })], o.yes);
+    });
+  adUnits
+    .command("map <ad-unit>")
+    .description("Map an ad unit to a third-party ad source adapter (v1beta write)")
+    .requiredOption("--ad-source <name|id>", "the ad source (admobctl ad-sources list)")
+    .requiredOption("--adapter <title|id>", "the adapter (admobctl ad-sources adapters <source>)")
+    .option("--name <name>", "display name for the mapping")
+    .option("--set <label=value>", "an adapter setting, repeatable (e.g. \"Placement ID=abc\")", repeat)
+    .addOption(yesOption())
+    .action(async (adUnit: string, o: { adSource: string; adapter: string; name?: string; set?: string[]; yes?: boolean }, cmd: Command) => {
+      const s = svc(cmd);
+      const plan = await planCreateMapping(s, { adUnit, adSource: o.adSource, adapter: o.adapter, name: o.name, settings: parsePairs(o.set, "--set") });
+      await runWrite(cmd, s, [plan], o.yes);
+    });
+  adUnits
+    .command("map-batch")
+    .description("Create many ad unit mappings from a JSON file, 100 per request (v1beta write)")
+    .requiredOption("--file <path>", "JSON array of {adUnit, adSource, adapter, name?, settings}")
+    .addOption(yesOption())
+    .action(async (o: { file: string; yes?: boolean }, cmd: Command) => {
+      const s = svc(cmd);
+      await runWrite(cmd, s, await planCreateMappings(s, parseMappingEntries(readJsonFile(o.file))), o.yes);
+    });
   adUnits
     .command("mappings <ad-unit>")
     .description("Third-party ad unit mappings of an ad unit (name or ID; AdMob API v1beta)")
@@ -234,7 +348,70 @@ export function buildProgram(io: CliIO): Command {
   groups
     .command("show <group>")
     .description("Show one mediation group's lines (name or ID)")
-    .action(async (group: string, _o, cmd: Command) => emit(cmd, mediationGroupView(findGroup(await svc(cmd).mediationGroups(), group))));
+    .action(async (group: string, _o, cmd: Command) => emit(cmd, mediationGroupView(await svc(cmd).mediationGroup(group))));
+  groups
+    .command("create")
+    .description("Create a mediation group from a MediationGroup JSON file (v1beta write)")
+    .requiredOption("--file <path>", "MediationGroup JSON; new lines keyed \"-1\", \"-2\"…")
+    .addOption(yesOption())
+    .action(async (o: { file: string; yes?: boolean }, cmd: Command) => {
+      const s = svc(cmd);
+      await runWrite(cmd, s, [await planCreateMediationGroup(s, readJsonFile(o.file))], o.yes);
+    });
+  groups
+    .command("set-line <group> <line>")
+    .description("Change a mediation line's manual CPM (USD), state or name (v1beta write)")
+    .option("--cpm <usd>", "manual CPM in USD (MANUAL lines only)", positiveAmount)
+    .option("--state <state>", "enabled or disabled")
+    .option("--name <name>", "new display name")
+    .addOption(yesOption())
+    .action(async (group: string, line: string, o: { cpm?: number; state?: string; name?: string; yes?: boolean }, cmd: Command) => {
+      const s = svc(cmd);
+      await runWrite(cmd, s, [await planUpdateLine(s, { group, line, cpm: o.cpm, state: o.state, name: o.name })], o.yes);
+    });
+  groups
+    .command("add-line <group>")
+    .description("Add a mediation line to a group (v1beta write)")
+    .requiredOption("--ad-source <name|id>", "the ad source")
+    .requiredOption("--name <name>", "display name for the line")
+    .option("--cpm <usd>", "manual CPM in USD; omit for a LIVE (bidding/optimized) line", positiveAmount)
+    .option("--mapping <ad-unit=mapping>", "ad unit mapping resource for an ad unit, repeatable", repeat)
+    .addOption(yesOption())
+    .action(async (group: string, o: { adSource: string; name: string; cpm?: number; mapping?: string[]; yes?: boolean }, cmd: Command) => {
+      const s = svc(cmd);
+      const plan = await planAddLine(s, { group, adSource: o.adSource, name: o.name, cpm: o.cpm, mappings: parsePairs(o.mapping, "--mapping") });
+      await runWrite(cmd, s, [plan], o.yes);
+    });
+  groups
+    .command("set-ad-units <group> <ad-units...>")
+    .description("Replace the ad units a mediation group targets (v1beta write)")
+    .addOption(yesOption())
+    .action(async (group: string, adUnits: string[], o: { yes?: boolean }, cmd: Command) => {
+      const s = svc(cmd);
+      await runWrite(cmd, s, [await planSetGroupAdUnits(s, { group, adUnits })], o.yes);
+    });
+  const experiment = groups.command("experiment").description("Mediation A/B experiments (v1beta write)");
+  experiment
+    .command("start <group>")
+    .description("Start an A/B experiment: a share of traffic gets the treatment lines")
+    .requiredOption("--name <name>", "experiment name")
+    .requiredOption("--percent <n>", "share of traffic for the treatment (1-99)", positiveInt)
+    .requiredOption("--lines <path>", "JSON array of the treatment's mediation lines")
+    .addOption(yesOption())
+    .action(async (group: string, o: { name: string; percent: number; lines: string; yes?: boolean }, cmd: Command) => {
+      const s = svc(cmd);
+      const lines = readJsonFile(o.lines);
+      await runWrite(cmd, s, [await planStartExperiment(s, { group, name: o.name, percent: o.percent, lines: lines as unknown[] })], o.yes);
+    });
+  experiment
+    .command("stop <group>")
+    .description("Stop the running A/B experiment and keep one variant")
+    .requiredOption("--keep <A|B>", "A keeps the original lines, B the treatment")
+    .addOption(yesOption())
+    .action(async (group: string, o: { keep: string; yes?: boolean }, cmd: Command) => {
+      const s = svc(cmd);
+      await runWrite(cmd, s, [await planStopExperiment(s, { group, keep: o.keep })], o.yes);
+    });
 
   // ── report ────────────────────────────────────────────────────────
   const report = program.command("report").description("Network and mediation reports");

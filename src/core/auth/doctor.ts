@@ -1,6 +1,6 @@
 import { appsNeedingAction, type AppRef } from "../aliases.js";
 import type { PublisherAccount } from "../client.js";
-import { AdmobctlError, LOGIN_COMMAND } from "../errors.js";
+import { AdmobctlError, LOGIN_COMMAND, MONETIZATION_SCOPE } from "../errors.js";
 
 export type CheckStatus = "ok" | "warn" | "fail" | "skip";
 
@@ -89,7 +89,13 @@ export async function runDoctor(d: DoctorDeps): Promise<Check[]> {
     const granted = ADMOB_SCOPES.filter((s) => info.scopes.includes(s));
     checks.push(
       granted.length
-        ? { id: "scope", status: "ok", summary: `Scope granted: ${granted.map((s) => s.split("/").pop()).join(", ")}` }
+        ? {
+            id: "scope",
+            status: "ok",
+            summary: `Scope granted: ${granted.map((s) => s.split("/").pop()).join(", ")}${
+              info.scopes.includes(MONETIZATION_SCOPE) ? ", admob.monetization (write commands enabled)" : ""
+            }`,
+          }
         : {
             id: "scope",
             status: "fail",

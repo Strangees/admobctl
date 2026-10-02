@@ -1,4 +1,4 @@
-import { AdmobctlError } from "./errors.js";
+import { AdmobctlError, WRITE_LOGIN_COMMAND } from "./errors.js";
 import { requestJson, type HttpOptions } from "./http.js";
 import { processLimiters, type Limiters, type QuotaCategory } from "./ratelimit.js";
 import { parseReport, type Report, type ReportSpec } from "./report.js";
@@ -195,6 +195,25 @@ export class AdmobClient {
   /** `adUnit` is the ad unit's resource name, accounts/{pub}/adUnits/{fragment}. */
   listAdUnitMappings(adUnit: string): Promise<AdUnitMapping[]> {
     return this.paginate<AdUnitMapping>("inventory", `${adUnit}/adUnitMappings`, "adUnitMappings", { version: "v1beta" });
+  }
+
+  // ── v1beta writes (admob.monetization scope) ─────────────────────
+
+  /** Send a write to v1beta. `path` is relative to the version root, e.g. accounts/pub-1/adUnits. */
+  async write<T = unknown>(method: "POST" | "PATCH", path: string, body: unknown, query?: Record<string, string>): Promise<T> {
+    const qs = query && Object.keys(query).length ? `?${new URLSearchParams(query)}` : "";
+    try {
+      return await this.request<T>("inventory", method, `${path}${qs}`, body, "v1beta");
+    } catch (err) {
+      if (err instanceof AdmobctlError && err.code === "AUTH_SCOPE_MISSING") {
+        throw new AdmobctlError("AUTH_SCOPE_MISSING", "Write commands need the admob.monetization scope, which your credentials do not include.", {
+          status: err.status,
+          cause: err,
+          fix: `${WRITE_LOGIN_COMMAND}  (or: admobctl auth login --write)`,
+        });
+      }
+      throw err;
+    }
   }
 
   async campaignReport(account: string, spec: CampaignReportSpec): Promise<Report> {

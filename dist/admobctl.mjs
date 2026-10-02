@@ -10633,6 +10633,9 @@ var require_dist = __commonJS({
   }
 });
 
+// src/cli/program.ts
+import { readFileSync as readFileSync4 } from "node:fs";
+
 // node_modules/commander/esm.mjs
 var import_index = __toESM(require_commander(), 1);
 var {
@@ -10654,6 +10657,8 @@ var {
 var ADMOB_SCOPE = "https://www.googleapis.com/auth/admob.readonly";
 var CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
 var LOGIN_COMMAND = `gcloud auth application-default login --scopes=${ADMOB_SCOPE},${CLOUD_PLATFORM_SCOPE}`;
+var MONETIZATION_SCOPE = "https://www.googleapis.com/auth/admob.monetization";
+var WRITE_LOGIN_COMMAND = `gcloud auth application-default login --scopes=${ADMOB_SCOPE},${MONETIZATION_SCOPE},${CLOUD_PLATFORM_SCOPE}`;
 var AdmobctlError = class extends Error {
   code;
   /** An exact command or action that resolves the problem. */
@@ -10839,7 +10844,11 @@ async function runDoctor(d) {
     const info = await d.tokenInfo(token);
     const granted = ADMOB_SCOPES.filter((s) => info.scopes.includes(s));
     checks.push(
-      granted.length ? { id: "scope", status: "ok", summary: `Scope granted: ${granted.map((s) => s.split("/").pop()).join(", ")}` } : {
+      granted.length ? {
+        id: "scope",
+        status: "ok",
+        summary: `Scope granted: ${granted.map((s) => s.split("/").pop()).join(", ")}${info.scopes.includes(MONETIZATION_SCOPE) ? ", admob.monetization (write commands enabled)" : ""}`
+      } : {
         id: "scope",
         status: "fail",
         summary: `Token lacks the AdMob scope (has: ${info.scopes.join(" ") || "none"})`,
@@ -11136,7 +11145,7 @@ function buildAuthUrl(o) {
     client_id: o.clientId,
     redirect_uri: o.redirectUri,
     response_type: "code",
-    scope: ADMOB_SCOPE,
+    scope: o.write ? `${ADMOB_SCOPE} ${MONETIZATION_SCOPE}` : ADMOB_SCOPE,
     code_challenge: o.pkce.challenge,
     code_challenge_method: "S256",
     access_type: "offline",
@@ -11275,7 +11284,7 @@ async function login(o) {
   const state = randomBytes2(16).toString("hex");
   const wait = waitForLoopbackCode({ state });
   const { redirectUri } = await wait.ready;
-  const url2 = buildAuthUrl({ clientId: o.clientId, redirectUri, pkce, state });
+  const url2 = buildAuthUrl({ clientId: o.clientId, redirectUri, pkce, state, write: o.write });
   o.print(`Opening your browser to sign in to Google. If it does not open, visit:
 
   ${url2}
@@ -12056,16 +12065,320 @@ async function analyzeWaterfall(svc, opts) {
   };
 }
 
+// src/core/audit.ts
+import { appendFileSync, chmodSync as chmodSync4 } from "node:fs";
+import { join as join3 } from "node:path";
+function appendAudit(dir, entry) {
+  ensurePrivateDir(dir);
+  const file2 = join3(dir, "audit.log");
+  appendFileSync(file2, `${JSON.stringify(entry)}
+`, { mode: 384 });
+  chmodSync4(file2, 384);
+}
+
+// src/core/write.ts
+var MAPPING_BATCH_MAX = 100;
+var usd = (micros) => `${formatMicros(micros)} USD`;
+function toMicros(amount, what) {
+  if (!Number.isFinite(amount) || amount < 0.01) throw usageError(`${what} must be at least 0.01 (USD), got ${amount}`);
+  return String(Math.round(amount * 1e6));
+}
+function lineMask(lineId, field) {
+  return `mediation_group_lines["${lineId}"]${field ? `.${field}` : ""}`;
+}
+async function planCreateApp(svc, o) {
+  const platform = o.platform.trim().toUpperCase();
+  if (platform !== "IOS" && platform !== "ANDROID") throw usageError(`--platform must be ios or android, got "${o.platform}"`);
+  if (!o.name && !o.storeId) throw usageError("Give --name or --store-id: --name for an app not in a store yet, --store-id for a published app.");
+  if (o.name && o.name.length > 80) throw usageError("App names are at most 80 characters.");
+  const acct = await svc.account();
+  const body = o.storeId ? { platform, linkedAppInfo: { appStoreId: o.storeId } } : { platform, manualAppInfo: { displayName: o.name } };
+  return {
+    action: "Create app",
+    method: "POST",
+    path: `${acct.name}/apps`,
+    body,
+    summary: [`Create ${platform} app ${o.storeId ? `linked to store ID ${o.storeId}` : `"${o.name}"`} in ${acct.publisherId}.`]
+  };
+}
+var FORMATS = {
+  "app-open": "APP_OPEN",
+  banner: "BANNER",
+  interstitial: "INTERSTITIAL",
+  native: "NATIVE",
+  rewarded: "REWARDED",
+  "rewarded-interstitial": "REWARDED_INTERSTITIAL"
+};
+var AD_TYPES = { "rich-media": "RICH_MEDIA", video: "VIDEO" };
+async function planCreateAdUnit(svc, o) {
+  const format = FORMATS[o.format.trim().toLowerCase()];
+  if (!format) throw usageError(`--format must be one of ${Object.keys(FORMATS).join(", ")}, got "${o.format}"`);
+  if (!o.name.trim() || o.name.length > 80) throw usageError("Ad unit names are 1 to 80 characters.");
+  const adTypes = o.adTypes?.map((t) => {
+    const v = AD_TYPES[t.trim().toLowerCase()];
+    if (!v) throw usageError(`--ad-types takes rich-media and/or video, got "${t}"`);
+    return v;
+  });
+  if (format === "REWARDED_INTERSTITIAL" && adTypes?.some((t) => t !== "VIDEO")) throw usageError("Rewarded interstitial ad units are video only.");
+  if (format === "REWARDED" && adTypes && !adTypes.includes("VIDEO")) throw usageError("Rewarded ad units cannot exclude video.");
+  if (o.reward && format !== "REWARDED") throw usageError("Reward settings apply to rewarded ad units only.");
+  const app = await svc.resolveApp(o.app);
+  const acct = await svc.account();
+  const body = { appId: app.appId, displayName: o.name, adFormat: format };
+  if (adTypes) body.adTypes = adTypes;
+  if (o.reward) body.rewardSettings = { unitAmount: String(o.reward.amount), unitType: o.reward.item };
+  return {
+    action: "Create ad unit",
+    method: "POST",
+    path: `${acct.name}/adUnits`,
+    body,
+    summary: [
+      `Create ${format} ad unit "${o.name}" in ${app.alias} (${app.appId})${adTypes ? `, ad types ${adTypes.join(", ")}` : ""}${o.reward ? `, reward ${o.reward.amount} ${o.reward.item}` : ""}.`
+    ]
+  };
+}
+async function mappingRequest(svc, o, cache) {
+  const unit = await svc.resolveAdUnit(o.adUnit);
+  const key = o.adSource.trim().toLowerCase();
+  if (!cache.has(key)) cache.set(key, svc.adapters(o.adSource));
+  const adapters = await cache.get(key);
+  const adapter = adapters.find((a) => a.adapterId === o.adapter.trim() || a.title.toLowerCase() === o.adapter.trim().toLowerCase());
+  if (!adapter) {
+    throw usageError(`Unknown adapter "${o.adapter}" for ${adapters[0]?.adSource ?? o.adSource}. Adapters: ${adapters.map((a) => `${a.title} (${a.adapterId})`).join(", ")}`);
+  }
+  const app = (await svc.apps()).find((a) => a.appId === unit.appId);
+  if (app && adapter.platform && adapter.platform !== app.platform) {
+    throw usageError(`${adapter.title} is a ${adapter.platform} adapter, but ${unit.displayName} belongs to ${app.alias} (${app.platform}).`);
+  }
+  if (adapter.formats.length && !adapter.formats.includes(unit.adFormat)) {
+    throw usageError(`${adapter.title} supports ${adapter.formats.join(", ")}, not ${unit.adFormat} (${unit.displayName}).`);
+  }
+  const config2 = {};
+  for (const [k, v] of Object.entries(o.settings)) {
+    const setting = adapter.settings.find((s) => s.id === k || s.label.toLowerCase() === k.toLowerCase());
+    if (!setting) throw usageError(`Unknown setting "${k}" for ${adapter.title}. Settings: ${adapter.settings.map((s) => s.label).join(", ")}`);
+    config2[setting.id] = v;
+  }
+  const missing = adapter.settings.filter((s) => s.required && !(s.id in config2));
+  if (missing.length) throw usageError(`${missing.map((s) => s.label).join(", ")} ${missing.length === 1 ? "is" : "are"} required by ${adapter.title}.`);
+  const body = { adapterId: adapter.adapterId };
+  if (o.name) body.displayName = o.name;
+  body.adUnitConfigurations = config2;
+  return {
+    parent: unit.name,
+    body,
+    summary: `Map ${unit.displayName} (${unit.adUnitId}) to ${adapter.title}${o.name ? ` as "${o.name}"` : ""}: ${Object.entries(o.settings).map(([k, v]) => `${k}=${v}`).join(", ")}.`
+  };
+}
+async function planCreateMapping(svc, o) {
+  const r = await mappingRequest(svc, o, /* @__PURE__ */ new Map());
+  return { action: "Create ad unit mapping", method: "POST", path: `${r.parent}/adUnitMappings`, body: r.body, summary: [r.summary] };
+}
+function parseMappingEntries(raw) {
+  if (!Array.isArray(raw)) throw usageError("The mappings file must hold a JSON array of {adUnit, adSource, adapter, name?, settings}.");
+  return raw.map((e, i) => {
+    const where = `Mappings file entry ${i + 1}`;
+    if (typeof e !== "object" || e === null) throw usageError(`${where} is not an object.`);
+    const o = e;
+    for (const k of ["adUnit", "adSource", "adapter"]) {
+      if (typeof o[k] !== "string" || !o[k]) throw usageError(`${where} needs a string "${k}" (fields: adUnit, adSource, adapter, name?, settings).`);
+    }
+    const settings = o.settings ?? {};
+    if (typeof settings !== "object" || settings === null || Array.isArray(settings) || Object.values(settings).some((v) => typeof v !== "string")) {
+      throw usageError(`${where}: "settings" must map setting labels or IDs to string values.`);
+    }
+    const out = { adUnit: o.adUnit, adSource: o.adSource, adapter: o.adapter, settings };
+    if (typeof o.name === "string") out.name = o.name;
+    return out;
+  });
+}
+async function planCreateMappings(svc, entries) {
+  if (!entries.length) throw usageError("The mappings file is empty.");
+  const cache = /* @__PURE__ */ new Map();
+  const requests = [];
+  for (const e of entries) requests.push(await mappingRequest(svc, e, cache));
+  const acct = await svc.account();
+  const plans = [];
+  for (let i = 0; i < requests.length; i += MAPPING_BATCH_MAX) {
+    const batch = requests.slice(i, i + MAPPING_BATCH_MAX);
+    plans.push({
+      action: "Create ad unit mappings (batch)",
+      method: "POST",
+      path: `${acct.name}/adUnitMappings:batchCreate`,
+      body: { requests: batch.map((r) => ({ parent: r.parent, adUnitMapping: r.body })) },
+      summary: [`Batch ${plans.length + 1}: ${batch.length} mapping(s), all or nothing.`, ...batch.map((r) => r.summary)]
+    });
+  }
+  return plans;
+}
+async function planCreateMediationGroup(svc, group) {
+  if (typeof group !== "object" || group === null || Array.isArray(group)) throw usageError("The mediation group file must hold one MediationGroup JSON object.");
+  const g = group;
+  if (typeof g.displayName !== "string" || !g.displayName.trim()) throw usageError("displayName is required.");
+  if (g.displayName.length > 120) throw usageError("displayName is at most 120 characters.");
+  if (!g.targeting?.platform || !g.targeting?.format) throw usageError("targeting.platform and targeting.format are required.");
+  const lineIds = Object.keys(g.mediationGroupLines ?? {});
+  const bad = lineIds.filter((id) => !/^-\d+$/.test(id));
+  if (bad.length) throw usageError(`New mediation lines are keyed by distinct negative placeholder IDs ("-1", "-2"\u2026), got ${bad.join(", ")}.`);
+  const acct = await svc.account();
+  const units = Array.isArray(g.targeting.adUnitIds) ? g.targeting.adUnitIds.length : 0;
+  return {
+    action: "Create mediation group",
+    method: "POST",
+    path: `${acct.name}/mediationGroups`,
+    body: group,
+    summary: [`Create mediation group "${g.displayName}" (${String(g.targeting.platform)} ${String(g.targeting.format)}) for ${units} ad unit(s) with ${lineIds.length} line(s) besides the AdMob Network line.`]
+  };
+}
+function resolveLine(group, input2) {
+  const q = input2.trim().toLowerCase();
+  const byId = group.lines.find((l) => l.id === input2.trim());
+  if (byId) return byId;
+  const byName = group.lines.filter((l) => l.name.toLowerCase() === q);
+  if (byName.length === 1) return byName[0];
+  if (byName.length > 1) throw usageError(`Line name "${input2}" is ambiguous in ${group.name}; use the line ID: ${byName.map((l) => l.id).join(", ")}`);
+  throw usageError(`Unknown line "${input2}" in ${group.name}. Lines: ${group.lines.map((l) => `${l.name} (${l.id})`).join(", ")}`);
+}
+async function planUpdateLine(svc, o) {
+  const group = await svc.mediationGroup(o.group);
+  const line = resolveLine(group, o.line);
+  const patch = {};
+  const masks = [];
+  const changes = [];
+  if (o.cpm !== void 0) {
+    if (line.cpmMode === "LIVE") throw usageError(`${line.name} uses LIVE CPM (bidding or optimized); only MANUAL lines take a CPM.`);
+    patch.cpmMicros = toMicros(o.cpm, "--cpm");
+    masks.push(lineMask(line.id, "cpm_micros"));
+    changes.push(`CPM ${line.cpm_micros === void 0 ? "(none)" : usd(line.cpm_micros).replace(" USD", "")} \u2192 ${usd(Number(patch.cpmMicros))}`);
+  }
+  if (o.state !== void 0) {
+    const state = o.state.trim().toUpperCase();
+    if (state !== "ENABLED" && state !== "DISABLED") throw usageError(`--state must be enabled or disabled, got "${o.state}"`);
+    patch.state = state;
+    masks.push(lineMask(line.id, "state"));
+    changes.push(`state ${line.state} \u2192 ${state}`);
+  }
+  if (o.name !== void 0) {
+    if (!o.name.trim() || o.name.length > 255) throw usageError("Line names are 1 to 255 characters.");
+    patch.displayName = o.name;
+    masks.push(lineMask(line.id, "display_name"));
+    changes.push(`name "${line.name}" \u2192 "${o.name}"`);
+  }
+  if (!masks.length) throw usageError("Nothing to change: give --cpm, --state or --name.");
+  if (group.experiment === "running") changes.push("note: this group has an A/B experiment running");
+  return {
+    action: "Update mediation line",
+    method: "PATCH",
+    path: group.resource,
+    query: { updateMask: masks.join(",") },
+    body: { mediationGroupLines: { [line.id]: patch } },
+    summary: [`${group.name} / ${line.name} (${line.adSource}): ${changes.join("; ")}.`]
+  };
+}
+async function planAddLine(svc, o) {
+  const group = await svc.mediationGroup(o.group);
+  const source = await svc.resolveAdSource(o.adSource);
+  if (!o.name.trim() || o.name.length > 255) throw usageError("Line names are 1 to 255 characters.");
+  const line = { displayName: o.name, adSourceId: source.adSourceId, cpmMode: o.cpm === void 0 ? "LIVE" : "MANUAL" };
+  if (o.cpm !== void 0) line.cpmMicros = toMicros(o.cpm, "--cpm");
+  line.state = "ENABLED";
+  if (o.mappings && Object.keys(o.mappings).length) {
+    const mappings = {};
+    for (const [unit, mapping] of Object.entries(o.mappings)) mappings[(await svc.resolveAdUnit(unit)).adUnitId] = mapping;
+    line.adUnitMappings = mappings;
+  }
+  const summary = [`Add line "${o.name}" to ${group.name}: ${source.title}, ${o.cpm === void 0 ? "LIVE CPM" : `manual CPM ${usd(Number(line.cpmMicros))}`}.`];
+  if (!line.adUnitMappings && !/admob network/i.test(source.title)) {
+    summary.push(`Third-party lines serve only through an ad unit mapping per ad unit; add --mapping <ad-unit>=<mapping resource> (see admobctl ad-units mappings).`);
+  }
+  return {
+    action: "Add mediation line",
+    method: "PATCH",
+    path: group.resource,
+    query: { updateMask: lineMask("-1") },
+    body: { mediationGroupLines: { "-1": line } },
+    summary
+  };
+}
+async function planSetGroupAdUnits(svc, o) {
+  if (!o.adUnits.length) throw usageError("Give at least one ad unit.");
+  const group = await svc.mediationGroup(o.group);
+  const ids = [];
+  for (const u of o.adUnits) ids.push((await svc.resolveAdUnit(u)).adUnitId);
+  const before = new Set(group.adUnits.map((u) => u.adUnitId));
+  const added = ids.filter((id) => !before.has(id));
+  const removed = [...before].filter((id) => !ids.includes(id));
+  return {
+    action: "Set mediation group ad units",
+    method: "PATCH",
+    path: group.resource,
+    query: { updateMask: "targeting.ad_unit_ids" },
+    body: { targeting: { adUnitIds: ids } },
+    summary: [`${group.name} will target ${ids.length} ad unit(s) (replaces the list): +${added.length}, -${removed.length}.`, ...removed.map((id) => `removes ${id}`)]
+  };
+}
+async function planStartExperiment(svc, o) {
+  if (!Number.isInteger(o.percent) || o.percent < 1 || o.percent > 99) throw usageError("--percent must be a whole number between 1 and 99.");
+  if (!o.name.trim()) throw usageError("--name is required.");
+  const group = await svc.mediationGroup(o.group);
+  if (group.experiment === "running") throw usageError(`An A/B experiment is already running on ${group.name}; stop it first.`);
+  if (!Array.isArray(o.lines)) throw usageError("The treatment lines file must hold a JSON array of mediation lines.");
+  return {
+    action: "Start mediation A/B experiment",
+    method: "POST",
+    path: `${group.resource}/mediationAbExperiments`,
+    body: {
+      displayName: o.name,
+      treatmentTrafficPercentage: String(o.percent),
+      treatmentMediationLines: o.lines.map((line) => ({ mediationGroupLine: line }))
+    },
+    summary: [`Start "${o.name}" on ${group.name}: ${o.percent}% of traffic gets ${o.lines.length} treatment line(s) (variant B); the rest keeps the current lines (A).`]
+  };
+}
+async function planStopExperiment(svc, o) {
+  const keep = o.keep.trim().toUpperCase();
+  if (keep !== "A" && keep !== "B") throw usageError(`--keep must be A (the original lines) or B (the treatment), got "${o.keep}"`);
+  const group = await svc.mediationGroup(o.group);
+  if (group.experiment !== "running") throw usageError(`${group.name} has no A/B experiment running.`);
+  return {
+    action: "Stop mediation A/B experiment",
+    method: "POST",
+    path: `${group.resource}/mediationAbExperiments:stop`,
+    body: { variantChoice: `VARIANT_CHOICE_${keep}` },
+    summary: [`Stop the A/B experiment on ${group.name} and keep variant ${keep} (${keep === "A" ? "the original lines" : "the treatment lines"}).`]
+  };
+}
+async function applyPlan(svc, plan) {
+  const entry = {
+    time: svc.now().toISOString(),
+    profile: svc.profile.name,
+    action: plan.action,
+    method: plan.method,
+    path: plan.path,
+    ...plan.query ? { query: plan.query } : {},
+    body: plan.body
+  };
+  try {
+    const result = await svc.client.write(plan.method, plan.path, plan.body, plan.query);
+    const name = result?.name;
+    appendAudit(svc.configDir, { ...entry, ok: true, ...typeof name === "string" ? { result: name } : {} });
+    return result;
+  } catch (err) {
+    appendAudit(svc.configDir, { ...entry, ok: false, error: err instanceof AdmobctlError ? err.code : String(err) });
+    throw err;
+  }
+}
+
 // src/core/auth/adc.ts
 import { readFileSync as readFileSync3 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { join as join3 } from "node:path";
+import { join as join4 } from "node:path";
 function adcPath(env = process.env, platform = process.platform, home = homedir2()) {
   if (env.GOOGLE_APPLICATION_CREDENTIALS) return env.GOOGLE_APPLICATION_CREDENTIALS;
   const file2 = "application_default_credentials.json";
-  if (env.CLOUDSDK_CONFIG) return join3(env.CLOUDSDK_CONFIG, file2);
-  if (platform === "win32") return join3(env.APPDATA ?? join3(home, "AppData", "Roaming"), "gcloud", file2);
-  return join3(home, ".config", "gcloud", file2);
+  if (env.CLOUDSDK_CONFIG) return join4(env.CLOUDSDK_CONFIG, file2);
+  if (platform === "win32") return join4(env.APPDATA ?? join4(home, "AppData", "Roaming"), "gcloud", file2);
+  return join4(home, ".config", "gcloud", file2);
 }
 function readAdcInfo(path = adcPath(), read = (p) => readFileSync3(p, "utf8")) {
   let raw;
@@ -12599,6 +12912,23 @@ var AdmobClient = class {
   listAdUnitMappings(adUnit) {
     return this.paginate("inventory", `${adUnit}/adUnitMappings`, "adUnitMappings", { version: "v1beta" });
   }
+  // ── v1beta writes (admob.monetization scope) ─────────────────────
+  /** Send a write to v1beta. `path` is relative to the version root, e.g. accounts/pub-1/adUnits. */
+  async write(method, path, body, query) {
+    const qs = query && Object.keys(query).length ? `?${new URLSearchParams(query)}` : "";
+    try {
+      return await this.request("inventory", method, `${path}${qs}`, body, "v1beta");
+    } catch (err) {
+      if (err instanceof AdmobctlError && err.code === "AUTH_SCOPE_MISSING") {
+        throw new AdmobctlError("AUTH_SCOPE_MISSING", "Write commands need the admob.monetization scope, which your credentials do not include.", {
+          status: err.status,
+          cause: err,
+          fix: `${WRITE_LOGIN_COMMAND}  (or: admobctl auth login --write)`
+        });
+      }
+      throw err;
+    }
+  }
   async campaignReport(account, spec) {
     const raw = await this.request("reporting", "POST", `${accountName(account)}/campaignReport:generate`, { reportSpec: spec }, "v1beta");
     return parseReport(raw);
@@ -12764,18 +13094,20 @@ var DEFAULT_METRICS = {
 var CAMPAIGN_MAX_DAYS = 30;
 var filterValue = (v) => `"${v.replace(/["\\]/g, (c) => `\\${c}`)}"`;
 var AdmobService = class _AdmobService {
-  constructor(profile, client, tokenProvider, accountOverride, now) {
+  constructor(profile, client, tokenProvider, accountOverride, now, configDir2) {
     this.profile = profile;
     this.client = client;
     this.tokenProvider = tokenProvider;
     this.accountOverride = accountOverride;
     this.now = now;
+    this.configDir = configDir2;
   }
   profile;
   client;
   tokenProvider;
   accountOverride;
   now;
+  configDir;
   accountPromise;
   appsPromise;
   adUnitsPromise;
@@ -12790,7 +13122,7 @@ var AdmobService = class _AdmobService {
       fetch: deps.fetch,
       sleep: deps.sleep
     });
-    return new _AdmobService(profile, client, tokenProvider, opts.account ?? profile.account, deps.now ?? (() => /* @__PURE__ */ new Date()));
+    return new _AdmobService(profile, client, tokenProvider, opts.account ?? profile.account, deps.now ?? (() => /* @__PURE__ */ new Date()), dir);
   }
   /** The account that will be used (--account, then profile), without calling the API. Undefined means auto-detect. */
   get configuredAccount() {
@@ -12967,6 +13299,14 @@ var AdmobService = class _AdmobService {
       if (t.idfaTargeting && t.idfaTargeting !== "IDFA_TARGETING_UNSPECIFIED") view.idfa = t.idfaTargeting;
       return view;
     });
+  }
+  /** One mediation group by ID or name (case-insensitive). */
+  async mediationGroup(input2) {
+    const groups = await this.mediationGroups();
+    const q = input2.trim().toLowerCase();
+    const hit = groups.find((g) => g.id === input2.trim() || g.name.toLowerCase() === q);
+    if (hit) return hit;
+    throw usageError(`Unknown mediation group "${input2}". Groups: ${groups.map((g) => g.name).join(", ") || "(none)"}`);
   }
   async adUnitMappings(adUnit) {
     const unit = await this.resolveAdUnit(adUnit);
@@ -13521,6 +13861,30 @@ function mappingsView(mappings) {
     }
   };
 }
+function requestLine(p) {
+  const qs = p.query ? `?${Object.entries(p.query).map(([k, v]) => `${k}=${v}`).join("&")}` : "";
+  return `${p.method} ${API_BASE_BETA}/${p.path}${qs}`;
+}
+function writeView(plans, results) {
+  const applied = results !== void 0;
+  const rows = plans.flatMap(
+    (p, i) => p.summary.map((line, j) => ({
+      step: j === 0 ? `${i + 1}. ${p.action}` : "",
+      change: line,
+      result: j === 0 && applied ? String(results[i]?.name ?? "done") : ""
+    }))
+  );
+  const columns = [
+    { key: "step", label: "Step" },
+    { key: "change", label: "Change" }
+  ];
+  if (applied) columns.push({ key: "result", label: "Result" });
+  return {
+    data: applied ? { applied: true, plans, results } : { applied: false, plans },
+    table: { columns, rows },
+    notes: applied ? [] : plans.flatMap((p) => [requestLine(p), JSON.stringify(p.body, null, 2)])
+  };
+}
 
 // src/cli/program.ts
 var list = (v, prev = []) => [...prev, ...v.split(",").map((s) => s.trim()).filter(Boolean)];
@@ -13539,16 +13903,37 @@ function parseDays(v) {
   if (!m) throw new AdmobctlError("USAGE", `--last expects a number of days like 30d, got "${v}"`);
   return Number(m[1]);
 }
+function readJsonFile(path) {
+  let text;
+  try {
+    text = readFileSync4(path, "utf8");
+  } catch (err) {
+    throw new AdmobctlError("USAGE", `Cannot read ${path}: ${err.message}`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    throw new AdmobctlError("USAGE", `${path} is not valid JSON: ${err.message}`);
+  }
+}
+function parsePairs(values = [], flag) {
+  const out = {};
+  for (const v of values) {
+    const eq = v.indexOf("=");
+    if (eq <= 0) throw new AdmobctlError("USAGE", `${flag} expects key=value, got "${v}"`);
+    out[v.slice(0, eq).trim()] = v.slice(eq + 1).trim();
+  }
+  return out;
+}
+function positiveAmount(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) throw new AdmobctlError("USAGE", `Expected a positive amount, got "${v}"`);
+  return n;
+}
 function positiveInt(v) {
   const n = Number(v);
   if (!Number.isInteger(n) || n <= 0) throw new AdmobctlError("USAGE", `Expected a positive integer, got "${v}"`);
   return n;
-}
-function findGroup(groups, input2) {
-  const q = input2.trim().toLowerCase();
-  const hit = groups.find((g) => g.id === input2.trim() || g.name.toLowerCase() === q);
-  if (hit) return hit;
-  throw new AdmobctlError("USAGE", `Unknown mediation group "${input2}". Groups: ${groups.map((g) => g.name).join(", ") || "(none)"}`);
 }
 function buildProgram(io) {
   const program2 = new Command("admobctl");
@@ -13556,9 +13941,29 @@ function buildProgram(io) {
   const svc = (cmd) => AdmobService.create({ profile: g(cmd).profile, account: g(cmd).account }, io.service);
   const dir = () => io.service?.configDir ?? configDir();
   const emit = (cmd, out) => io.stdout(render(out, g(cmd).output ?? defaultFormat(io.isTTY)));
+  const repeat = (v, p = []) => [...p, v];
+  const runWrite = async (cmd, s, plans, yes) => {
+    if (!yes) {
+      emit(cmd, writeView(plans));
+      io.stderr("Dry run: nothing was sent. Re-run with --yes to apply.\n");
+      return;
+    }
+    const results = [];
+    for (const [i, plan] of plans.entries()) {
+      try {
+        results.push(await applyPlan(s, plan));
+      } catch (err) {
+        if (i > 0) io.stderr(`Applied ${i} of ${plans.length} steps before this failure (see ${s.configDir}/audit.log).
+`);
+        throw err;
+      }
+    }
+    emit(cmd, writeView(plans, results));
+  };
+  const yesOption = () => new Option("--yes", "apply the change (without it, only print what would be sent)");
   program2.description("Fast CLI for the Google AdMob API (unofficial, not affiliated with Google)").version(VERSION, "-V, --version").addOption(new Option("-o, --output <format>", "output format (default: table on a TTY, json when piped)").choices(OUTPUT_FORMATS)).option("--profile <name>", "config profile to use").option("--account <pub-id>", "AdMob publisher ID (pub-\u2026)").option("-v, --verbose", "debug logging to stderr").hook("preAction", (cmd) => log.setVerbose(Boolean(cmd.opts().verbose))).showHelpAfterError("(run with --help for usage)").configureOutput({ writeOut: io.stdout, writeErr: io.stderr }).exitOverride();
   const auth = program2.command("auth").description("Authenticate and diagnose credentials");
-  auth.command("login").description("Sign in with your own OAuth client (Desktop app) instead of gcloud ADC").option("--client-id <id>", "OAuth client ID (Desktop app) from Google Cloud Console").option("--client-secret <secret>", "OAuth client secret (or env ADMOBCTL_OAUTH_CLIENT_SECRET)").action(async (o, cmd) => {
+  auth.command("login").description("Sign in with your own OAuth client (Desktop app) instead of gcloud ADC").option("--client-id <id>", "OAuth client ID (Desktop app) from Google Cloud Console").option("--client-secret <secret>", "OAuth client secret (or env ADMOBCTL_OAUTH_CLIENT_SECRET)").option("--write", "also grant admob.monetization, needed by the write commands (create, mediation changes)").action(async (o, cmd) => {
     const profileName = g(cmd).profile ?? loadConfig(dir()).defaultProfile ?? "default";
     const clientId = o.clientId ?? resolveProfile(loadConfig(dir()), g(cmd).profile).oauthClientId;
     if (!clientId) {
@@ -13573,7 +13978,8 @@ function buildProgram(io) {
       clientSecret: o.clientSecret ?? process.env.ADMOBCTL_OAUTH_CLIENT_SECRET,
       store: defaultSecretStore(dir(), io.service?.exec),
       fetch: io.service?.fetch,
-      print: io.stderr
+      print: io.stderr,
+      write: o.write
     });
     io.stderr(`Signed in. Profile "${r.profile}" now uses admobctl OAuth. Run: admobctl auth doctor
 `);
@@ -13620,9 +14026,33 @@ function buildProgram(io) {
     if (checks.some((c) => c.status === "fail")) process.exitCode = 1;
   });
   program2.command("accounts").description("AdMob publisher accounts").command("list").description("List accessible publisher accounts").action(async (_o, cmd) => emit(cmd, accountsView(await svc(cmd).listAccounts())));
-  program2.command("apps").description("Apps in the account").command("list").description("List apps with their aliases").action(async (_o, cmd) => emit(cmd, appsView(await svc(cmd).apps())));
+  const apps = program2.command("apps").description("Apps in the account");
+  apps.command("list").description("List apps with their aliases").action(async (_o, cmd) => emit(cmd, appsView(await svc(cmd).apps())));
+  apps.command("create").description("Create an app (v1beta write; needs admob.monetization and Google allowlisting)").requiredOption("--platform <platform>", "ios or android").option("--name <name>", "name of an app that is not in a store yet").option("--store-id <id>", "App Store ID or Android package name of a published app").addOption(yesOption()).action(async (o, cmd) => {
+    const s = svc(cmd);
+    await runWrite(cmd, s, [await planCreateApp(s, o)], o.yes);
+  });
   const adUnits = program2.command("ad-units").description("Ad units in the account");
   adUnits.command("list").description("List ad units").option("--app <alias|id>", "only ad units of this app").action(async (o, cmd) => emit(cmd, adUnitsView(await svc(cmd).adUnits({ app: o.app }))));
+  adUnits.command("create").description("Create an ad unit (v1beta write; needs admob.monetization and Google allowlisting)").requiredOption("--app <alias|id>", "the app").requiredOption("--name <name>", "display name").requiredOption("--format <format>", "app-open, banner, interstitial, native, rewarded or rewarded-interstitial").option("--ad-types <types>", "rich-media and/or video, comma-separated", list).option("--reward <amount:item>", "reward settings for rewarded units, e.g. 10:coins").addOption(yesOption()).action(async (o, cmd) => {
+    let reward;
+    if (o.reward) {
+      const m = /^(\d+):(.+)$/.exec(o.reward.trim());
+      if (!m) throw new AdmobctlError("USAGE", `--reward expects amount:item like 10:coins, got "${o.reward}"`);
+      reward = { amount: Number(m[1]), item: m[2].trim() };
+    }
+    const s = svc(cmd);
+    await runWrite(cmd, s, [await planCreateAdUnit(s, { app: o.app, name: o.name, format: o.format, adTypes: o.adTypes, reward })], o.yes);
+  });
+  adUnits.command("map <ad-unit>").description("Map an ad unit to a third-party ad source adapter (v1beta write)").requiredOption("--ad-source <name|id>", "the ad source (admobctl ad-sources list)").requiredOption("--adapter <title|id>", "the adapter (admobctl ad-sources adapters <source>)").option("--name <name>", "display name for the mapping").option("--set <label=value>", 'an adapter setting, repeatable (e.g. "Placement ID=abc")', repeat).addOption(yesOption()).action(async (adUnit, o, cmd) => {
+    const s = svc(cmd);
+    const plan = await planCreateMapping(s, { adUnit, adSource: o.adSource, adapter: o.adapter, name: o.name, settings: parsePairs(o.set, "--set") });
+    await runWrite(cmd, s, [plan], o.yes);
+  });
+  adUnits.command("map-batch").description("Create many ad unit mappings from a JSON file, 100 per request (v1beta write)").requiredOption("--file <path>", "JSON array of {adUnit, adSource, adapter, name?, settings}").addOption(yesOption()).action(async (o, cmd) => {
+    const s = svc(cmd);
+    await runWrite(cmd, s, await planCreateMappings(s, parseMappingEntries(readJsonFile(o.file))), o.yes);
+  });
   adUnits.command("mappings <ad-unit>").description("Third-party ad unit mappings of an ad unit (name or ID; AdMob API v1beta)").action(async (adUnit, _o, cmd) => emit(cmd, mappingsView(await svc(cmd).adUnitMappings(adUnit))));
   const adSources = program2.command("ad-sources").description("Mediation ad sources and their adapters (AdMob API v1beta)");
   adSources.command("list").description("List the ad sources available for mediation").action(async (_o, cmd) => emit(cmd, adSourcesView(await svc(cmd).adSources())));
@@ -13631,7 +14061,34 @@ function buildProgram(io) {
   groups.command("list").description("List mediation groups with their targeting, lines and A/B experiment state").option("--app <alias|id>", "only groups targeting this app").option("--ad-source <name|id>", "only groups with a line for this ad source").option("--format <format>", "e.g. banner, interstitial, rewarded").option("--platform <platform>", "ios or android").option("--state <state>", "enabled or disabled").action(
     async (o, cmd) => emit(cmd, mediationGroupsView(await svc(cmd).mediationGroups(o)))
   );
-  groups.command("show <group>").description("Show one mediation group's lines (name or ID)").action(async (group, _o, cmd) => emit(cmd, mediationGroupView(findGroup(await svc(cmd).mediationGroups(), group))));
+  groups.command("show <group>").description("Show one mediation group's lines (name or ID)").action(async (group, _o, cmd) => emit(cmd, mediationGroupView(await svc(cmd).mediationGroup(group))));
+  groups.command("create").description("Create a mediation group from a MediationGroup JSON file (v1beta write)").requiredOption("--file <path>", 'MediationGroup JSON; new lines keyed "-1", "-2"\u2026').addOption(yesOption()).action(async (o, cmd) => {
+    const s = svc(cmd);
+    await runWrite(cmd, s, [await planCreateMediationGroup(s, readJsonFile(o.file))], o.yes);
+  });
+  groups.command("set-line <group> <line>").description("Change a mediation line's manual CPM (USD), state or name (v1beta write)").option("--cpm <usd>", "manual CPM in USD (MANUAL lines only)", positiveAmount).option("--state <state>", "enabled or disabled").option("--name <name>", "new display name").addOption(yesOption()).action(async (group, line, o, cmd) => {
+    const s = svc(cmd);
+    await runWrite(cmd, s, [await planUpdateLine(s, { group, line, cpm: o.cpm, state: o.state, name: o.name })], o.yes);
+  });
+  groups.command("add-line <group>").description("Add a mediation line to a group (v1beta write)").requiredOption("--ad-source <name|id>", "the ad source").requiredOption("--name <name>", "display name for the line").option("--cpm <usd>", "manual CPM in USD; omit for a LIVE (bidding/optimized) line", positiveAmount).option("--mapping <ad-unit=mapping>", "ad unit mapping resource for an ad unit, repeatable", repeat).addOption(yesOption()).action(async (group, o, cmd) => {
+    const s = svc(cmd);
+    const plan = await planAddLine(s, { group, adSource: o.adSource, name: o.name, cpm: o.cpm, mappings: parsePairs(o.mapping, "--mapping") });
+    await runWrite(cmd, s, [plan], o.yes);
+  });
+  groups.command("set-ad-units <group> <ad-units...>").description("Replace the ad units a mediation group targets (v1beta write)").addOption(yesOption()).action(async (group, adUnits2, o, cmd) => {
+    const s = svc(cmd);
+    await runWrite(cmd, s, [await planSetGroupAdUnits(s, { group, adUnits: adUnits2 })], o.yes);
+  });
+  const experiment = groups.command("experiment").description("Mediation A/B experiments (v1beta write)");
+  experiment.command("start <group>").description("Start an A/B experiment: a share of traffic gets the treatment lines").requiredOption("--name <name>", "experiment name").requiredOption("--percent <n>", "share of traffic for the treatment (1-99)", positiveInt).requiredOption("--lines <path>", "JSON array of the treatment's mediation lines").addOption(yesOption()).action(async (group, o, cmd) => {
+    const s = svc(cmd);
+    const lines = readJsonFile(o.lines);
+    await runWrite(cmd, s, [await planStartExperiment(s, { group, name: o.name, percent: o.percent, lines })], o.yes);
+  });
+  experiment.command("stop <group>").description("Stop the running A/B experiment and keep one variant").requiredOption("--keep <A|B>", "A keeps the original lines, B the treatment").addOption(yesOption()).action(async (group, o, cmd) => {
+    const s = svc(cmd);
+    await runWrite(cmd, s, [await planStopExperiment(s, { group, keep: o.keep })], o.yes);
+  });
   const report = program2.command("report").description("Network and mediation reports");
   for (const kind of ["network", "mediation"]) {
     report.command(kind).description(`Generate a ${kind} report`).requiredOption("--from <date>", "start, YYYY-MM or YYYY-MM-DD").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD (default: same as --from)").option("--by <dims>", `dimensions, comma-separated (e.g. app,country${kind === "mediation" ? ",ad-source" : ""})`, list).option("--metrics <metrics>", "metrics, comma-separated (default: all common ones)", list).option("--filter <k=v,\u2026>", "filter, repeatable (e.g. country=NO,SE or app=<alias>)", (v, p = []) => [...p, v]).option("--max-rows <n>", "cap the number of rows", positiveInt).option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)").action(async (o, cmd) => {
@@ -43068,6 +43525,8 @@ var INSTRUCTIONS = `Read-only access to the user's Google AdMob account via admo
 - For SDK/app-version problems, consent impact or mediation waterfalls use the admobctl_analyze_* tools.
 - Ad sources, adapters, mediation groups, ad unit mappings and campaign reports use AdMob API v1beta. Google limits some of
   these to allowlisted accounts; a "v1beta" permission error is not a setup mistake, so pass its Fix line on and move on.
+- These tools never change anything. Changes (creating apps, ad units or mappings; editing mediation groups; A/B
+  experiments) exist only as admobctl CLI commands, which print a plan and send nothing unless the user adds --yes.
 - Errors include a "Fix:" line with the exact command the user should run.`;
 var annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 var accountArg = { account: external_exports.string().optional().describe("Publisher ID (pub-\u2026). Defaults to the configured or only account.") };

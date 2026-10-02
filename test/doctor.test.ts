@@ -101,4 +101,15 @@ describe("runDoctor", () => {
     expect(checks.beta!.summary).toMatch(/ad sources: ok; mediation groups: no access/);
     expect(checks.beta!.fix).toBe("ask your account manager");
   });
+
+  it("says when write commands are enabled by the monetization scope", async () => {
+    const checks = byId(
+      await runDoctor({
+        ...okDeps(),
+        tokenInfo: async () => ({ scopes: ["https://www.googleapis.com/auth/admob.readonly", "https://www.googleapis.com/auth/admob.monetization"] }),
+      }),
+    );
+    expect(checks.scope!.status).toBe("ok");
+    expect(checks.scope!.summary).toMatch(/admob\.monetization \(write commands enabled\)/);
+  });
 });
