@@ -76,6 +76,7 @@ describe("mcp server", () => {
         "admobctl_list_adapters",
         "admobctl_list_mediation_groups",
         "admobctl_finance_export",
+        "admobctl_finance_forecast",
         "admobctl_finance_month",
         "admobctl_finance_range",
         "admobctl_insights",

@@ -8,7 +8,7 @@ import { analyzeConsent, analyzeVersions, analyzeWaterfall, VERSION_KINDS, type 
 import { checkAppAds } from "../core/app-ads.js";
 import { readAudit } from "../core/audit.js";
 import { AdmobctlError } from "../core/errors.js";
-import { financeMonth, financeRange, journalRows } from "../core/finance.js";
+import { financeForecast, financeMonth, financeRange, journalRows } from "../core/finance.js";
 import { EXPORT_FORMATS, exportJournal } from "../core/journal.js";
 import { INSIGHT_DIMENSIONS, insights, type InsightDimension } from "../core/insights.js";
 import { log } from "../core/log.js";
@@ -40,6 +40,7 @@ import {
   auditLogView,
   consentView,
   doctorView,
+  financeForecastView,
   financeMonthView,
   financeRangeView,
   insightsView,
@@ -503,6 +504,10 @@ export function buildProgram(io: CliIO): Command {
       const m = await financeMonth(s, month);
       emitFinance(cmd, o.as, financeMonthView(m), () => journalView(journalRows(m, s.profile.finance), m.notes));
     });
+  finance
+    .command("forecast [YYYY-MM]")
+    .description("Month-to-date earnings per app and a month-end projection from the daily average (default: this month)")
+    .action(async (month: string | undefined, _o, cmd: Command) => emit(cmd, financeForecastView(await financeForecast(svc(cmd), month))));
   finance
     .command("export")
     .description("Export accrual vouchers in the Revenue Journal format (spec/SPEC.md), for accounting imports")

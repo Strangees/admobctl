@@ -59,6 +59,7 @@ admobctl report mediation --from 2026-09 --by ad-source
 admobctl finance month 2026-09                       # per app + total
 admobctl finance month 2026-09 --as journal          # paste-ready journal rows (TSV)
 admobctl finance range --from 2026-01 --to 2026-09
+admobctl finance forecast                             # this month so far + month-end projection
 admobctl finance export --month 2026-09               # Revenue Journal JSON for accounting imports
 admobctl finance export --from 2026-01 --to 2026-09 --as revenue-journal-csv
 
@@ -165,7 +166,7 @@ The MCP server stays read-only: no write is exposed as an MCP tool.
 
 ## MCP server
 
-`admobctl mcp` serves read-only tools over stdio: `admobctl_list_accounts`, `admobctl_list_apps`, `admobctl_list_ad_units`, `admobctl_network_report`, `admobctl_mediation_report`, `admobctl_finance_month`, `admobctl_finance_range`, `admobctl_finance_export`, `admobctl_insights`, `admobctl_analyze_versions`, `admobctl_analyze_consent`, `admobctl_analyze_waterfall`, `admobctl_campaign_report`, `admobctl_list_ad_sources`, `admobctl_list_adapters`, `admobctl_list_mediation_groups`, `admobctl_list_ad_unit_mappings` and `admobctl_check_app_ads`. Reports default to 200 rows and are trimmed with a notice to stay within roughly 25k tokens.
+`admobctl mcp` serves read-only tools over stdio: `admobctl_list_accounts`, `admobctl_list_apps`, `admobctl_list_ad_units`, `admobctl_network_report`, `admobctl_mediation_report`, `admobctl_finance_month`, `admobctl_finance_range`, `admobctl_finance_export`, `admobctl_finance_forecast`, `admobctl_insights`, `admobctl_analyze_versions`, `admobctl_analyze_consent`, `admobctl_analyze_waterfall`, `admobctl_campaign_report`, `admobctl_list_ad_sources`, `admobctl_list_adapters`, `admobctl_list_mediation_groups`, `admobctl_list_ad_unit_mappings` and `admobctl_check_app_ads`. Reports default to 200 rows and are trimmed with a notice to stay within roughly 25k tokens.
 
 ## Agent plugin (Claude Code and Codex)
 

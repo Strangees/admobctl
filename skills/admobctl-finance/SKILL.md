@@ -19,6 +19,12 @@ If the tool returns `complete: false`, say the month is not over yet and the fig
 
 For a range or year-to-date, use `admobctl_finance_range` (CLI: `admobctl finance range --from YYYY-MM --to YYYY-MM`).
 
+## This month so far and where it will end
+
+For "how is this month going" or "what will this month end at", call `admobctl_finance_forecast` (CLI:
+`admobctl finance forecast`). Report `month_to_date` as the estimate so far and `projected` as a projection, with the
+days it is based on (`days_elapsed` of `days_in_month`). Never put the projection in journal rows or call it earnings.
+
 ## A file for an accounting import
 
 When the user wants a file their accounting system can import (not rows to paste), call `admobctl_finance_export` with
