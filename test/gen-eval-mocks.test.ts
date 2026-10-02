@@ -46,6 +46,30 @@ function adUnitReport(units: Unit[]) {
   ];
 }
 
+/** 30 days ending 2026-10-01: about 3 a day, then about 2 a day from 2026-09-20. */
+function dailyReport() {
+  return [
+    { header: { localizationSettings: { currencyCode: "NOK" }, reportingTimeZone: "Europe/Oslo" } },
+    ...Array.from({ length: 30 }, (_, i) => {
+      const d = new Date(Date.UTC(2026, 8, 2 + i));
+      const value = `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, "0")}${String(d.getUTCDate()).padStart(2, "0")}`;
+      const earnings = (i < 18 ? 3_000_000 : 2_000_000) + (i % 3) * 100_000;
+      return {
+        row: {
+          dimensionValues: { DATE: { value } },
+          metricValues: {
+            ESTIMATED_EARNINGS: { microsValue: String(earnings) },
+            AD_REQUESTS: { integerValue: "2000" },
+            MATCHED_REQUESTS: { integerValue: "1500" },
+            IMPRESSIONS: { integerValue: String(i < 18 ? 1200 : 800) },
+          },
+        },
+      };
+    }),
+    { footer: { matchingRowCount: "30" } },
+  ];
+}
+
 it.skipIf(!process.env.GEN_MOCKS)("generate eval mocks", async () => {
   const f = fakeFetch({
     "GET /v1/accounts?": () => jsonResponse(fixture("accounts.json")),
@@ -53,6 +77,7 @@ it.skipIf(!process.env.GEN_MOCKS)("generate eval mocks", async () => {
     "GET /adUnits": () => jsonResponse(fixture("ad-units.json")),
     "POST /networkReport:generate": (c: RecordedCall) => {
       const spec = (c.body as { reportSpec: { dimensions: string[]; dateRange: { startDate: { month: number } } } }).reportSpec;
+      if (spec.dimensions.includes("DATE")) return jsonResponse(dailyReport());
       if (spec.dimensions.includes("AD_UNIT")) return jsonResponse(adUnitReport(spec.dateRange.startDate.month === 9 ? current : previous));
       if (spec.dimensions.includes("GMA_SDK_VERSION")) return jsonResponse(fixture("network-report-by-sdk-version.json"));
       if (spec.dimensions.includes("SERVING_RESTRICTION")) return jsonResponse(fixture("network-report-by-serving-restriction.json"));
@@ -98,6 +123,7 @@ it.skipIf(!process.env.GEN_MOCKS)("generate eval mocks", async () => {
     admobctl_analyze_versions: { by: "sdk", last_days: 30 },
     admobctl_analyze_consent: { last_days: 30 },
     admobctl_analyze_waterfall: { last_days: 30 },
+    admobctl_analyze_trend: { last_days: 30 },
     admobctl_campaign_report: { from: "2026-09", by: ["campaign"] },
     admobctl_list_ad_sources: {},
     admobctl_list_adapters: { ad_source: "Example Bidder" },

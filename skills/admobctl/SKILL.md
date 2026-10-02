@@ -20,6 +20,7 @@ Read-only access to the user's AdMob account through the `admobctl` MCP tools (p
 | A specific breakdown (by country, format, date, ad unit…) | `admobctl_network_report` | `admobctl report network --from … --by …` |
 | Ad sources / mediation | `admobctl_mediation_report` | `admobctl report mediation --from … --by ad-source` |
 | Mediation waterfall, which lines earn, idle lines | `admobctl_analyze_waterfall` | `admobctl analyze waterfall` |
+| When did revenue change, is there a weekday pattern | `admobctl_analyze_trend` | `admobctl analyze trend [--by app]` |
 | Did an SDK upgrade or app release hurt fill / show rate | `admobctl_analyze_versions` | `admobctl analyze versions --by sdk\|app\|os` |
 | Consent / non-personalized ads / RDP impact on eCPM | `admobctl_analyze_consent` | `admobctl analyze consent` |
 | How mediation is set up: groups, lines, A/B tests | `admobctl_list_mediation_groups` | `admobctl mediation-groups list` / `show <group>` |

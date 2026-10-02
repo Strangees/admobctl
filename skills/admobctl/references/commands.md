@@ -142,6 +142,7 @@ A health check for cron or a scheduled agent. Compares the window (complete days
 admobctl analyze versions  [--by sdk|app|os] [--app <alias>] [--last 30d | --from … --to …]
 admobctl analyze consent   [--app <alias>] [--currency X] [--last 30d | --from … --to …]
 admobctl analyze waterfall [--app <alias>] [--group <name|id>] [--currency X] [--last 30d | --from … --to …]
+admobctl analyze trend     [--by total|app|format|country|platform] [--app <alias>] [--currency X] [--last 30d | --from … --to …]
 ```
 
 - `versions`: requests, share of the group (platform, or app for app versions), match rate, show rate, CTR per
@@ -153,12 +154,19 @@ admobctl analyze waterfall [--app <alias>] [--group <name|id>] [--currency X] [-
   earnings and `earnings_share` of the group, requests, match rate, impressions), sorted by group earnings then eCPM.
   Highlights `top` (per group), `idle` (requests but no impressions), `low-fill` (<2% match rate on ≥5% of the group's requests).
 
+- `trend`: one series (the account, or `--app`) or one per `--by` value (the ten biggest). Per series: `earnings`,
+  `average_per_day`, `first_active` (first day with traffic; earlier days are left out of the averages, later days
+  without traffic count as zero), `weekdays` (average per weekday) and `days` (date, weekday, earnings, requests,
+  match rate, show rate, eCPM). `shift` is set when daily earnings moved to a new level: `date`, `before_per_day`,
+  `after_per_day`, `change`. Highlights: `shift-up`, `shift-down`, `weekday` (best weekday ≥ 1.3× the worst),
+  `started`. The table shows the days for one series and one line per series otherwise.
+
 ## MCP tools (`admobctl mcp`)
 
 admobctl_list_accounts, admobctl_list_apps, admobctl_list_ad_units, admobctl_network_report,
 admobctl_mediation_report, admobctl_finance_month, admobctl_finance_range, admobctl_finance_export, admobctl_finance_forecast,
 admobctl_insights, admobctl_check,
-admobctl_analyze_versions, admobctl_analyze_consent, admobctl_analyze_waterfall, admobctl_campaign_report,
+admobctl_analyze_versions, admobctl_analyze_consent, admobctl_analyze_waterfall, admobctl_analyze_trend (`include_days` for the daily rows), admobctl_campaign_report,
 admobctl_list_ad_sources, admobctl_list_adapters (`ad_source`), admobctl_list_mediation_groups,
 admobctl_list_ad_unit_mappings (`ad_unit`), admobctl_check_app_ads.
 They take the same arguments as the CLI, in snake_case: `max_rows`, `sort`, `compare`, `include_journal`, `last_days`.

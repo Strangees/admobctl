@@ -14174,6 +14174,148 @@ function renderTsv({ columns, rows }) {
 `;
 }
 
+// src/core/trend.ts
+var TREND_SPLITS = ["total", "app", "format", "country", "platform"];
+var SPLIT_DIM = { app: "APP", format: "FORMAT", country: "COUNTRY", platform: "PLATFORM" };
+var WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+var MAX_SERIES = 10;
+var mean = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
+var squares = (xs, m) => xs.reduce((a, x) => a + (x - m) ** 2, 0);
+function levelShift(values) {
+  const MIN_SIDE = 3;
+  if (values.length < 2 * MIN_SIDE + 1) return void 0;
+  const total = squares(values, mean(values));
+  if (total === 0) return void 0;
+  let best;
+  for (let i = MIN_SIDE; i <= values.length - MIN_SIDE; i++) {
+    const before = mean(values.slice(0, i));
+    const after = mean(values.slice(i));
+    const left = squares(values.slice(0, i), before) + squares(values.slice(i), after);
+    if (!best || left < best.left) best = { index: i, before, after, left };
+  }
+  if (!best || best.before <= 0) return void 0;
+  if ((total - best.left) / total < 0.5 || Math.abs(best.after - best.before) / best.before < 0.2) return void 0;
+  return { index: best.index, before: best.before, after: best.after };
+}
+var weekdayOf = (d) => WEEKDAYS[(new Date(Date.UTC(d.year, d.month - 1, d.day)).getUTCDay() + 6) % 7];
+async function analyzeTrend(svc, opts = {}) {
+  const by = opts.by ?? "total";
+  if (!TREND_SPLITS.includes(by)) throw usageError(`--by must be one of ${TREND_SPLITS.join(", ")}`);
+  const dim = by === "total" ? void 0 : SPLIT_DIM[by];
+  const [r, apps] = await Promise.all([
+    fetchReport(svc, "network", {
+      ...opts,
+      by: dim ? ["DATE", dim] : ["DATE"],
+      metrics: ["ESTIMATED_EARNINGS", "AD_REQUESTS", "MATCHED_REQUESTS", "IMPRESSIONS"],
+      filters: opts.app ? { app: [opts.app] } : void 0
+    }),
+    by === "app" ? svc.apps() : Promise.resolve([])
+  ]);
+  const alias = new Map(apps.map((a) => [a.appId, a.alias]));
+  const totalLabel = opts.app ? (await svc.resolveApp(opts.app)).alias : "All apps";
+  const bySeries = /* @__PURE__ */ new Map();
+  for (const row of r.report.rows) {
+    const d = dim ? row.dimensions[dim] : void 0;
+    const key = dim ? d?.value ?? "(unknown)" : "total";
+    const label2 = !dim ? totalLabel : by === "app" ? alias.get(key) ?? d?.label ?? key : d?.label ?? key;
+    const series = bySeries.get(key) ?? { label: label2, days: /* @__PURE__ */ new Map() };
+    const date5 = row.dimensions.DATE?.value ?? "";
+    const sums = series.days.get(date5) ?? { earnings: 0, requests: 0, matched: 0, impressions: 0 };
+    sums.earnings += row.metrics.ESTIMATED_EARNINGS ?? 0;
+    sums.requests += row.metrics.AD_REQUESTS ?? 0;
+    sums.matched += row.metrics.MATCHED_REQUESTS ?? 0;
+    sums.impressions += row.metrics.IMPRESSIONS ?? 0;
+    series.days.set(date5, sums);
+    bySeries.set(key, series);
+  }
+  const apiDate = (d) => `${d.year}${String(d.month).padStart(2, "0")}${String(d.day).padStart(2, "0")}`;
+  const money = (micros) => formatMicros(Math.round(micros));
+  const highlights = [];
+  const all = [...bySeries.entries()].map(([key, s]) => {
+    const days = [];
+    for (let d = r.range.startDate; compareDates(d, r.range.endDate) <= 0; d = addDays(d, 1)) {
+      const sums = s.days.get(apiDate(d));
+      if (!days.length && !sums?.requests && !sums?.earnings) continue;
+      const v = sums ?? { earnings: 0, requests: 0, matched: 0, impressions: 0 };
+      days.push({
+        date: formatDate(d),
+        weekday: weekdayOf(d),
+        earnings: microsToAmount(v.earnings),
+        earnings_micros: v.earnings,
+        requests: v.requests,
+        impressions: v.impressions,
+        match_rate: ratio(v.matched, v.requests),
+        show_rate: ratio(v.impressions, v.matched),
+        ecpm: perMille(v.earnings, v.impressions)
+      });
+    }
+    const total = days.reduce((a, d) => a + d.earnings_micros, 0);
+    const series = {
+      key,
+      label: s.label,
+      earnings: microsToAmount(total),
+      earnings_micros: total,
+      active_days: days.length,
+      average_per_day: days.length ? microsToAmount(Math.round(total / days.length)) : 0,
+      weekdays: WEEKDAYS.map((weekday) => {
+        const same = days.filter((d) => d.weekday === weekday);
+        return { weekday, days: same.length, average: same.length ? microsToAmount(Math.round(mean(same.map((d) => d.earnings_micros)))) : 0 };
+      })
+    };
+    if (days.length) series.first_active = days[0].date;
+    const shift = levelShift(days.map((d) => d.earnings_micros));
+    if (shift) {
+      const change2 = (shift.after - shift.before) / shift.before;
+      series.shift = {
+        date: days[shift.index].date,
+        before_per_day: microsToAmount(Math.round(shift.before)),
+        after_per_day: microsToAmount(Math.round(shift.after)),
+        change: change2
+      };
+    }
+    if (opts.days !== false) series.days = days;
+    return series;
+  });
+  all.sort((a, b) => b.earnings_micros - a.earnings_micros || a.label.localeCompare(b.label));
+  const rows = all.slice(0, MAX_SERIES);
+  for (const s of rows) {
+    if (s.shift) {
+      const up = s.shift.change > 0;
+      highlights.push({
+        kind: up ? "shift-up" : "shift-down",
+        key: s.key,
+        label: s.label,
+        message: `${s.label} ${up ? "rose" : "fell"} from ${s.shift.before_per_day.toFixed(2)} to ${s.shift.after_per_day.toFixed(2)} ${r.currency} per day around ${s.shift.date} (${signedPct(s.shift.change)}).`
+      });
+    }
+    if (s.first_active && s.first_active !== r.from) {
+      highlights.push({ kind: "started", key: s.key, label: s.label, message: `${s.label} has no traffic before ${s.first_active}; averages count from that day.` });
+    }
+    const known = s.weekdays.filter((w) => w.days >= 2);
+    if (!s.shift && known.length === 7) {
+      const high = known.reduce((a, w) => w.average > a.average ? w : a);
+      const low = known.reduce((a, w) => w.average < a.average ? w : a);
+      if (low.average > 0 && high.average >= 1.3 * low.average) {
+        highlights.push({
+          kind: "weekday",
+          key: s.key,
+          label: s.label,
+          message: `${s.label} earns most on ${high.weekday} (${high.average.toFixed(2)} ${r.currency} on average); the lowest day is ${low.weekday} (${low.average.toFixed(2)}). Compare like weekdays before calling a day a drop.`
+        });
+      }
+    }
+  }
+  const overall = all.reduce((a, s) => a + s.earnings_micros, 0);
+  const summary = [
+    `Estimated earnings ${money(overall)} ${r.currency}, ${r.from} \u2192 ${r.to}${by === "total" ? "" : `, ${all.length} ${by} series`}.`,
+    ...highlights.length ? highlights.map((h) => h.message) : ["No clear step in daily earnings and no weekday pattern in this period."],
+    ESTIMATE_LABEL
+  ];
+  const notices = [...r.notices];
+  if (all.length > rows.length) notices.push(`Showing the ${rows.length} of ${all.length} series with the highest earnings.`);
+  return { by, from: r.from, to: r.to, timeZone: r.timeZone, currency: r.currency, estimate: true, rows, highlights, summary, notices };
+}
+
 // src/cli/views.ts
 var ESTIMATE_NOTE = "Estimated earnings \u2014 reconcile against AdMob Payments (finalized).";
 function accountsView(accounts) {
@@ -14667,6 +14809,55 @@ function checkView(r) {
     notes: [...r.summary, ...r.notices]
   };
 }
+function trendView(r) {
+  const notes = [...r.summary, ...r.notices];
+  const only = r.rows.length === 1 ? r.rows[0] : void 0;
+  if (only?.days) {
+    return {
+      data: r,
+      table: {
+        columns: [
+          { key: "date", label: "Date" },
+          { key: "weekday", label: "Day" },
+          { key: "earnings", label: `Earnings (${r.currency})`, align: "right" },
+          { key: "requests", label: "Requests", align: "right" },
+          { key: "match_rate", label: "Match", align: "right" },
+          { key: "show_rate", label: "Show", align: "right" },
+          { key: "ecpm", label: "eCPM", align: "right" }
+        ],
+        rows: only.days.map((d) => ({
+          ...d,
+          earnings: formatMicros(d.earnings_micros),
+          match_rate: formatPercent(d.match_rate),
+          show_rate: formatPercent(d.show_rate),
+          ecpm: d.ecpm.toFixed(2)
+        })),
+        footer: [{ date: "Total", earnings: formatMicros(only.earnings_micros) }]
+      },
+      notes
+    };
+  }
+  return {
+    data: r,
+    table: {
+      columns: [
+        { key: "label", label: titleCase(r.by) },
+        { key: "earnings", label: `Earnings (${r.currency})`, align: "right" },
+        { key: "average_per_day", label: "Per day", align: "right" },
+        { key: "first_active", label: "First traffic" },
+        { key: "shift", label: "Level change" }
+      ],
+      rows: r.rows.map((s) => ({
+        label: s.label,
+        earnings: formatMicros(s.earnings_micros),
+        average_per_day: s.average_per_day.toFixed(2),
+        first_active: s.first_active ?? "",
+        shift: s.shift ? `${signedPercent(s.shift.change)} around ${s.shift.date}` : ""
+      }))
+    },
+    notes
+  };
+}
 
 // src/cli/program.ts
 var list = (v, prev = []) => [...prev, ...v.split(",").map((s) => s.trim()).filter(Boolean)];
@@ -14963,7 +15154,7 @@ function buildProgram(io) {
   });
   const withRange = (cmd) => cmd.option("--last <Nd>", "the last N complete days (default 30d)", (v) => parseDays(v)).option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD");
   const range = (o) => ({ last: o.last, from: o.from, to: o.to });
-  const analyze = program2.command("analyze").description("Curated analyses: SDK/app/OS version health, consent (serving restriction) impact, mediation waterfall");
+  const analyze = program2.command("analyze").description("Curated analyses: SDK/app/OS version health, consent (serving restriction) impact, mediation waterfall, daily trend");
   withRange(
     analyze.command("versions").description("Match and show rate per SDK, app or OS version, flagging versions that do worse than the rest").addOption(new Option("--by <kind>", "which version").choices([...VERSION_KINDS]).default("sdk")).option("--app <alias|id>", "only this app")
   ).action(async (o, cmd) => {
@@ -14978,6 +15169,11 @@ function buildProgram(io) {
     analyze.command("waterfall").description("Mediation lines per group by observed eCPM, with idle and low-fill lines flagged").option("--app <alias|id>", "only this app").option("--group <name|id>", "only this mediation group").option("--currency <code>", "convert earnings to this ISO 4217 currency")
   ).action(async (o, cmd) => {
     emit(cmd, waterfallView(await analyzeWaterfall(svc(cmd), { ...range(o), app: o.app, group: o.group, currency: o.currency })));
+  });
+  withRange(
+    analyze.command("trend").description("Daily earnings series: the day a level change started, weekday pattern, first day with traffic").addOption(new Option("--by <split>", "one series per").choices([...TREND_SPLITS]).default("total")).option("--app <alias|id>", "only this app").option("--currency <code>", "convert earnings to this ISO 4217 currency")
+  ).action(async (o, cmd) => {
+    emit(cmd, trendView(await analyzeTrend(svc(cmd), { ...range(o), by: o.by, app: o.app, currency: o.currency })));
   });
   program2.command("mcp").description("Run the MCP server over stdio (for Claude Code, Codex and other MCP clients)").action(async (_o, cmd) => {
     if (!io.runMcp) throw new AdmobctlError("USAGE", "The mcp command is not available in this build (no MCP server wired in).");
@@ -44798,6 +44994,31 @@ function createMcpServer(deps) {
     wrap(
       async (a) => fitRows({ ...await analyzeWaterfall(svc(a), { ...range(a), app: a.app, group: a.group, currency: a.currency }) })
     )
+  );
+  server.registerTool(
+    "admobctl_analyze_trend",
+    {
+      title: "AdMob daily trend",
+      description: 'Daily earnings as a series, to answer "when did it change?": per series the day earnings moved to a new level (`shift`: date, before and after per day, change), the average per weekday, and the first day with traffic. One series for the whole account or one app, or split by app, format, country or platform (the ten biggest). Days without traffic before a series starts are left out of the averages. Set include_days for the day-by-day rows. Earnings are estimates.',
+      inputSchema: {
+        by: external_exports.enum(TREND_SPLITS).optional().describe("One series per app, format, country or platform. Default: total (one series)."),
+        ...appArg,
+        include_days: external_exports.boolean().optional().describe("Also return each series' daily rows (default false)"),
+        ...rangeInput,
+        ...currencyArg,
+        ...accountArg
+      },
+      outputSchema: analysisOutput({ by: external_exports.string(), currency: external_exports.string(), estimate: external_exports.literal(true) }),
+      annotations
+    },
+    wrap(async (a) => {
+      const r = await analyzeTrend(svc(a), { ...range(a), by: a.by, app: a.app, currency: a.currency, days: a.include_days === true });
+      if (textOf(r).length > MAX_TEXT_CHARS) {
+        for (const s of r.rows) delete s.days;
+        r.notices.push("The daily rows did not fit the context limit and were left out. Ask for a shorter range, one app, or no split.");
+      }
+      return fitRows({ ...r });
+    })
   );
   return server;
 }

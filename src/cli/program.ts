@@ -30,6 +30,7 @@ import {
 } from "../core/write.js";
 import { AdmobService, COMPARISONS, type ServiceDeps, type ServiceOptions } from "../core/service.js";
 import { defaultFormat, OUTPUT_FORMATS, render, renderTsv, type Output, type OutputFormat } from "../output/format.js";
+import { analyzeTrend, TREND_SPLITS, type TrendSplit } from "../core/trend.js";
 import { VERSION } from "../version.js";
 import {
   accountsView,
@@ -52,6 +53,7 @@ import {
   mediationGroupsView,
   mediationGroupView,
   reportView,
+  trendView,
   versionsView,
   waterfallView,
   writeView,
@@ -595,7 +597,7 @@ export function buildProgram(io: CliIO): Command {
   const range = (o: RangeOpts) => ({ last: o.last, from: o.from, to: o.to });
   const analyze = program
     .command("analyze")
-    .description("Curated analyses: SDK/app/OS version health, consent (serving restriction) impact, mediation waterfall");
+    .description("Curated analyses: SDK/app/OS version health, consent (serving restriction) impact, mediation waterfall, daily trend");
   withRange(
     analyze
       .command("versions")
@@ -623,6 +625,17 @@ export function buildProgram(io: CliIO): Command {
       .option("--currency <code>", "convert earnings to this ISO 4217 currency"),
   ).action(async (o: RangeOpts & { app?: string; group?: string; currency?: string }, cmd: Command) => {
     emit(cmd, waterfallView(await analyzeWaterfall(svc(cmd), { ...range(o), app: o.app, group: o.group, currency: o.currency })));
+  });
+
+  withRange(
+    analyze
+      .command("trend")
+      .description("Daily earnings series: the day a level change started, weekday pattern, first day with traffic")
+      .addOption(new Option("--by <split>", "one series per").choices([...TREND_SPLITS]).default("total"))
+      .option("--app <alias|id>", "only this app")
+      .option("--currency <code>", "convert earnings to this ISO 4217 currency"),
+  ).action(async (o: RangeOpts & { by: TrendSplit; app?: string; currency?: string }, cmd: Command) => {
+    emit(cmd, trendView(await analyzeTrend(svc(cmd), { ...range(o), by: o.by, app: o.app, currency: o.currency })));
   });
 
   // ── mcp ───────────────────────────────────────────────────────────
