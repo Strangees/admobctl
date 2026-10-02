@@ -111,7 +111,8 @@ describe("mcp server", () => {
       arguments: { from: "2026-09", by: ["country"] },
     })) as ToolResult;
     const sent = calls.find((c) => c.url.includes("networkReport"))!.body as { reportSpec: { maxReportRows: number } };
-    expect(sent.reportSpec.maxReportRows).toBe(200);
+    // One row more than the cap, to tell a cut-short report from one that fits exactly.
+    expect(sent.reportSpec.maxReportRows).toBe(201);
     expect(r.structuredContent!.truncated).toBe(true);
     expect((r.structuredContent!.rows as unknown[]).length).toBe(200);
     expect(String(r.structuredContent!.notice)).toMatch(/200 of 5000/);

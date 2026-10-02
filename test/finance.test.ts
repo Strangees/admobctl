@@ -113,4 +113,32 @@ describe("financeRange", () => {
     expect(r.total).toBe(245.53);
     expect(r.months[2]!.apps[0]).toMatchObject({ alias: "example-quiz-ios", earnings: 60.13 });
   });
+
+  it("totals a range as the sum of its rounded month totals, so it matches what was booked", async () => {
+    // Exact: 1.004 + 1.004 = 2.008 → 2.01, but the booked months are 1.00 + 1.00 = 2.00.
+    const row = (month: string, micros: number) => ({
+      row: {
+        dimensionValues: { MONTH: { value: month }, APP: { value: "ca-app-pub-0000000000000001~1111111111" } },
+        metricValues: { ESTIMATED_EARNINGS: { microsValue: String(micros) } },
+      },
+    });
+    const dir = mkdtempSync(join(tmpdir(), "admobctl-fin-"));
+    const f = fakeFetch({
+      "GET /v1/accounts?": () => jsonResponse(fixture("accounts.json")),
+      "GET /apps": (c) => jsonResponse(fixture(c.url.includes("pageToken=page2") ? "apps-page2.json" : "apps-page1.json")),
+      "POST /networkReport:generate": () =>
+        jsonResponse([
+          { header: { localizationSettings: { currencyCode: "NOK" }, reportingTimeZone: "Europe/Oslo" } },
+          row("202608", 1_004_000),
+          row("202609", 1_004_000),
+          { footer: { matchingRowCount: "2" } },
+        ]),
+    });
+    const svc = AdmobService.create({}, { configDir: dir, tokenProvider: token, fetch: f.fetch, sleep: noSleep, now: () => new Date("2026-10-02T08:00:00Z") });
+    const r = await financeRange(svc, "2026-08", "2026-09");
+    expect(r.months.map((m) => m.total)).toEqual([1, 1]);
+    expect(r.total).toBe(2);
+    expect(r.totalMicros).toBe(2_008_000);
+    expect(r.notes.join(" ")).toMatch(/sum of the month totals.*2\.01/);
+  });
 });

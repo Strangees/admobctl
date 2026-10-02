@@ -64,7 +64,7 @@ async function readBody(res: Response): Promise<unknown> {
 
 /** What one attempt produced, once its response (including the body) has been fully read. */
 type AttemptOutcome =
-  | { kind: "ok"; body: unknown }
+  | { kind: "ok"; status: number; body: unknown }
   | { kind: "fail"; status: number; body: unknown; retryAfterMs?: number }
   | { kind: "retry"; status: number; wait: number };
 
@@ -82,7 +82,7 @@ async function attemptOnce(
   maxRetryAfterMs: number,
 ): Promise<AttemptOutcome> {
   const res = await doFetch(url, init);
-  if (res.ok) return { kind: "ok", body: await readBody(res) };
+  if (res.ok) return { kind: "ok", status: res.status, body: await readBody(res) };
 
   if (!isRetryableStatus(res.status)) return { kind: "fail", status: res.status, body: await readBody(res) };
 
@@ -115,6 +115,7 @@ export async function requestJson<T = unknown>(url: string, init: RequestInit, o
       timeoutMs,
     );
     let outcome: AttemptOutcome;
+    const started = Date.now();
     try {
       // The timer stays armed until the body has been fully read, not just until headers arrive.
       const signal = combineSignals(timer.signal, init.signal);
@@ -144,8 +145,11 @@ export async function requestJson<T = unknown>(url: string, init: RequestInit, o
       clearTimeout(timeoutId);
     }
 
+    // URL and status only: headers carry the access token and are never logged.
+    log.debug(`${init.method ?? "GET"} ${url} → ${outcome.status} (${Date.now() - started}ms)`);
     if (outcome.kind === "ok") return outcome.body as T;
     if (outcome.kind === "fail") {
+      log.debug(`response: ${(typeof outcome.body === "string" ? outcome.body : JSON.stringify(outcome.body) ?? "").slice(0, 2000)}`);
       throw diagnoseApiError(outcome.status, outcome.body, { retryAfterMs: outcome.retryAfterMs });
     }
     log.debug(`HTTP ${outcome.status}; retrying in ${outcome.wait}ms`);

@@ -161,14 +161,17 @@ export async function financeRange(svc: AdmobService, from: string, to: string):
     buildMonth({ year: Number(key.slice(0, 4)), month: Number(key.slice(4, 6)) }, apps, index, ctx),
   );
   const totalMicros = sumMicros(months.map((m) => m.totalMicros));
-  const total = cents(allocateRounded([totalMicros]).total);
+  // Each month is booked rounded to cents, so the range total is the sum of those, not the exact micros
+  // rounded once; that way it matches the journal and the books.
+  const monthCents = months.reduce((a, m) => a + Math.round(m.total * 100), 0);
+  const total = cents(monthCents);
   const notes = [ESTIMATE_LABEL];
   const incomplete = months.filter((m) => !m.complete).map((m) => m.month);
   if (incomplete.length) notes.push(`Incomplete month(s): ${incomplete.join(", ")}; the figures will change.`);
-  const monthSum = Math.round(months.reduce((a, m) => a + m.total * 100, 0));
-  if (monthSum !== Math.round(total * 100)) {
+  const exact = allocateRounded([totalMicros]).total;
+  if (exact !== monthCents) {
     notes.push(
-      `The month totals add up to ${(monthSum / 100).toFixed(2)}; the range total ${total.toFixed(2)} is rounded from exact micros.`,
+      `The total ${total.toFixed(2)} is the sum of the month totals, as booked; the exact earnings round to ${cents(exact).toFixed(2)}.`,
     );
   }
   return {

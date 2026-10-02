@@ -231,8 +231,25 @@ export class AdmobClient {
   }
 
   async campaignReport(account: string, spec: CampaignReportSpec): Promise<Report> {
-    const raw = await this.request<unknown>("reporting", "POST", `${accountName(account)}/campaignReport:generate`, { reportSpec: spec }, "v1beta");
-    return parseReport(raw);
+    try {
+      const raw = await this.request<unknown>("reporting", "POST", `${accountName(account)}/campaignReport:generate`, { reportSpec: spec }, "v1beta");
+      return parseReport(raw);
+    } catch (err) {
+      // A well-formed spec still gets a bare 400 INVALID_ARGUMENT when the account has no
+      // app-promotion campaigns or is not enabled for this v1beta method.
+      if (err instanceof AdmobctlError && err.status === 400) {
+        throw new AdmobctlError(
+          "CAMPAIGN_REPORT_REJECTED",
+          `The AdMob API rejected the campaign report (400: ${err.message.replace(/^AdMob API error 400: /, "")}). This usually means the account has no AdMob app-promotion campaigns, or is not enabled for campaignReport (AdMob API v1beta).`,
+          {
+            status: 400,
+            cause: err,
+            fix: "Check AdMob → Campaigns for app-promotion campaigns. If you run some there, ask your Google AdMob account manager to enable AdMob API (v1beta) campaign reporting for this account.",
+          },
+        );
+      }
+      throw err;
+    }
   }
 }
 

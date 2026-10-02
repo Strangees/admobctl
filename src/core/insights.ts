@@ -84,12 +84,12 @@ const DIM_API: Record<InsightDimension, string> = {
   platform: "PLATFORM",
 };
 
-function aggregate(report: Report, dim: string, aliasOf: (id: string) => string | undefined): Map<string, Agg> {
+function aggregate(report: Report, dim: string, labelOf: (id: string, name: string | undefined) => string | undefined): Map<string, Agg> {
   const out = new Map<string, Agg>();
   for (const row of report.rows) {
     const d = row.dimensions[dim];
     const key = d?.value ?? "(unknown)";
-    const label = (dim === "APP" ? aliasOf(key) : undefined) ?? d?.label ?? key;
+    const label = labelOf(key, d?.label) ?? d?.label ?? key;
     const a = out.get(key) ?? { key, label, earnings: 0, requests: 0, matched: 0, impressions: 0, clicks: 0 };
     a.earnings += row.metrics.ESTIMATED_EARNINGS ?? 0;
     a.requests += row.metrics.AD_REQUESTS ?? 0;
@@ -124,15 +124,21 @@ export async function insights(svc: AdmobService, opts: InsightsOptions): Promis
   const prevRange = previousPeriod(range);
   const metrics = ["earnings", "requests", "matched-requests", "impressions", "clicks"];
   const dim = DIM_API[opts.by];
-  const [cur, prev, apps] = await Promise.all([
+  const [cur, prev, apps, units] = await Promise.all([
     svc.rawReport("network", { dateRange: range, by: [opts.by], metrics, currency: opts.currency }),
     svc.rawReport("network", { dateRange: prevRange, by: [opts.by], metrics, currency: opts.currency }),
     opts.by === "app" ? svc.apps() : [],
+    opts.by === "ad-unit" ? svc.adUnits() : [],
   ]);
-  const aliasOf = (id: string) => apps.find((a) => a.appId === id)?.alias;
+  // Ad unit names repeat across apps ("ad", "Banner"), so an ad unit is labelled "<app alias> / <name>".
+  const labelOf = (id: string, name: string | undefined) => {
+    if (opts.by === "app") return apps.find((a) => a.appId === id)?.alias;
+    const unit = units.find((u) => u.adUnitId === id);
+    return unit ? `${unit.app} / ${name ?? unit.name}` : undefined;
+  };
 
-  const curAgg = aggregate(cur.report, dim, aliasOf);
-  const prevAgg = aggregate(prev.report, dim, aliasOf);
+  const curAgg = aggregate(cur.report, dim, labelOf);
+  const prevAgg = aggregate(prev.report, dim, labelOf);
   const total = sumMicros([...curAgg.values()].map((a) => a.earnings));
   const prevTotal = sumMicros([...prevAgg.values()].map((a) => a.earnings));
   const totalRequests = [...curAgg.values()].reduce((s, a) => s + a.requests, 0);

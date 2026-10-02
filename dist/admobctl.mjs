@@ -11556,14 +11556,15 @@ async function financeRange(svc, from, to) {
     ([key, apps]) => buildMonth({ year: Number(key.slice(0, 4)), month: Number(key.slice(4, 6)) }, apps, index, ctx)
   );
   const totalMicros = sumMicros(months.map((m) => m.totalMicros));
-  const total = cents(allocateRounded([totalMicros]).total);
+  const monthCents = months.reduce((a, m) => a + Math.round(m.total * 100), 0);
+  const total = cents(monthCents);
   const notes = [ESTIMATE_LABEL];
   const incomplete = months.filter((m) => !m.complete).map((m) => m.month);
   if (incomplete.length) notes.push(`Incomplete month(s): ${incomplete.join(", ")}; the figures will change.`);
-  const monthSum = Math.round(months.reduce((a, m) => a + m.total * 100, 0));
-  if (monthSum !== Math.round(total * 100)) {
+  const exact = allocateRounded([totalMicros]).total;
+  if (exact !== monthCents) {
     notes.push(
-      `The month totals add up to ${(monthSum / 100).toFixed(2)}; the range total ${total.toFixed(2)} is rounded from exact micros.`
+      `The total ${total.toFixed(2)} is the sum of the month totals, as booked; the exact earnings round to ${cents(exact).toFixed(2)}.`
     );
   }
   return {
@@ -11630,12 +11631,12 @@ var DIM_API = {
   format: "FORMAT",
   platform: "PLATFORM"
 };
-function aggregate(report, dim, aliasOf) {
+function aggregate(report, dim, labelOf) {
   const out = /* @__PURE__ */ new Map();
   for (const row of report.rows) {
     const d = row.dimensions[dim];
     const key = d?.value ?? "(unknown)";
-    const label2 = (dim === "APP" ? aliasOf(key) : void 0) ?? d?.label ?? key;
+    const label2 = labelOf(key, d?.label) ?? d?.label ?? key;
     const a = out.get(key) ?? { key, label: label2, earnings: 0, requests: 0, matched: 0, impressions: 0, clicks: 0 };
     a.earnings += row.metrics.ESTIMATED_EARNINGS ?? 0;
     a.requests += row.metrics.AD_REQUESTS ?? 0;
@@ -11665,14 +11666,19 @@ async function insights(svc, opts) {
   const prevRange = previousPeriod(range);
   const metrics = ["earnings", "requests", "matched-requests", "impressions", "clicks"];
   const dim = DIM_API[opts.by];
-  const [cur, prev, apps] = await Promise.all([
+  const [cur, prev, apps, units] = await Promise.all([
     svc.rawReport("network", { dateRange: range, by: [opts.by], metrics, currency: opts.currency }),
     svc.rawReport("network", { dateRange: prevRange, by: [opts.by], metrics, currency: opts.currency }),
-    opts.by === "app" ? svc.apps() : []
+    opts.by === "app" ? svc.apps() : [],
+    opts.by === "ad-unit" ? svc.adUnits() : []
   ]);
-  const aliasOf = (id) => apps.find((a) => a.appId === id)?.alias;
-  const curAgg = aggregate(cur.report, dim, aliasOf);
-  const prevAgg = aggregate(prev.report, dim, aliasOf);
+  const labelOf = (id, name) => {
+    if (opts.by === "app") return apps.find((a) => a.appId === id)?.alias;
+    const unit = units.find((u) => u.adUnitId === id);
+    return unit ? `${unit.app} / ${name ?? unit.name}` : void 0;
+  };
+  const curAgg = aggregate(cur.report, dim, labelOf);
+  const prevAgg = aggregate(prev.report, dim, labelOf);
   const total = sumMicros([...curAgg.values()].map((a) => a.earnings));
   const prevTotal = sumMicros([...prevAgg.values()].map((a) => a.earnings));
   const totalRequests = [...curAgg.values()].reduce((s, a) => s + a.requests, 0);
@@ -12554,7 +12560,7 @@ async function readBody(res) {
 }
 async function attemptOnce(doFetch, url2, init, canRetry, backoff, maxRetryAfterMs) {
   const res = await doFetch(url2, init);
-  if (res.ok) return { kind: "ok", body: await readBody(res) };
+  if (res.ok) return { kind: "ok", status: res.status, body: await readBody(res) };
   if (!isRetryableStatus(res.status)) return { kind: "fail", status: res.status, body: await readBody(res) };
   const retryAfter = retryAfterMs(res);
   if (!canRetry) return { kind: "fail", status: res.status, body: await readBody(res), retryAfterMs: retryAfter };
@@ -12582,6 +12588,7 @@ async function requestJson(url2, init, opts = {}) {
       timeoutMs
     );
     let outcome;
+    const started = Date.now();
     try {
       const signal = combineSignals(timer.signal, init.signal);
       outcome = await attemptOnce(doFetch, url2, { ...init, signal }, attempt < retries, backoff, maxRetryAfterMs);
@@ -12608,8 +12615,10 @@ async function requestJson(url2, init, opts = {}) {
     } finally {
       clearTimeout(timeoutId);
     }
+    log.debug(`${init.method ?? "GET"} ${url2} \u2192 ${outcome.status} (${Date.now() - started}ms)`);
     if (outcome.kind === "ok") return outcome.body;
     if (outcome.kind === "fail") {
+      log.debug(`response: ${(typeof outcome.body === "string" ? outcome.body : JSON.stringify(outcome.body) ?? "").slice(0, 2e3)}`);
       throw diagnoseApiError(outcome.status, outcome.body, { retryAfterMs: outcome.retryAfterMs });
     }
     log.debug(`HTTP ${outcome.status}; retrying in ${outcome.wait}ms`);
@@ -12828,9 +12837,10 @@ function buildReportSpec(kind, input2) {
   if (input2.maxRows !== void 0) spec.maxReportRows = input2.maxRows;
   return spec;
 }
-function metricNumber(v) {
+function metricNumber(key, v) {
   if (v.microsValue !== void 0) return parseMicros(v.microsValue);
   if (v.integerValue !== void 0) return Number(v.integerValue);
+  if (MONEY_METRICS.has(key) && v.doubleValue !== void 0) return Math.round(v.doubleValue * 1e6);
   return v.doubleValue ?? 0;
 }
 function parseReport(raw) {
@@ -12849,7 +12859,7 @@ function parseReport(raw) {
         dimensions[k] = v.displayLabel === void 0 ? { value: v.value ?? "" } : { value: v.value ?? "", label: v.displayLabel };
       }
       const metrics = {};
-      for (const [k, v] of Object.entries(chunk.row.metricValues ?? {})) metrics[k] = metricNumber(v);
+      for (const [k, v] of Object.entries(chunk.row.metricValues ?? {})) metrics[k] = metricNumber(k, v);
       report.rows.push({ dimensions, metrics });
     }
     if (chunk.footer) {
@@ -12963,8 +12973,23 @@ var AdmobClient = class {
     }
   }
   async campaignReport(account, spec) {
-    const raw = await this.request("reporting", "POST", `${accountName(account)}/campaignReport:generate`, { reportSpec: spec }, "v1beta");
-    return parseReport(raw);
+    try {
+      const raw = await this.request("reporting", "POST", `${accountName(account)}/campaignReport:generate`, { reportSpec: spec }, "v1beta");
+      return parseReport(raw);
+    } catch (err) {
+      if (err instanceof AdmobctlError && err.status === 400) {
+        throw new AdmobctlError(
+          "CAMPAIGN_REPORT_REJECTED",
+          `The AdMob API rejected the campaign report (400: ${err.message.replace(/^AdMob API error 400: /, "")}). This usually means the account has no AdMob app-promotion campaigns, or is not enabled for campaignReport (AdMob API v1beta).`,
+          {
+            status: 400,
+            cause: err,
+            fix: "Check AdMob \u2192 Campaigns for app-promotion campaigns. If you run some there, ask your Google AdMob account manager to enable AdMob API (v1beta) campaign reporting for this account."
+          }
+        );
+      }
+      throw err;
+    }
   }
 };
 function methodName(path, httpMethod) {
@@ -13415,12 +13440,15 @@ var AdmobService = class _AdmobService {
     return out;
   }
   async report(kind, q) {
-    const { report, dimensions, metrics, range, notices } = await this.rawReport(kind, q);
+    const cap = q.maxRows ?? API_MAX_ROWS;
+    const probe = cap < API_MAX_ROWS;
+    const { report, dimensions, metrics, range, notices } = await this.rawReport(kind, probe ? { ...q, maxRows: cap + 1 } : q);
     const needsApps = dimensions.includes("APP");
     const apps = needsApps ? await this.apps() : [];
-    const cap = q.maxRows ?? API_MAX_ROWS;
-    if (report.rows.length > cap) report.rows = report.rows.slice(0, cap);
-    const truncated = report.rows.length >= cap && (report.matchingRowCount === void 0 || report.matchingRowCount > report.rows.length);
+    const fetched = report.rows.length;
+    const truncated = probe ? fetched > cap : fetched >= cap && (report.matchingRowCount === void 0 || report.matchingRowCount > fetched);
+    if (truncated && report.matchingRowCount !== void 0 && report.matchingRowCount <= fetched) report.matchingRowCount = void 0;
+    if (fetched > cap) report.rows = report.rows.slice(0, cap);
     const acct = await this.account();
     const result = {
       kind,
