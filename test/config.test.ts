@@ -1,8 +1,9 @@
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { configDir, loadConfig, resolveProfile, saveConfig, setProfileValue } from "../src/core/config.js";
+import { log } from "../src/core/log.js";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "admobctl-test-"));
 
@@ -64,5 +65,43 @@ describe("config", () => {
     expect(() => setProfileValue(cfg, "default", "password", "x")).toThrow(/Unknown config key/);
     expect(() => setProfileValue(cfg, "default", "authMode", "magic")).toThrow(/authMode/);
     expect(() => setProfileValue(cfg, "default", "finance.decimalSeparator", ";")).toThrow(/decimalSeparator/);
+  });
+
+  describe("config dir permissions", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    /** A pre-existing dir with an explicit (umask-proof) 0755 mode. */
+    const looseDir = (name: string) => {
+      const dir = join(tmp(), name);
+      mkdirSync(dir);
+      chmodSync(dir, 0o755);
+      expect(statSync(dir).mode & 0o777).toBe(0o755);
+      return dir;
+    };
+
+    it.skipIf(process.platform === "win32")("creates a missing dir as 0700", () => {
+      const dir = join(tmp(), "fresh", ".admobctl");
+      saveConfig(dir, { profiles: {} });
+      expect(statSync(dir).mode & 0o777).toBe(0o700);
+    });
+
+    it.skipIf(process.platform === "win32")("tightens a pre-existing loose .admobctl dir to 0700", () => {
+      const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
+      const dir = looseDir(".admobctl");
+      saveConfig(dir, { profiles: {} });
+      expect(statSync(dir).mode & 0o777).toBe(0o700);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it.skipIf(process.platform === "win32")("leaves any other loose dir alone and warns with the fix", () => {
+      const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
+      const dir = looseDir("shared");
+      saveConfig(dir, { profiles: {} });
+      expect(statSync(dir).mode & 0o777).toBe(0o755);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toContain(`chmod 700 ${dir}`);
+    });
   });
 });
