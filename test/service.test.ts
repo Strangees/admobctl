@@ -17,7 +17,7 @@ const baseRoutes = {
   "POST /networkReport:generate": () => jsonResponse(fixture("network-report-by-app.json")),
 };
 
-function service(opts: { profile?: Record<string, unknown>; account?: string; routes?: Record<string, never> } = {}) {
+function service(opts: { profile?: Record<string, unknown>; account?: string; routes?: Parameters<typeof fakeFetch>[0] } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "admobctl-svc-"));
   if (opts.profile) saveConfig(dir, { profiles: { default: opts.profile } });
   const f = fakeFetch({ ...baseRoutes, ...opts.routes });
@@ -45,6 +45,36 @@ describe("AdmobService", () => {
   it("errors clearly when the requested account is not accessible", async () => {
     const { svc } = service({ account: "pub-999" });
     await expect(svc.account()).rejects.toThrow(/pub-999.*pub-0000000000000001/);
+  });
+
+  it("retries accounts.list after a failure instead of caching the rejection", async () => {
+    let n = 0;
+    const { svc, calls } = service({
+      routes: {
+        "GET /v1/accounts?": () =>
+          ++n === 1
+            ? jsonResponse({ error: { code: 403, message: "Request had insufficient authentication scopes.", status: "PERMISSION_DENIED" } }, 403)
+            : jsonResponse(fixture("accounts.json")),
+      },
+    });
+    await expect(svc.account()).rejects.toThrow();
+    await expect(svc.apps()).resolves.toHaveLength(3);
+    expect((await svc.account()).publisherId).toBe("pub-0000000000000001");
+    expect(calls.filter((c) => c.url.includes("/v1/accounts?"))).toHaveLength(2);
+  });
+
+  it("retries apps.list after a failure instead of caching the rejection", async () => {
+    let n = 0;
+    const { svc } = service({
+      routes: {
+        "GET /apps": (c) =>
+          ++n === 1
+            ? jsonResponse({ error: { code: 403, message: "The caller does not have permission", status: "PERMISSION_DENIED" } }, 403)
+            : jsonResponse(fixture(c.url.includes("pageToken=page2") ? "apps-page2.json" : "apps-page1.json")),
+      },
+    });
+    await expect(svc.apps()).rejects.toThrow();
+    await expect(svc.apps()).resolves.toHaveLength(3);
   });
 
   it("lists apps with aliases", async () => {

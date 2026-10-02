@@ -15,8 +15,15 @@ export const MAX_TEXT_CHARS = 60_000;
 export const DEFAULT_MAX_ROWS = 200;
 const HARD_MAX_ROWS = 5000;
 
+/** How long one AdmobService (and its cached account, apps index and token) is reused across tool calls. */
+export const SERVICE_TTL_MS = 5 * 60_000;
+
 export interface McpDeps {
   service: (opts: ServiceOptions) => AdmobService;
+  /** Reuse window per account. Default SERVICE_TTL_MS. */
+  serviceTtlMs?: number;
+  /** Clock in ms, for tests. Default Date.now. */
+  now?: () => number;
 }
 
 const INSTRUCTIONS = `Read-only access to the user's Google AdMob account via admobctl.
@@ -111,7 +118,18 @@ const reportOutput = loose({
 
 export function createMcpServer(deps: McpDeps): McpServer {
   const server = new McpServer({ name: "admobctl", version: VERSION }, { instructions: INSTRUCTIONS });
-  const svc = (a: { account?: string }) => deps.service({ account: a.account });
+  // One service per account argument, so tool calls share its account/apps/token caches.
+  const ttl = deps.serviceTtlMs ?? SERVICE_TTL_MS;
+  const now = deps.now ?? Date.now;
+  const services = new Map<string, { svc: AdmobService; createdAt: number }>();
+  const svc = (a: { account?: string }): AdmobService => {
+    const key = a.account ?? "";
+    const hit = services.get(key);
+    if (hit && now() - hit.createdAt < ttl) return hit.svc;
+    const fresh = deps.service({ account: a.account });
+    services.set(key, { svc: fresh, createdAt: now() });
+    return fresh;
+  };
   const wrap =
     <A>(fn: (args: A) => Promise<Record<string, unknown>>) =>
     async (args: A): Promise<ToolResult> => {

@@ -12202,7 +12202,8 @@ var AdmobService = class _AdmobService {
   }
   /** The active publisher account: --account, then profile, then the only accessible one. */
   account() {
-    this.accountPromise ??= (async () => {
+    if (this.accountPromise) return this.accountPromise;
+    const p = (async () => {
       const accounts = await this.client.listAccounts();
       const ids = accounts.map((a) => a.publisherId).join(", ") || "(none)";
       const wanted = this.accountOverride?.replace(/^accounts\//, "");
@@ -12221,14 +12222,23 @@ var AdmobService = class _AdmobService {
         fix: "admobctl config set account <pub-\u2026>  (or pass --account)"
       });
     })();
-    return this.accountPromise;
+    this.accountPromise = p;
+    p.catch(() => {
+      if (this.accountPromise === p) this.accountPromise = void 0;
+    });
+    return p;
   }
   apps() {
-    this.appsPromise ??= (async () => {
+    if (this.appsPromise) return this.appsPromise;
+    const p = (async () => {
       const acct = await this.account();
       return buildAppIndex(await this.client.listApps(acct.name), this.profile.aliases);
     })();
-    return this.appsPromise;
+    this.appsPromise = p;
+    p.catch(() => {
+      if (this.appsPromise === p) this.appsPromise = void 0;
+    });
+    return p;
   }
   async resolveApp(input2) {
     return resolveApp(input2, await this.apps());
@@ -42076,6 +42086,7 @@ var StdioServerTransport = class {
 var MAX_TEXT_CHARS = 6e4;
 var DEFAULT_MAX_ROWS = 200;
 var HARD_MAX_ROWS = 5e3;
+var SERVICE_TTL_MS = 5 * 6e4;
 var INSTRUCTIONS = `Read-only access to the user's Google AdMob account via admobctl.
 - Apps are referred to by alias (e.g. "my-game-ios"); call admobctl_list_apps to see them.
 - All earnings are ESTIMATES. When reporting money, say so and that they should be reconciled against AdMob Payments (finalized).
@@ -42143,7 +42154,17 @@ var reportOutput = loose({
 });
 function createMcpServer(deps) {
   const server = new McpServer({ name: "admobctl", version: VERSION }, { instructions: INSTRUCTIONS });
-  const svc = (a) => deps.service({ account: a.account });
+  const ttl = deps.serviceTtlMs ?? SERVICE_TTL_MS;
+  const now = deps.now ?? Date.now;
+  const services = /* @__PURE__ */ new Map();
+  const svc = (a) => {
+    const key = a.account ?? "";
+    const hit = services.get(key);
+    if (hit && now() - hit.createdAt < ttl) return hit.svc;
+    const fresh = deps.service({ account: a.account });
+    services.set(key, { svc: fresh, createdAt: now() });
+    return fresh;
+  };
   const wrap = (fn) => async (args) => {
     try {
       return ok(await fn(args));

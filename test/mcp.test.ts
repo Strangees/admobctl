@@ -5,6 +5,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it } from "vitest";
 import { createMcpServer, MAX_TEXT_CHARS } from "../src/mcp/server.js";
+import { AdmobctlError } from "../src/core/errors.js";
 import { AdmobService } from "../src/core/service.js";
 import type { TokenProvider } from "../src/core/auth/types.js";
 import { fakeFetch, fixture, jsonResponse, noSleep } from "./helpers.js";
@@ -24,7 +25,7 @@ function bigReport(n: number) {
   ];
 }
 
-async function connect(routes: Parameters<typeof fakeFetch>[0] = {}) {
+async function connect(routes: Parameters<typeof fakeFetch>[0] = {}, opts: { serviceTtlMs?: number; now?: () => number } = {}) {
   const f = fakeFetch({
     "GET /v1/accounts?": () => jsonResponse(fixture("accounts.json")),
     "GET /apps": (c) => jsonResponse(fixture(c.url.includes("pageToken=page2") ? "apps-page2.json" : "apps-page1.json")),
@@ -42,15 +43,19 @@ async function connect(routes: Parameters<typeof fakeFetch>[0] = {}) {
     ...routes,
   });
   const dir = mkdtempSync(join(tmpdir(), "admobctl-mcp-"));
+  const created: Array<string | undefined> = [];
   const server = createMcpServer({
-    service: (opts) =>
-      AdmobService.create(opts, { configDir: dir, tokenProvider: token, fetch: f.fetch, sleep: noSleep, now: () => new Date("2026-10-02T08:00:00Z") }),
+    service: (o) => {
+      created.push(o.account);
+      return AdmobService.create(o, { configDir: dir, tokenProvider: token, fetch: f.fetch, sleep: noSleep, now: () => new Date("2026-10-02T08:00:00Z") });
+    },
+    ...opts,
   });
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();
   await server.connect(serverT);
   const client = new Client({ name: "test", version: "0" });
   await client.connect(clientT);
-  return { client, calls: f.calls };
+  return { client, calls: f.calls, created };
 }
 
 type ToolResult = { isError?: boolean; content: Array<{ type: string; text: string }>; structuredContent?: Record<string, unknown> };
@@ -156,6 +161,65 @@ describe("mcp server", () => {
     expect(r.isError).toBe(true);
     expect(r.content[0]!.text).toMatch(/AdMob scope/);
     expect(r.content[0]!.text).toMatch(/Fix: gcloud auth application-default login/);
+  });
+
+  it("reuses one service across tool calls, so the account and apps are fetched once", async () => {
+    const { client, calls, created } = await connect();
+    for (let i = 0; i < 2; i++) {
+      const r = (await client.callTool({ name: "admobctl_list_apps", arguments: {} })) as ToolResult;
+      expect(r.isError).toBeFalsy();
+    }
+    expect(created).toHaveLength(1);
+    expect(calls.filter((c) => c.url.includes("/v1/accounts?"))).toHaveLength(1);
+    expect(calls.filter((c) => c.url.includes("/apps") && !c.url.includes("pageToken"))).toHaveLength(1);
+  });
+
+  it("creates a fresh service once the cached one is older than the TTL", async () => {
+    let t = 0;
+    const { client, created } = await connect({}, { serviceTtlMs: 1000, now: () => t });
+    await client.callTool({ name: "admobctl_list_apps", arguments: {} });
+    t = 999;
+    await client.callTool({ name: "admobctl_list_apps", arguments: {} });
+    expect(created).toHaveLength(1);
+    t = 1001;
+    await client.callTool({ name: "admobctl_list_apps", arguments: {} });
+    expect(created).toHaveLength(2);
+  });
+
+  it("keeps a separate service per account argument", async () => {
+    const { client, created } = await connect();
+    await client.callTool({ name: "admobctl_list_apps", arguments: { account: "pub-0000000000000001" } });
+    await client.callTool({ name: "admobctl_list_apps", arguments: { account: "pub-0000000000000001" } });
+    await client.callTool({ name: "admobctl_list_apps", arguments: { account: "pub-0000000000000002" } });
+    await client.callTool({ name: "admobctl_list_apps", arguments: {} });
+    expect(created).toEqual(["pub-0000000000000001", "pub-0000000000000002", undefined]);
+  });
+
+  it("does not cache a service whose creation threw", async () => {
+    let fail = true;
+    const dir = mkdtempSync(join(tmpdir(), "admobctl-mcp-"));
+    const f = fakeFetch({
+      "GET /v1/accounts?": () => jsonResponse(fixture("accounts.json")),
+      "GET /apps": (c) => jsonResponse(fixture(c.url.includes("pageToken=page2") ? "apps-page2.json" : "apps-page1.json")),
+    });
+    let created = 0;
+    const server = createMcpServer({
+      service: (o) => {
+        created++;
+        if (fail) throw new AdmobctlError("CONFIG", "config unreadable");
+        return AdmobService.create(o, { configDir: dir, tokenProvider: token, fetch: f.fetch, sleep: noSleep });
+      },
+    });
+    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverT);
+    const client = new Client({ name: "test", version: "0" });
+    await client.connect(clientT);
+    const first = (await client.callTool({ name: "admobctl_list_apps", arguments: {} })) as ToolResult;
+    expect(first.isError).toBe(true);
+    fail = false;
+    const second = (await client.callTool({ name: "admobctl_list_apps", arguments: {} })) as ToolResult;
+    expect(second.isError).toBeFalsy();
+    expect(created).toBe(2);
   });
 
   it("validates inputs with readable messages", async () => {

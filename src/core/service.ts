@@ -110,7 +110,8 @@ export class AdmobService {
 
   /** The active publisher account: --account, then profile, then the only accessible one. */
   account(): Promise<PublisherAccount> {
-    this.accountPromise ??= (async () => {
+    if (this.accountPromise) return this.accountPromise;
+    const p = (async () => {
       const accounts = await this.client.listAccounts();
       const ids = accounts.map((a) => a.publisherId).join(", ") || "(none)";
       const wanted = this.accountOverride?.replace(/^accounts\//, "");
@@ -129,15 +130,25 @@ export class AdmobService {
         fix: "admobctl config set account <pub-…>  (or pass --account)",
       });
     })();
-    return this.accountPromise;
+    this.accountPromise = p;
+    // Forget a failure so the next call retries (the service may be long-lived in the MCP server).
+    p.catch(() => {
+      if (this.accountPromise === p) this.accountPromise = undefined;
+    });
+    return p;
   }
 
   apps(): Promise<AppRef[]> {
-    this.appsPromise ??= (async () => {
+    if (this.appsPromise) return this.appsPromise;
+    const p = (async () => {
       const acct = await this.account();
       return buildAppIndex(await this.client.listApps(acct.name), this.profile.aliases);
     })();
-    return this.appsPromise;
+    this.appsPromise = p;
+    p.catch(() => {
+      if (this.appsPromise === p) this.appsPromise = undefined;
+    });
+    return p;
   }
 
   async resolveApp(input: string): Promise<AppRef> {
