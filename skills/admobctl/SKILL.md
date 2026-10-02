@@ -24,6 +24,7 @@ Read-only access to the user's AdMob account through the `admobctl` MCP tools (p
 | An ad unit's third-party mappings | `admobctl_list_ad_unit_mappings` | `admobctl ad-units mappings <ad-unit>` |
 | App-promotion campaigns: installs, cost, CPI | `admobctl_campaign_report` | `admobctl report campaign --from …` |
 | Which apps / ad units exist | `admobctl_list_apps`, `admobctl_list_ad_units` | `admobctl apps list` |
+| Is app-ads.txt set up; unexplained limited ad serving | `admobctl_check_app_ads` | `admobctl apps app-ads [--website <url>]` |
 
 Refer to apps by their alias (e.g. `my-game-ios`) from `admobctl_list_apps`. Dates are `YYYY-MM` or `YYYY-MM-DD`;
 "last month" means the previous calendar month.

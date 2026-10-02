@@ -1,5 +1,6 @@
 import { appsNeedingAction, approvalLabel, type AppRef } from "../core/aliases.js";
 import type { ConsentResult, VersionsResult, WaterfallResult } from "../core/analyze.js";
+import type { AppAdsResult } from "../core/app-ads.js";
 import type { Check } from "../core/auth/doctor.js";
 import { JOURNAL_COLUMNS, type FinanceMonth, type FinanceRange, type JournalRow } from "../core/finance.js";
 import type { InsightsResult } from "../core/insights.js";
@@ -45,6 +46,27 @@ export function appsView(apps: AppRef[]): Output {
     notes: blocked.length
       ? [`${blocked.map((a) => a.alias).join(", ")} ${blocked.length === 1 ? "needs" : "need"} action in AdMob (Apps → View all apps); ad serving may be limited until then.`]
       : undefined,
+  };
+}
+
+export function appAdsView(r: AppAdsResult): Output {
+  return {
+    data: r,
+    table: {
+      columns: [
+        { key: "app", label: "App" },
+        { key: "status", label: "Status" },
+        { key: "website", label: "Website" },
+        { key: "detail", label: "Detail" },
+      ],
+      rows: r.apps.map((a) => ({
+        app: a.app,
+        status: a.status,
+        website: a.website ? `${a.website} (${a.websiteSource})` : "",
+        detail: a.detail,
+      })),
+    },
+    notes: [...r.apps.flatMap((a) => a.notes.map((n) => `${a.app}: ${n}`)), ...r.summary],
   };
 }
 

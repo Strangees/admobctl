@@ -10907,9 +10907,9 @@ async function runDoctor(d) {
   }
   if (d.betaProbes) {
     const results = await Promise.all(
-      Object.entries(d.betaProbes).map(async ([name, probe]) => {
+      Object.entries(d.betaProbes).map(async ([name, probe2]) => {
         try {
-          await probe();
+          await probe2();
           return { name, err: void 0 };
         } catch (err) {
           return { name, err };
@@ -11027,7 +11027,7 @@ function resolveProfile(config2, name) {
     aliases: { ...p?.aliases }
   };
 }
-var SCALAR_KEYS = /* @__PURE__ */ new Set(["account", "quotaProject", "authMode", "oauthClientId"]);
+var SCALAR_KEYS = /* @__PURE__ */ new Set(["account", "quotaProject", "authMode", "oauthClientId", "website"]);
 var MAP_KEYS = new Set(Object.keys(DEFAULT_FINANCE).map((k) => `finance.${k}`));
 var AUTH_MODES = ["auto", "adc", "oauth"];
 var SETTABLE_KEYS = [...SCALAR_KEYS, ...MAP_KEYS, "aliases.<alias>"];
@@ -12081,6 +12081,180 @@ async function analyzeWaterfall(svc, opts) {
     summary,
     notices: r.notices
   };
+}
+
+// src/core/app-ads.ts
+var GOOGLE_CERT_ID = "f08c47fec0942fa0";
+var ITUNES_LOOKUP = "https://itunes.apple.com/lookup";
+var TIMEOUT_MS = 1e4;
+function parseAppAds(body) {
+  const records = [];
+  body.split(/\r?\n/).forEach((raw, i) => {
+    const text = raw.replace(/#.*/, "").trim();
+    if (!text || /^[a-z_-]+\s*=/i.test(text)) return;
+    const [domain2, publisherId, relationship, certId] = text.split(",").map((f) => f.trim());
+    if (!domain2 || !publisherId || !relationship) return;
+    const rec = {
+      domain: domain2.toLowerCase(),
+      publisherId: publisherId.toLowerCase(),
+      relationship: relationship.toUpperCase(),
+      line: i + 1
+    };
+    if (certId) rec.certId = certId.toLowerCase();
+    records.push(rec);
+  });
+  return records;
+}
+function appAdsHost(website) {
+  const s = website.trim();
+  let url2;
+  try {
+    url2 = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : `https://${s}`);
+  } catch {
+    return void 0;
+  }
+  if (url2.protocol !== "https:" && url2.protocol !== "http:") return void 0;
+  const host = url2.hostname.toLowerCase();
+  if (!host.includes(".")) return void 0;
+  return host.replace(/^(www|m)\./, "");
+}
+var PROBLEMS = /* @__PURE__ */ new Set(["missing-file", "html", "no-line", "reseller-only", "unreachable", "no-website"]);
+async function probe(doFetch, url2) {
+  log.debug(`GET ${url2}`);
+  try {
+    const res = await doFetch(url2, { redirect: "follow", signal: AbortSignal.timeout(TIMEOUT_MS) });
+    const body = await res.text();
+    const finalUrl = res.url || url2;
+    if (!res.ok) return { kind: "status", url: finalUrl, status: res.status };
+    if (/html/i.test(res.headers.get("content-type") ?? "") || body.trimStart().startsWith("<")) return { kind: "html", url: finalUrl };
+    return { kind: "file", url: finalUrl, body };
+  } catch (err) {
+    return { kind: "error", url: url2, message: err.message };
+  }
+}
+async function fetchAppAds(doFetch, host) {
+  const httpsUrl = `https://${host}/app-ads.txt`;
+  const httpsResult = await probe(doFetch, httpsUrl);
+  if (httpsResult.kind === "file") return { checked: [httpsUrl], result: httpsResult };
+  const httpUrl2 = `http://${host}/app-ads.txt`;
+  const httpResult = await probe(doFetch, httpUrl2);
+  if (httpResult.kind === "file") return { checked: [httpsUrl, httpUrl2], result: httpResult };
+  return { checked: [httpsUrl, httpUrl2], result: httpsResult.kind === "error" ? httpResult : httpsResult };
+}
+async function lookupIosWebsites(doFetch, storeIds) {
+  if (!storeIds.length) return /* @__PURE__ */ new Map();
+  const url2 = `${ITUNES_LOOKUP}?id=${storeIds.map(encodeURIComponent).join(",")}`;
+  log.debug(`GET ${url2}`);
+  try {
+    const res = await doFetch(url2, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+    if (!res.ok) return void 0;
+    const data = await res.json();
+    return new Map((data.results ?? []).map((r) => [String(r.trackId), r.sellerUrl || null]));
+  } catch (err) {
+    log.debug(`App Store lookup failed: ${err.message}`);
+    return void 0;
+  }
+}
+function fallbackSite(opts, configured, notes, unknownDetail) {
+  if (opts.website) return { website: opts.website, source: "flag", notes };
+  if (configured) return { website: configured, source: "config", notes };
+  return { status: "unknown-website", detail: unknownDetail, notes };
+}
+var SET_WEBSITE = "pass --website <url> or run: admobctl config set website <url>";
+function siteFor(app, ios, opts, configured) {
+  if (!app.storeId) {
+    return { status: "not-linked", detail: "Not linked to an app store; AdMob verifies app-ads.txt only for store-linked apps.", notes: [] };
+  }
+  if (app.platform === "IOS") {
+    const hit = ios?.get(app.storeId);
+    if (hit) return { website: hit, source: "store", notes: [] };
+    if (hit === null) {
+      return {
+        status: "no-website",
+        detail: "The App Store listing has no marketing URL, so AdMob cannot find app-ads.txt. Add one in App Store Connect.",
+        notes: []
+      };
+    }
+    const why = ios ? "was not found in the App Store lookup (US store)" : "could not be looked up in the App Store";
+    return fallbackSite(opts, configured, [`The listing ${why}; checked the ${opts.website ? "--website" : "configured"} website instead.`], `The listing ${why}; ${SET_WEBSITE}`);
+  }
+  return fallbackSite(
+    opts,
+    configured,
+    [],
+    `Google Play listings cannot be read without Play Console access. AdMob uses the website in the listing's contact details; ${SET_WEBSITE}`
+  );
+}
+function verdict(result, host, publisherId) {
+  if (result.kind === "error") return { status: "unreachable", detail: `Could not reach ${host}: ${result.message}`, notes: [] };
+  if (result.kind === "status") return { status: "missing-file", detail: `${result.url} returned HTTP ${result.status}.`, notes: [] };
+  if (result.kind === "html") {
+    return { status: "html", detail: `${result.url} returned a web page, not a plain-text app-ads.txt.`, fileUrl: result.url, notes: [] };
+  }
+  const google = parseAppAds(result.body).filter((r) => r.domain === "google.com");
+  const mine = google.filter((r) => r.publisherId === publisherId.toLowerCase());
+  const direct = mine.find((r) => r.relationship === "DIRECT");
+  if (direct) {
+    const notes = direct.certId && direct.certId !== GOOGLE_CERT_ID ? [`Line ${direct.line} has certification ID ${direct.certId}; Google's is ${GOOGLE_CERT_ID}.`] : [];
+    return { status: "ok", detail: `${result.url} lists ${publisherId} as DIRECT (line ${direct.line}).`, fileUrl: result.url, notes };
+  }
+  if (mine.length) {
+    return {
+      status: "reseller-only",
+      detail: `${result.url} lists ${publisherId} as ${mine[0].relationship} (line ${mine[0].line}); AdMob needs DIRECT.`,
+      fileUrl: result.url,
+      notes: []
+    };
+  }
+  const others = [...new Set(google.map((r) => r.publisherId))];
+  const listed = others.length > 3 ? `${others.slice(0, 3).join(", ")} and ${others.length - 3} more` : others.join(", ");
+  return {
+    status: "no-line",
+    detail: `${result.url} has no google.com line for ${publisherId}${others.length ? ` (it lists ${listed})` : ""}.`,
+    fileUrl: result.url,
+    notes: []
+  };
+}
+function summarize(apps, expectedLine) {
+  const problems = apps.filter((a) => PROBLEMS.has(a.status)).length;
+  const ok2 = apps.filter((a) => a.status === "ok").length;
+  const unknown2 = apps.filter((a) => a.status === "unknown-website").length;
+  const summary = [];
+  if (problems) {
+    summary.push(`${problems} of ${apps.length} apps have an app-ads.txt problem that can cost ad revenue.`);
+    summary.push(`Each developer website needs this line in /app-ads.txt: ${expectedLine}`);
+    summary.push("AdMob can take up to 24 hours to see a fixed file.");
+  } else if (ok2) {
+    summary.push(`${ok2} of ${apps.length} apps have a valid app-ads.txt line.`);
+  }
+  if (unknown2) summary.push(`${unknown2} apps were not checked because their developer website is unknown; ${SET_WEBSITE}`);
+  return { problems, summary };
+}
+async function checkAppAds(svc, opts) {
+  const [account, all] = await Promise.all([svc.account(), svc.apps()]);
+  const apps = opts.app ? [await svc.resolveApp(opts.app)] : all;
+  const doFetch = svc.fetch;
+  const ios = await lookupIosWebsites(doFetch, [...new Set(apps.filter((a) => a.platform === "IOS" && a.storeId).map((a) => a.storeId))]);
+  const expectedLine = `google.com, ${account.publisherId}, DIRECT, ${GOOGLE_CERT_ID}`;
+  const byHost = /* @__PURE__ */ new Map();
+  const results = await Promise.all(
+    apps.map(async (app) => {
+      const base = { app: app.alias, appId: app.appId, name: app.name, platform: app.platform };
+      const site = siteFor(app, ios, opts, svc.profile.website);
+      if (site.status) return { ...base, status: site.status, detail: site.detail, checked: [], notes: site.notes };
+      const where = { website: site.website, websiteSource: site.source };
+      const host = appAdsHost(site.website);
+      if (!host) {
+        return { ...base, ...where, status: "no-website", detail: `"${site.website}" is not a website URL.`, checked: [], notes: site.notes };
+      }
+      let pending = byHost.get(host);
+      if (!pending) byHost.set(host, pending = fetchAppAds(doFetch, host));
+      const { checked, result } = await pending;
+      const v = verdict(result, host, account.publisherId);
+      return { ...base, ...where, ...v, checked, notes: [...site.notes, ...v.notes] };
+    })
+  );
+  return { account: account.name, publisherId: account.publisherId, expectedLine, apps: results, ...summarize(results, expectedLine) };
 }
 
 // src/core/audit.ts
@@ -13152,13 +13326,14 @@ var DEFAULT_METRICS = {
 var CAMPAIGN_MAX_DAYS = 30;
 var filterValue = (v) => `"${v.replace(/["\\]/g, (c) => `\\${c}`)}"`;
 var AdmobService = class _AdmobService {
-  constructor(profile, client, tokenProvider, accountOverride, now, configDir2) {
+  constructor(profile, client, tokenProvider, accountOverride, now, configDir2, fetch2) {
     this.profile = profile;
     this.client = client;
     this.tokenProvider = tokenProvider;
     this.accountOverride = accountOverride;
     this.now = now;
     this.configDir = configDir2;
+    this.fetch = fetch2;
   }
   profile;
   client;
@@ -13166,6 +13341,7 @@ var AdmobService = class _AdmobService {
   accountOverride;
   now;
   configDir;
+  fetch;
   /** In-flight or settled lookups (account, apps, ad units, ad sources), shared by every caller. */
   cache = /* @__PURE__ */ new Map();
   static create(opts = {}, deps = {}) {
@@ -13178,7 +13354,15 @@ var AdmobService = class _AdmobService {
       fetch: deps.fetch,
       sleep: deps.sleep
     });
-    return new _AdmobService(profile, client, tokenProvider, opts.account ?? profile.account, deps.now ?? (() => /* @__PURE__ */ new Date()), dir);
+    return new _AdmobService(
+      profile,
+      client,
+      tokenProvider,
+      opts.account ?? profile.account,
+      deps.now ?? (() => /* @__PURE__ */ new Date()),
+      dir,
+      deps.fetch ?? fetch
+    );
   }
   /** The account that will be used (--account, then profile), without calling the API. Undefined means auto-detect. */
   get configuredAccount() {
@@ -13441,12 +13625,12 @@ var AdmobService = class _AdmobService {
   }
   async report(kind, q) {
     const cap = q.maxRows ?? API_MAX_ROWS;
-    const probe = cap < API_MAX_ROWS;
-    const { report, dimensions, metrics, range, notices } = await this.rawReport(kind, probe ? { ...q, maxRows: cap + 1 } : q);
+    const probe2 = cap < API_MAX_ROWS;
+    const { report, dimensions, metrics, range, notices } = await this.rawReport(kind, probe2 ? { ...q, maxRows: cap + 1 } : q);
     const needsApps = dimensions.includes("APP");
     const apps = needsApps ? await this.apps() : [];
     const fetched = report.rows.length;
-    const truncated = probe ? fetched > cap : fetched >= cap && (report.matchingRowCount === void 0 || report.matchingRowCount > fetched);
+    const truncated = probe2 ? fetched > cap : fetched >= cap && (report.matchingRowCount === void 0 || report.matchingRowCount > fetched);
     if (truncated && report.matchingRowCount !== void 0 && report.matchingRowCount <= fetched) report.matchingRowCount = void 0;
     if (fetched > cap) report.rows = report.rows.slice(0, cap);
     const acct = await this.account();
@@ -13580,6 +13764,26 @@ function appsView(apps) {
       rows: apps.map((a) => ({ ...a, approval: approvalLabel(a.approval) }))
     },
     notes: blocked.length ? [`${blocked.map((a) => a.alias).join(", ")} ${blocked.length === 1 ? "needs" : "need"} action in AdMob (Apps \u2192 View all apps); ad serving may be limited until then.`] : void 0
+  };
+}
+function appAdsView(r) {
+  return {
+    data: r,
+    table: {
+      columns: [
+        { key: "app", label: "App" },
+        { key: "status", label: "Status" },
+        { key: "website", label: "Website" },
+        { key: "detail", label: "Detail" }
+      ],
+      rows: r.apps.map((a) => ({
+        app: a.app,
+        status: a.status,
+        website: a.website ? `${a.website} (${a.websiteSource})` : "",
+        detail: a.detail
+      }))
+    },
+    notes: [...r.apps.flatMap((a) => a.notes.map((n) => `${a.app}: ${n}`)), ...r.summary]
   };
 }
 function adUnitsView(units) {
@@ -14073,6 +14277,11 @@ function buildProgram(io) {
   program2.command("accounts").description("AdMob publisher accounts").command("list").description("List accessible publisher accounts").action(async (_o, cmd) => emit(cmd, accountsView(await svc(cmd).listAccounts())));
   const apps = program2.command("apps").description("Apps in the account");
   apps.command("list").description("List apps with their aliases").action(async (_o, cmd) => emit(cmd, appsView(await svc(cmd).apps())));
+  apps.command("app-ads").description("Check each app's app-ads.txt the way AdMob's crawler does; exits 1 on a problem").option("--app <alias|id>", "only this app").option("--website <url>", "developer website for apps whose store listing cannot be read (Android)").action(async (o, cmd) => {
+    const r = await checkAppAds(svc(cmd), o);
+    emit(cmd, appAdsView(r));
+    if (r.problems) process.exitCode = 1;
+  });
   apps.command("create").description("Create an app (v1beta write; needs admob.monetization and Google allowlisting)").requiredOption("--platform <platform>", "ios or android").option("--name <name>", "name of an app that is not in a store yet").option("--store-id <id>", "App Store ID or Android package name of a published app").addOption(yesOption()).action(async (o, cmd) => {
     const s = svc(cmd);
     await runWrite(cmd, s, [await planCreateApp(s, o)], o.yes);
@@ -43568,12 +43777,14 @@ var INSTRUCTIONS = `Read-only access to the user's Google AdMob account via admo
 - All earnings are ESTIMATES. When reporting money, say so and that they should be reconciled against AdMob Payments (finalized).
 - For "what did I earn in <month>" use admobctl_finance_month; for trends and recommendations use admobctl_insights.
 - For SDK/app-version problems, consent impact or mediation waterfalls use the admobctl_analyze_* tools.
+- For "is my app-ads.txt OK?" or unexplained "limited ad serving" use admobctl_check_app_ads.
 - Ad sources, adapters, mediation groups, ad unit mappings and campaign reports use AdMob API v1beta. Google limits some of
   these to allowlisted accounts; a "v1beta" permission error is not a setup mistake, so pass its Fix line on and move on.
 - These tools never change anything. Changes (creating apps, ad units or mappings; editing mediation groups; A/B
   experiments) exist only as admobctl CLI commands, which print a plan and send nothing unless the user adds --yes.
 - Errors include a "Fix:" line with the exact command the user should run.`;
 var annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
+var appArg = { app: external_exports.string().optional().describe("Only this app (alias, app ID or name)") };
 var accountArg = { account: external_exports.string().optional().describe("Publisher ID (pub-\u2026). Defaults to the configured or only account.") };
 var currencyArg = {
   currency: external_exports.string().regex(/^[A-Za-z]{3}$/, "an ISO 4217 code like USD").optional().describe("ISO 4217 code to convert earnings into, e.g. USD. Default: the account currency.")
@@ -43679,6 +43890,23 @@ function createMcpServer(deps) {
       annotations
     },
     wrap(async (a) => ({ apps: await svc(a).apps() }))
+  );
+  server.registerTool(
+    "admobctl_check_app_ads",
+    {
+      title: "Check app-ads.txt",
+      description: "Check each app's app-ads.txt the way AdMob's crawler does: the developer website from the App Store listing (Android needs `website`, or the configured one), https then http, and a google.com line with the publisher ID marked DIRECT. Per app: ok, missing-file, html (a web page instead of the file), no-line, reseller-only, unreachable, no-website, unknown-website or not-linked, plus the exact line to add. Fetches the store lookup and the developer websites, not just the AdMob API.",
+      inputSchema: {
+        ...appArg,
+        website: external_exports.string().optional().describe("Developer website for apps whose store listing cannot be read (Android), e.g. example.com"),
+        ...accountArg
+      },
+      outputSchema: loose({ publisherId: external_exports.string(), expectedLine: external_exports.string(), problems: external_exports.number(), apps: external_exports.array(anyRecord), summary: external_exports.array(external_exports.string()) }),
+      annotations
+    },
+    wrap(
+      async (a) => await checkAppAds(svc(a), { app: a.app, website: a.website })
+    )
   );
   server.registerTool(
     "admobctl_list_ad_units",
@@ -43876,7 +44104,6 @@ function createMcpServer(deps) {
   };
   const range = (a) => ({ last: a.last_days, from: a.from, to: a.to });
   const analysisOutput = (shape) => loose({ from: external_exports.string(), to: external_exports.string(), rows: external_exports.array(anyRecord), highlights: external_exports.array(anyRecord), summary: external_exports.array(external_exports.string()), notices: external_exports.array(external_exports.string()), ...shape });
-  const appArg = { app: external_exports.string().optional().describe("Only this app (alias, app ID or name)") };
   server.registerTool(
     "admobctl_analyze_versions",
     {

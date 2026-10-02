@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { analyzeConsent, analyzeVersions, analyzeWaterfall, VERSION_KINDS } from "../core/analyze.js";
+import { checkAppAds } from "../core/app-ads.js";
 import { AdmobctlError } from "../core/errors.js";
 import { financeMonth, financeRange, JOURNAL_COLUMNS, journalRows } from "../core/finance.js";
 import { INSIGHT_DIMENSIONS, insights } from "../core/insights.js";
@@ -32,6 +33,7 @@ const INSTRUCTIONS = `Read-only access to the user's Google AdMob account via ad
 - All earnings are ESTIMATES. When reporting money, say so and that they should be reconciled against AdMob Payments (finalized).
 - For "what did I earn in <month>" use admobctl_finance_month; for trends and recommendations use admobctl_insights.
 - For SDK/app-version problems, consent impact or mediation waterfalls use the admobctl_analyze_* tools.
+- For "is my app-ads.txt OK?" or unexplained "limited ad serving" use admobctl_check_app_ads.
 - Ad sources, adapters, mediation groups, ad unit mappings and campaign reports use AdMob API v1beta. Google limits some of
   these to allowlisted accounts; a "v1beta" permission error is not a setup mistake, so pass its Fix line on and move on.
 - These tools never change anything. Changes (creating apps, ad units or mappings; editing mediation groups; A/B
@@ -40,6 +42,7 @@ const INSTRUCTIONS = `Read-only access to the user's Google AdMob account via ad
 
 const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } as const;
 
+const appArg = { app: z.string().optional().describe("Only this app (alias, app ID or name)") };
 const accountArg = { account: z.string().optional().describe("Publisher ID (pub-…). Defaults to the configured or only account.") };
 const currencyArg = {
   currency: z
@@ -178,6 +181,25 @@ export function createMcpServer(deps: McpDeps): McpServer {
       annotations,
     },
     wrap(async (a: { account?: string }) => ({ apps: await svc(a).apps() })),
+  );
+
+  server.registerTool(
+    "admobctl_check_app_ads",
+    {
+      title: "Check app-ads.txt",
+      description:
+        "Check each app's app-ads.txt the way AdMob's crawler does: the developer website from the App Store listing (Android needs `website`, or the configured one), https then http, and a google.com line with the publisher ID marked DIRECT. Per app: ok, missing-file, html (a web page instead of the file), no-line, reseller-only, unreachable, no-website, unknown-website or not-linked, plus the exact line to add. Fetches the store lookup and the developer websites, not just the AdMob API.",
+      inputSchema: {
+        ...appArg,
+        website: z.string().optional().describe("Developer website for apps whose store listing cannot be read (Android), e.g. example.com"),
+        ...accountArg,
+      },
+      outputSchema: loose({ publisherId: z.string(), expectedLine: z.string(), problems: z.number(), apps: z.array(anyRecord), summary: z.array(z.string()) }),
+      annotations,
+    },
+    wrap(async (a: { app?: string; website?: string; account?: string }) =>
+      (await checkAppAds(svc(a), { app: a.app, website: a.website })) as unknown as Record<string, unknown>,
+    ),
   );
 
   server.registerTool(
@@ -397,7 +419,6 @@ export function createMcpServer(deps: McpDeps): McpServer {
   const range = (a: RangeArgs) => ({ last: a.last_days, from: a.from, to: a.to });
   const analysisOutput = (shape: z.ZodRawShape) =>
     loose({ from: z.string(), to: z.string(), rows: z.array(anyRecord), highlights: z.array(anyRecord), summary: z.array(z.string()), notices: z.array(z.string()), ...shape });
-  const appArg = { app: z.string().optional().describe("Only this app (alias, app ID or name)") };
 
   server.registerTool(
     "admobctl_analyze_versions",

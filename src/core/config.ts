@@ -29,6 +29,8 @@ export interface ProfileConfig {
   finance?: FinanceConfig;
   /** alias → app ID (ca-app-pub-…~…) */
   aliases?: Record<string, string>;
+  /** Developer website for the app-ads.txt check, used where the store listing cannot be read (Android). */
+  website?: string;
 }
 
 export interface ConfigFile {
@@ -99,7 +101,7 @@ export function resolveProfile(config: ConfigFile, name?: string): ResolvedProfi
   };
 }
 
-const SCALAR_KEYS = new Set(["account", "quotaProject", "authMode", "oauthClientId"]);
+const SCALAR_KEYS = new Set(["account", "quotaProject", "authMode", "oauthClientId", "website"]);
 const MAP_KEYS = new Set(Object.keys(DEFAULT_FINANCE).map((k) => `finance.${k}`));
 const AUTH_MODES: AuthMode[] = ["auto", "adc", "oauth"];
 

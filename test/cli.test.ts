@@ -10,7 +10,7 @@ import { fakeFetch, fixture, jsonResponse, noSleep } from "./helpers.js";
 
 const token: TokenProvider = { mode: "adc", getToken: async () => "t", quotaProject: () => "qp" };
 
-async function cli(args: string[], opts: { isTTY?: boolean; dir?: string } = {}) {
+async function cli(args: string[], opts: { isTTY?: boolean; dir?: string; routes?: Parameters<typeof fakeFetch>[0] } = {}) {
   const f = fakeFetch({
     "GET /v1/accounts?": () => jsonResponse(fixture("accounts.json")),
     "GET /apps": (c) => jsonResponse(fixture(c.url.includes("pageToken=page2") ? "apps-page2.json" : "apps-page1.json")),
@@ -28,6 +28,7 @@ async function cli(args: string[], opts: { isTTY?: boolean; dir?: string } = {})
     "GET /adUnits/9000000001/adUnitMappings": () => jsonResponse(fixture("ad-unit-mappings.json")),
     "POST /campaignReport:generate": () => jsonResponse(fixture("campaign-report.json")),
     "POST /tokeninfo": () => jsonResponse({ scope: "https://www.googleapis.com/auth/admob.readonly", expires_in: "3000" }),
+    ...opts.routes,
   });
   let stdout = "";
   let stderr = "";
@@ -45,6 +46,33 @@ async function cli(args: string[], opts: { isTTY?: boolean; dir?: string } = {})
   });
   return { code, stdout, stderr, calls: f.calls };
 }
+
+describe("cli apps app-ads", () => {
+  const LINE = "google.com, pub-0000000000000001, DIRECT, f08c47fec0942fa0";
+  const routes = (body: string, status = 200) => ({
+    "GET itunes.apple.com/lookup": () => jsonResponse(fixture("itunes-lookup.json")),
+    "GET example.com/app-ads.txt": () => new Response(body, { status, headers: { "content-type": "text/plain" } }),
+  });
+
+  it("prints a verdict per app and exits 0 when every checked app passes", async () => {
+    const r = await cli(["apps", "app-ads", "--website", "example.com"], { routes: routes(LINE) });
+    expect(r.code).toBe(0);
+    const out = JSON.parse(r.stdout) as { apps: Array<{ app: string; status: string; websiteSource?: string }> };
+    expect(out.apps.map((a) => [a.app, a.status, a.websiteSource])).toEqual([
+      ["example-quiz-ios", "ok", "store"],
+      ["example-quiz-android", "ok", "flag"],
+      ["sample-timer-focus-breaks-ios", "not-linked", undefined],
+    ]);
+  });
+
+  it("exits 1 and prints the line to add when a file is missing", async () => {
+    const r = await cli(["apps", "app-ads", "--app", "example-quiz-ios"], { routes: routes("", 404), isTTY: true });
+    expect(r.code).toBe(1);
+    expect(r.stdout).toMatch(/^App\s+Status\s+Website/);
+    expect(r.stdout).toContain("missing-file");
+    expect(r.stderr + r.stdout).toContain(LINE);
+  });
+});
 
 describe("cli", () => {
   it("prints JSON when piped", async () => {

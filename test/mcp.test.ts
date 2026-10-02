@@ -70,6 +70,7 @@ describe("mcp server", () => {
         "admobctl_analyze_versions",
         "admobctl_analyze_waterfall",
         "admobctl_campaign_report",
+        "admobctl_check_app_ads",
         "admobctl_list_ad_sources",
         "admobctl_list_ad_unit_mappings",
         "admobctl_list_adapters",
@@ -93,6 +94,18 @@ describe("mcp server", () => {
     }
     const report = tools.find((t) => t.name === "admobctl_network_report")!;
     expect(report.inputSchema.required).toEqual(["from"]);
+  });
+
+  it("checks app-ads.txt through the same core as the CLI", async () => {
+    const { client } = await connect({
+      "GET itunes.apple.com/lookup": () => jsonResponse(fixture("itunes-lookup.json")),
+      "GET example.com/app-ads.txt": () => new Response("google.com, pub-0000000000000001, DIRECT, f08c47fec0942fa0", { headers: { "content-type": "text/plain" } }),
+    });
+    const r = (await client.callTool({ name: "admobctl_check_app_ads", arguments: { app: "example-quiz-android", website: "example.com" } })) as ToolResult;
+    expect(r.isError).toBeFalsy();
+    const sc = r.structuredContent as { problems: number; apps: Array<{ status: string; websiteSource: string }> };
+    expect(sc.problems).toBe(0);
+    expect(sc.apps).toEqual([expect.objectContaining({ status: "ok", websiteSource: "flag" })]);
   });
 
   it("returns structured content and a JSON text mirror", async () => {
