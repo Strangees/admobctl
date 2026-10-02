@@ -14,4 +14,4 @@ test/fixtures/private/*
 
 # Product requirements contain private business figures; kept local only.
 PRD.md
-docs/PRD.md
+docs/PRD*.md
