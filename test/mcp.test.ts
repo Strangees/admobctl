@@ -276,6 +276,7 @@ describe("mcp server", () => {
     expect((versions.structuredContent!.highlights as Array<{ kind: string }>)[0]!.kind).toBe("low-show-rate");
     const consent = (await client.callTool({ name: "admobctl_analyze_consent", arguments: { last_days: 30 } })) as ToolResult;
     expect(consent.structuredContent!.estimate).toBe(true);
+    expect((consent.structuredContent!.apps as Array<{ app: string }>)[0]!.app).toBe("example-quiz-ios");
     const wf = (await client.callTool({ name: "admobctl_analyze_waterfall", arguments: { group: "Interstitials" } })) as ToolResult;
     expect((wf.structuredContent!.rows as unknown[]).length).toBe(1);
   });

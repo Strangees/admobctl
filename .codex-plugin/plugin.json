@@ -1,6 +1,6 @@
 {
   "name": "admobctl",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Query Google AdMob from Codex: apps, ad units, network/mediation reports, monthly finance (estimates) and monetization insights. Unofficial, not affiliated with Google.",
   "author": { "name": "Stian Strange" },
   "homepage": "https://github.com/Strangees/admobctl",

@@ -11785,6 +11785,9 @@ async function insights(svc, opts) {
 // src/core/analyze.ts
 var MIN_REQUESTS = 1e3;
 var MIN_SHARE = 0.05;
+function thinDataNotice(thin, total, what, also = "") {
+  return thin ? [`${thin} of ${total} ${what} had fewer than ${MIN_REQUESTS} requests${also}; treat their rates as noise, not findings.`] : [];
+}
 async function fetchReport(svc, kind, opts) {
   const acct = await svc.account();
   const range = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
@@ -11847,7 +11850,8 @@ async function analyzeVersions(svc, opts) {
       match_rate: ratio(matched, requests),
       show_rate: ratio(impressions, matched),
       ctr: ratio(clicks, impressions),
-      request_share: ratio(requests, groupRequests.get(group) ?? 0)
+      request_share: ratio(requests, groupRequests.get(group) ?? 0),
+      enough_data: requests >= MIN_REQUESTS
     };
   });
   rows.sort((a, b) => (groupRequests.get(b.group) ?? 0) - (groupRequests.get(a.group) ?? 0) || a.group.localeCompare(b.group) || b.requests - a.requests);
@@ -11902,65 +11906,95 @@ async function analyzeVersions(svc, opts) {
     rows,
     highlights,
     summary,
-    notices: r.notices
+    notices: [...r.notices, ...thinDataNotice(rows.filter((x) => !x.enough_data).length, rows.length, `${noun}s`)]
   };
 }
 var SERVING_RESTRICTION_START = { year: 2021, month: 3, day: 13 };
 var UNRESTRICTED = /no restriction|unrestricted|^none$|restriction_none|no_restriction/i;
 async function analyzeConsent(svc, opts) {
-  const r = await fetchReport(svc, "network", {
-    ...opts,
-    by: ["SERVING_RESTRICTION"],
-    metrics: ["ESTIMATED_EARNINGS", "AD_REQUESTS", "MATCHED_REQUESTS", "IMPRESSIONS", "CLICKS"],
-    filters: opts.app ? { app: [opts.app] } : void 0
-  });
+  const [r, appRefs] = await Promise.all([
+    fetchReport(svc, "network", {
+      ...opts,
+      by: ["APP", "SERVING_RESTRICTION"],
+      metrics: ["ESTIMATED_EARNINGS", "AD_REQUESTS", "MATCHED_REQUESTS", "IMPRESSIONS", "CLICKS"],
+      filters: opts.app ? { app: [opts.app] } : void 0
+    }),
+    svc.apps()
+  ]);
+  const alias = new Map(appRefs.map((a) => [a.appId, a.alias]));
+  const appOf = (row) => alias.get(row.dimensions.APP?.value ?? "") ?? label(row.dimensions.APP);
   const totalRequests = r.report.rows.reduce((s, x) => s + metric(x, "AD_REQUESTS"), 0);
   const totalEarnings = sumMicros(r.report.rows.map((x) => metric(x, "ESTIMATED_EARNINGS")));
+  const appTotals = /* @__PURE__ */ new Map();
+  for (const row of r.report.rows) {
+    const t = appTotals.get(appOf(row)) ?? { requests: 0, earnings: 0 };
+    t.requests += metric(row, "AD_REQUESTS");
+    t.earnings += metric(row, "ESTIMATED_EARNINGS");
+    appTotals.set(appOf(row), t);
+  }
   const rows = r.report.rows.map((row) => {
     const v = row.dimensions.SERVING_RESTRICTION;
+    const app = appOf(row);
     const earnings = metric(row, "ESTIMATED_EARNINGS");
     const requests = metric(row, "AD_REQUESTS");
     const matched = metric(row, "MATCHED_REQUESTS");
     const impressions = metric(row, "IMPRESSIONS");
     return {
+      app,
       restriction: label(v),
       restriction_id: v?.value ?? "",
       requests,
-      request_share: ratio(requests, totalRequests),
+      request_share: ratio(requests, appTotals.get(app).requests),
       earnings: microsToAmount(earnings),
       earnings_micros: earnings,
-      earnings_share: ratio(earnings, totalEarnings),
+      earnings_share: ratio(earnings, appTotals.get(app).earnings),
       impressions,
       ecpm: perMille(earnings, impressions),
       request_rpm: perMille(earnings, requests),
       match_rate: ratio(matched, requests),
-      show_rate: ratio(impressions, matched)
+      show_rate: ratio(impressions, matched),
+      enough_data: requests >= MIN_REQUESTS
     };
-  }).sort((a, b) => b.requests - a.requests);
+  });
+  const appRequests = (app) => appTotals.get(app).requests;
+  rows.sort((a, b) => appRequests(b.app) - appRequests(a.app) || a.app.localeCompare(b.app) || b.requests - a.requests);
   const isOpen = (x) => UNRESTRICTED.test(x.restriction) || UNRESTRICTED.test(x.restriction_id);
-  const open2 = rows.find(isOpen);
-  const restricted = rows.filter((x) => !isOpen(x));
-  const money = (m) => `${formatMicros(m)} ${r.currency}`;
   const highlights = [];
-  if (open2) {
+  const apps = [];
+  let openRequests = 0;
+  let anyOpen = false;
+  for (const [app, t] of [...appTotals].sort((a, b) => b[1].requests - a[1].requests || a[0].localeCompare(b[0]))) {
+    const own2 = rows.filter((x) => x.app === app);
+    const open2 = own2.find(isOpen);
+    apps.push({ app, requests: t.requests, ...open2 ? { restricted_request_share: ratio(t.requests - open2.requests, t.requests) } : {} });
+    if (!open2) {
+      for (const x of own2) x.enough_data = false;
+      continue;
+    }
+    anyOpen = true;
+    openRequests += open2.requests;
     const openEcpm = perMille(open2.earnings_micros, open2.impressions);
     const openPerImpression = ratio(open2.earnings_micros, open2.impressions);
-    for (const x of restricted) {
+    for (const x of own2) {
+      if (x === open2) continue;
+      if (open2.requests < MIN_REQUESTS) x.enough_data = false;
       if (openPerImpression > 0) x.ecpm_vs_unrestricted = ratio(ratio(x.earnings_micros, x.impressions), openPerImpression);
-      if (x.request_share < MIN_SHARE || x.ecpm_vs_unrestricted === void 0) continue;
+      if (!x.enough_data || x.request_share < MIN_SHARE || x.ecpm_vs_unrestricted === void 0) continue;
       const diff = Math.round((x.ecpm_vs_unrestricted - 1) * 100);
       highlights.push({
         kind: "restricted",
-        key: x.restriction_id,
-        label: x.restriction,
-        message: `${x.restriction}: ${pct(x.request_share)} of requests at eCPM ${x.ecpm.toFixed(2)} ${r.currency} vs ${openEcpm.toFixed(2)} unrestricted (${diff >= 0 ? "+" : ""}${diff}%).`
+        key: `${app}/${x.restriction_id}`,
+        label: `${app} / ${x.restriction}`,
+        message: `${app}: ${x.restriction}: ${pct(x.request_share)} of requests at eCPM ${x.ecpm.toFixed(2)} ${r.currency} vs ${openEcpm.toFixed(2)} unrestricted (${diff >= 0 ? "+" : ""}${diff}%).`
       });
     }
   }
-  const restrictedShare = open2 ? ratio(totalRequests - open2.requests, totalRequests) : void 0;
+  const restrictedShare = anyOpen ? ratio(totalRequests - openRequests, totalRequests) : void 0;
+  const money = (m) => `${formatMicros(m)} ${r.currency}`;
   const notices = [...r.notices];
   if (startsBefore(r.range, SERVING_RESTRICTION_START)) notices.push("Serving-restriction data starts 2021-03-13; earlier traffic is not broken down.");
-  if (!open2 && rows.length) notices.push("No unrestricted traffic found to compare against.");
+  if (!anyOpen && rows.length) notices.push("No unrestricted traffic found to compare against.");
+  notices.push(...thinDataNotice(rows.filter((x) => !x.enough_data).length, rows.length, "rows", ", or an unrestricted baseline that small"));
   const summary = [
     `Estimated earnings ${money(totalEarnings)} from ${totalRequests} ad requests, ${r.from} \u2192 ${r.to}.`,
     ...restrictedShare !== void 0 ? [`${pct(restrictedShare)} of ad requests were served under a restriction (consent, RDP or limited ads).`] : [],
@@ -11974,6 +12008,7 @@ async function analyzeConsent(svc, opts) {
     timeZone: r.timeZone,
     estimate: true,
     rows,
+    apps,
     highlights,
     summary,
     notices
@@ -13734,7 +13769,7 @@ function renderTsv({ columns, rows }) {
 }
 
 // src/version.ts
-var VERSION = true ? "0.1.0" : "0.0.0-dev";
+var VERSION = true ? "0.1.1" : "0.0.0-dev";
 
 // src/cli/views.ts
 var ESTIMATE_NOTE = "Estimated earnings \u2014 reconcile against AdMob Payments (finalized).";
@@ -13963,14 +13998,16 @@ function versionsView(r) {
         { key: "request_share", label: "Share", align: "right" },
         { key: "match_rate", label: "Match", align: "right" },
         { key: "show_rate", label: "Show", align: "right" },
-        { key: "ctr", label: "CTR", align: "right" }
+        { key: "ctr", label: "CTR", align: "right" },
+        { key: "data", label: "Data" }
       ],
       rows: r.rows.map((x) => ({
         ...x,
         request_share: formatPercent(x.request_share),
         match_rate: formatPercent(x.match_rate),
         show_rate: formatPercent(x.show_rate),
-        ctr: formatPercent(x.ctr)
+        ctr: formatPercent(x.ctr),
+        data: x.enough_data ? "" : "thin"
       }))
     },
     notes: [...r.summary, ...r.notices]
@@ -13981,6 +14018,7 @@ function consentView(r) {
     data: r,
     table: {
       columns: [
+        { key: "app", label: "App" },
         { key: "restriction", label: "Serving restriction" },
         { key: "requests", label: "Requests", align: "right" },
         { key: "request_share", label: "Share", align: "right" },
@@ -13988,10 +14026,12 @@ function consentView(r) {
         { key: "ecpm", label: "eCPM", align: "right" },
         { key: "ecpm_vs_unrestricted", label: "vs open", align: "right" },
         { key: "match_rate", label: "Match", align: "right" },
-        { key: "show_rate", label: "Show", align: "right" }
+        { key: "show_rate", label: "Show", align: "right" },
+        { key: "data", label: "Data" }
       ],
       rows: r.rows.map((x) => ({
         ...x,
+        data: x.enough_data ? "" : "thin",
         request_share: formatPercent(x.request_share),
         earnings: x.earnings.toFixed(2),
         ecpm: x.ecpm.toFixed(2),
@@ -43780,7 +43820,9 @@ var INSTRUCTIONS = `Read-only access to the user's Google AdMob account via admo
 - All earnings are ESTIMATES. When reporting money, say so and that they should be reconciled against AdMob Payments (finalized).
 - For "what did I earn in <month>" use admobctl_finance_month; for trends and recommendations use admobctl_insights.
 - For SDK/app-version problems, consent impact or mediation waterfalls use the admobctl_analyze_* tools.
-- For "is my app-ads.txt OK?" or unexplained "limited ad serving" use admobctl_check_app_ads.
+- For "is my app-ads.txt OK?" or unexplained "limited ad serving" use admobctl_check_app_ads. Google Play listings cannot be
+  read, so Android apps show unknown-website until their developer website is added by hand. Never guess a website: ask the
+  user for it and pass it as \`website\`, or have them save it once with: admobctl config set websites.<alias> <url>
 - Ad sources, adapters, mediation groups, ad unit mappings and campaign reports use AdMob API v1beta. Google limits some of
   these to allowlisted accounts; a "v1beta" permission error is not a setup mistake, so pass its Fix line on and move on.
 - These tools never change anything. Changes (creating apps, ad units or mappings; editing mediation groups; A/B
@@ -43898,7 +43940,7 @@ function createMcpServer(deps) {
     "admobctl_check_app_ads",
     {
       title: "Check app-ads.txt",
-      description: "Check each app's app-ads.txt the way AdMob's crawler does: the developer website from the App Store listing (Android needs `website`, or the configured one), https then http, and a google.com line with the publisher ID marked DIRECT. Per app: ok, missing-file, html (a web page instead of the file), no-line, reseller-only, unreachable, no-website, unknown-website or not-linked, plus the exact line to add. Fetches the store lookup and the developer websites, not just the AdMob API.",
+      description: "Check each app's app-ads.txt the way AdMob's crawler does: the developer website from the App Store listing (Google Play listings cannot be read, so Android apps need `website` from the user or one saved with `admobctl config set websites.<alias> <url>`; do not guess it), https then http, and a google.com line with the publisher ID marked DIRECT. Per app: ok, missing-file, html (a web page instead of the file), no-line, reseller-only, unreachable, no-website, unknown-website or not-linked, plus the exact line to add. Fetches the store lookup and the developer websites, not just the AdMob API.",
       inputSchema: {
         ...appArg,
         website: external_exports.string().optional().describe("Developer website for apps whose store listing cannot be read (Android), e.g. example.com"),
@@ -44111,7 +44153,7 @@ function createMcpServer(deps) {
     "admobctl_analyze_versions",
     {
       title: "AdMob version health",
-      description: "Match rate, show rate and CTR per Google Mobile Ads SDK version (by platform), app version (by app) or OS version, comparing each version with the rest of its group. Highlights versions that fill or show worse, e.g. after an SDK upgrade or app release. Traffic metrics only: the AdMob API does not split earnings by version.",
+      description: "Match rate, show rate and CTR per Google Mobile Ads SDK version (by platform), app version (by app) or OS version, comparing each version with the rest of its group. Highlights versions that fill or show worse, e.g. after an SDK upgrade or app release. Rows with enough_data=false have too few requests to judge: do not report their rates as problems. Traffic metrics only: the AdMob API does not split earnings by version.",
       inputSchema: { by: external_exports.enum(VERSION_KINDS).optional().describe("sdk (default), app or os"), ...appArg, ...rangeInput, ...accountArg },
       outputSchema: analysisOutput({ by: external_exports.string(), group_by: external_exports.string() }),
       annotations
@@ -44124,9 +44166,9 @@ function createMcpServer(deps) {
     "admobctl_analyze_consent",
     {
       title: "AdMob consent impact",
-      description: "Ad requests, earnings and eCPM by serving restriction (no restriction, non-personalized, limited ads, RDP\u2026), with each restricted mode's eCPM relative to unrestricted traffic and the share of traffic served under a restriction. Earnings are estimates. Data starts 2021-03-13.",
+      description: "Ad requests, earnings and eCPM per app and serving restriction (no restriction, non-personalized, limited ads, RDP\u2026), with each restricted mode's eCPM relative to the same app's unrestricted traffic, and the share of traffic served under a restriction per app (`apps`) and overall. One call covers every app. Rows with enough_data=false have too few requests, or too small an unrestricted baseline, to judge. Earnings are estimates. Data starts 2021-03-13.",
       inputSchema: { ...appArg, ...rangeInput, ...currencyArg, ...accountArg },
-      outputSchema: analysisOutput({ currency: external_exports.string(), estimate: external_exports.literal(true), restricted_request_share: external_exports.number().optional() }),
+      outputSchema: analysisOutput({ currency: external_exports.string(), estimate: external_exports.literal(true), apps: external_exports.array(anyRecord), restricted_request_share: external_exports.number().optional() }),
       annotations
     },
     wrap(

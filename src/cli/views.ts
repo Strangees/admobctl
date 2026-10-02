@@ -259,6 +259,7 @@ export function versionsView(r: VersionsResult): Output {
         { key: "match_rate", label: "Match", align: "right" },
         { key: "show_rate", label: "Show", align: "right" },
         { key: "ctr", label: "CTR", align: "right" },
+        { key: "data", label: "Data" },
       ],
       rows: r.rows.map((x) => ({
         ...x,
@@ -266,6 +267,7 @@ export function versionsView(r: VersionsResult): Output {
         match_rate: formatPercent(x.match_rate),
         show_rate: formatPercent(x.show_rate),
         ctr: formatPercent(x.ctr),
+        data: x.enough_data ? "" : "thin",
       })),
     },
     notes: [...r.summary, ...r.notices],
@@ -277,6 +279,7 @@ export function consentView(r: ConsentResult): Output {
     data: r,
     table: {
       columns: [
+        { key: "app", label: "App" },
         { key: "restriction", label: "Serving restriction" },
         { key: "requests", label: "Requests", align: "right" },
         { key: "request_share", label: "Share", align: "right" },
@@ -285,9 +288,11 @@ export function consentView(r: ConsentResult): Output {
         { key: "ecpm_vs_unrestricted", label: "vs open", align: "right" },
         { key: "match_rate", label: "Match", align: "right" },
         { key: "show_rate", label: "Show", align: "right" },
+        { key: "data", label: "Data" },
       ],
       rows: r.rows.map((x) => ({
         ...x,
+        data: x.enough_data ? "" : "thin",
         request_share: formatPercent(x.request_share),
         earnings: x.earnings.toFixed(2),
         ecpm: x.ecpm.toFixed(2),

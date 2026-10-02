@@ -64,7 +64,7 @@ admobctl insights --last 30d --by ad-unit
 
 admobctl analyze versions --by sdk                  # match/show rate per SDK version, per platform
 admobctl analyze versions --by app --app my-game-ios
-admobctl analyze consent --last 30d                  # eCPM under consent/RDP/limited ads vs unrestricted
+admobctl analyze consent --last 30d                  # per app: eCPM under consent/RDP/limited ads vs unrestricted
 admobctl analyze waterfall --group "Banners"         # mediation lines by observed eCPM
 ```
 
@@ -99,8 +99,8 @@ All earnings are **estimates**. Reconcile them against AdMob Payments, because t
 
 ### Analyze
 
-- `analyze versions --by sdk|app|os` shows match rate, show rate and CTR per Google Mobile Ads SDK version (grouped by platform), app version (grouped by app; `--app` narrows it) or OS version, and flags versions that fill or show at least 20% worse than the rest of their group. It uses traffic metrics only, because Google documents the version dimensions as incompatible with earnings.
-- `analyze consent` breaks traffic and earnings down by serving restriction (non-personalized, limited ads, RDP…) and compares each restricted mode's eCPM with unrestricted traffic. The data starts 2021-03-13.
+- `analyze versions --by sdk|app|os` shows match rate, show rate and CTR per Google Mobile Ads SDK version (grouped by platform), app version (grouped by app; `--app` narrows it) or OS version, and flags versions that fill or show at least 20% worse than the rest of their group. Versions with fewer than 1,000 requests are marked as thin data and not judged. It uses traffic metrics only, because Google documents the version dimensions as incompatible with earnings.
+- `analyze consent` breaks traffic and earnings down per app and serving restriction (non-personalized, limited ads, RDP…) and compares each restricted mode's eCPM with the same app's unrestricted traffic, because apps differ too much in eCPM for an account-wide comparison to mean anything. Rows with too little traffic on either side are marked as thin data. The data starts 2021-03-13.
 - `analyze waterfall` lists each mediation group's lines (ad source instances) by observed eCPM, with their share of the group's earnings, and flags idle lines (requests, no impressions) and lines that rarely fill.
 
 `apps list` shows each app's approval state, and `auth doctor` warns about apps marked *action required* in AdMob.

@@ -261,6 +261,10 @@ describe("cli", () => {
     const consent = await cli(["analyze", "consent", "--last", "30d"]);
     expect(consent.code, consent.stderr).toBe(0);
     expect(JSON.parse(consent.stdout).restricted_request_share).toBeCloseTo(0.4);
+    expect(JSON.parse(consent.stdout).apps[0].app).toBe("example-quiz-ios");
+    const table = await cli(["analyze", "consent", "--last", "30d"], { isTTY: true });
+    expect(table.stdout).toMatch(/App\s+Serving restriction\s+Requests/);
+    expect(table.stdout).toMatch(/example-quiz-ios\s+Limited ads\s+10000\s+10\.0%/);
     const wf = await cli(["analyze", "waterfall", "--group", "Banners", "-o", "json"]);
     expect(wf.code, wf.stderr).toBe(0);
     const j = JSON.parse(wf.stdout);

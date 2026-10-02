@@ -46,7 +46,7 @@ Custom alias: `admobctl config set aliases.<alias> <appId>`.
 
 app-ads.txt: iOS websites come from the App Store listing's marketing URL. Google Play listings cannot be read, so Android
 apps use `--website` (this run), then `admobctl config set websites.<alias> <url>` (per app), then `admobctl config set website <url>`
-(all apps); without one they show `unknown-website`.
+(all apps); without one they show `unknown-website`. Ask the user for the website instead of guessing it.
 
 ## Reports
 

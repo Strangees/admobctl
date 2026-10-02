@@ -26,6 +26,10 @@ Read-only access to the user's AdMob account through the `admobctl` MCP tools (p
 | Which apps / ad units exist | `admobctl_list_apps`, `admobctl_list_ad_units` | `admobctl apps list` |
 | Is app-ads.txt set up; unexplained limited ad serving | `admobctl_check_app_ads` | `admobctl apps app-ads [--website <url>]` |
 
+app-ads.txt on Android: Google Play listings cannot be read, so Android apps show `unknown-website` until the developer
+website is added by hand. Do not guess it. Ask the user for the URL and pass it as `website` (CLI: `--website <url>`), or
+have them save it once with `admobctl config set websites.<alias> <url>`; later checks then need no argument.
+
 Refer to apps by their alias (e.g. `my-game-ios`) from `admobctl_list_apps`. Dates are `YYYY-MM` or `YYYY-MM-DD`;
 "last month" means the previous calendar month.
 
