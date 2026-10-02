@@ -5,6 +5,7 @@ import type { AuditLog } from "../core/audit.js";
 import type { Check } from "../core/auth/doctor.js";
 import type { CheckResult, CheckRow } from "../core/check.js";
 import { JOURNAL_COLUMNS, type FinanceForecast, type FinanceMonth, type FinanceRange, type JournalRow } from "../core/finance.js";
+import type { GeoResult } from "../core/geo.js";
 import type { InsightsResult } from "../core/insights.js";
 import type { LintResult } from "../core/lint.js";
 import type { PublisherAccount } from "../core/client.js";
@@ -610,5 +611,36 @@ export function lintView(r: LintResult): Output {
       rows: r.findings as unknown as Array<Record<string, unknown>>,
     },
     notes: [...r.summary, `Traffic checked ${r.from} → ${r.to}.`, ...r.notices],
+  };
+}
+
+export function geoView(r: GeoResult): Output {
+  return {
+    data: r,
+    table: {
+      columns: [
+        { key: "country", label: "Country" },
+        { key: "format", label: "Format" },
+        { key: "earnings", label: `Earnings (${r.currency})`, align: "right" },
+        { key: "earnings_share", label: "Share", align: "right" },
+        { key: "requests", label: "Requests", align: "right" },
+        { key: "match_rate", label: "Match", align: "right" },
+        { key: "show_rate", label: "Show", align: "right" },
+        { key: "ecpm", label: "eCPM", align: "right" },
+        { key: "ecpm_vs_format", label: "vs format", align: "right" },
+        { key: "data", label: "Data" },
+      ],
+      rows: r.rows.map((x) => ({
+        ...x,
+        earnings: formatMicros(x.earnings_micros),
+        earnings_share: formatPercent(x.earnings_share),
+        match_rate: formatPercent(x.match_rate),
+        show_rate: formatPercent(x.show_rate),
+        ecpm: x.ecpm.toFixed(2),
+        ecpm_vs_format: x.ecpm_vs_format === undefined ? "" : `${x.ecpm_vs_format.toFixed(1)}×`,
+        data: x.enough_data ? "" : "thin",
+      })),
+    },
+    notes: [...r.summary, ...r.notices],
   };
 }

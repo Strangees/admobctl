@@ -7,6 +7,7 @@ import { check } from "../core/check.js";
 import { AdmobctlError } from "../core/errors.js";
 import { financeForecast, financeMonth, financeRange, JOURNAL_COLUMNS, journalRows } from "../core/finance.js";
 import { exportJournal } from "../core/journal.js";
+import { analyzeGeo } from "../core/geo.js";
 import { INSIGHT_DIMENSIONS, insights } from "../core/insights.js";
 import { lint } from "../core/lint.js";
 import { log } from "../core/log.js";
@@ -580,6 +581,29 @@ export function createMcpServer(deps: McpDeps): McpServer {
     wrap(async (a: RangeArgs & { app?: string; group?: string; currency?: string }) =>
       fitRows({ ...(await analyzeWaterfall(svc(a), { ...range(a), app: a.app, group: a.group, currency: a.currency })) }) as unknown as Record<string, unknown>,
     ),
+  );
+
+  server.registerTool(
+    "admobctl_analyze_geo",
+    {
+      title: "AdMob country and format mix",
+      description:
+        "Earnings, share, requests, match rate, show rate and eCPM per country and ad format, with each cell's eCPM relative to its format across all countries, plus totals per country (`countries`). Highlights: concentration (one country brings half or more of the earnings), low-fill (a big cell fills far worse than the same format elsewhere) and high-ecpm (a small cell pays 1.5× its format's average or more). Rows with enough_data=false have too few requests to judge. Earnings are estimates.",
+      inputSchema: {
+        ...appArg,
+        min_requests: z.number().int().positive().optional().describe("Requests a country and format need before they are judged (default 1000)"),
+        ...rangeInput,
+        ...currencyArg,
+        ...accountArg,
+      },
+      outputSchema: analysisOutput({ currency: z.string(), estimate: z.literal(true), countries: z.array(anyRecord) }),
+      annotations,
+    },
+    wrap(async (a: RangeArgs & { app?: string; min_requests?: number; currency?: string }) => {
+      const r = await analyzeGeo(svc(a), { ...range(a), app: a.app, minRequests: a.min_requests, currency: a.currency });
+      // The per-country totals repeat what the rows hold: keep the biggest so the rows get the room.
+      return fitRows({ ...r, countries: r.countries.slice(0, 25) }) as unknown as Record<string, unknown>;
+    }),
   );
 
   server.registerTool(

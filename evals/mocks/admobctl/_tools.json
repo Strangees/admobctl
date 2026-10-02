@@ -1786,6 +1786,132 @@
       }
     },
     {
+      "name": "admobctl_analyze_geo",
+      "title": "AdMob country and format mix",
+      "description": "Earnings, share, requests, match rate, show rate and eCPM per country and ad format, with each cell's eCPM relative to its format across all countries, plus totals per country (`countries`). Highlights: concentration (one country brings half or more of the earnings), low-fill (a big cell fills far worse than the same format elsewhere) and high-ecpm (a small cell pays 1.5× its format's average or more). Rows with enough_data=false have too few requests to judge. Earnings are estimates.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "description": "Only this app (alias, app ID or name)",
+            "type": "string"
+          },
+          "min_requests": {
+            "description": "Requests a country and format need before they are judged (default 1000)",
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "last_days": {
+            "description": "The last N complete days (default 30)",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 366
+          },
+          "from": {
+            "description": "Start, YYYY-MM or YYYY-MM-DD (instead of last_days)",
+            "type": "string"
+          },
+          "to": {
+            "description": "End, YYYY-MM or YYYY-MM-DD",
+            "type": "string"
+          },
+          "currency": {
+            "description": "ISO 4217 code to convert earnings into, e.g. USD. Default: the account currency.",
+            "type": "string",
+            "pattern": "^[A-Za-z]{3}$"
+          },
+          "account": {
+            "description": "Publisher ID (pub-…). Defaults to the configured or only account.",
+            "type": "string"
+          }
+        },
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "highlights": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "summary": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "notices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "currency": {
+            "type": "string"
+          },
+          "estimate": {
+            "type": "boolean",
+            "const": true
+          },
+          "countries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "rows",
+          "highlights",
+          "summary",
+          "notices",
+          "currency",
+          "estimate",
+          "countries"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
       "name": "admobctl_lint",
       "title": "Lint the AdMob setup",
       "description": "Check the account's setup for things that are broken or unused. Problems (they limit or stop ad serving): apps marked action required, enabled mediation groups that target an ad unit that does not exist or have no enabled line. Notes (worth a look, often intentional): apps in review, ad units with no ad requests in the period, ad units in no enabled mediation group. `problems` counts the problems; each finding has a kind, severity, target and message. Mediation checks are skipped with a notice when the account cannot read mediation groups (AdMob API v1beta).",

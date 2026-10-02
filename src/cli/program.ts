@@ -11,6 +11,7 @@ import { check } from "../core/check.js";
 import { AdmobctlError } from "../core/errors.js";
 import { financeForecast, financeMonth, financeRange, journalRows } from "../core/finance.js";
 import { EXPORT_FORMATS, exportJournal } from "../core/journal.js";
+import { analyzeGeo } from "../core/geo.js";
 import { INSIGHT_DIMENSIONS, insights, type InsightDimension } from "../core/insights.js";
 import { lint } from "../core/lint.js";
 import { log } from "../core/log.js";
@@ -47,6 +48,7 @@ import {
   financeForecastView,
   financeMonthView,
   financeRangeView,
+  geoView,
   insightsView,
   journalView,
   keyValueView,
@@ -610,7 +612,7 @@ export function buildProgram(io: CliIO): Command {
 
   const analyze = program
     .command("analyze")
-    .description("Curated analyses: SDK/app/OS version health, consent (serving restriction) impact, mediation waterfall, daily trend");
+    .description("Curated analyses: SDK/app/OS version health, consent (serving restriction) impact, mediation waterfall, country and format mix, daily trend");
   withRange(
     analyze
       .command("versions")
@@ -640,6 +642,16 @@ export function buildProgram(io: CliIO): Command {
     emit(cmd, waterfallView(await analyzeWaterfall(svc(cmd), { ...range(o), app: o.app, group: o.group, currency: o.currency })));
   });
 
+  withRange(
+    analyze
+      .command("geo")
+      .description("Earnings, fill and eCPM per country and format, flagging big cells that fill badly and small ones that pay well")
+      .option("--app <alias|id>", "only this app")
+      .option("--min-requests <n>", "requests a country and format need before they are judged (default 1000)", positiveInt)
+      .option("--currency <code>", "convert earnings to this ISO 4217 currency"),
+  ).action(async (o: RangeOpts & { app?: string; minRequests?: number; currency?: string }, cmd: Command) => {
+    emit(cmd, geoView(await analyzeGeo(svc(cmd), { ...range(o), app: o.app, minRequests: o.minRequests, currency: o.currency })));
+  });
   withRange(
     analyze
       .command("trend")

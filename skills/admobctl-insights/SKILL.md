@@ -18,7 +18,8 @@ threshold; say so plainly and do not go looking for problems in `thin` rows.
 For narrower questions use the curated analyses, which follow the same highlights/summary shape:
 `admobctl_analyze_versions` (did an SDK upgrade or app release hurt match or show rate),
 `admobctl_analyze_consent` (how much traffic runs under consent/RDP/limited-ads restrictions and at what eCPM, per app
-in one call), `admobctl_analyze_waterfall` (which mediation lines earn, which sit idle) and `admobctl_analyze_trend`
+in one call), `admobctl_analyze_waterfall` (which mediation lines earn, which sit idle), `admobctl_analyze_geo` (earnings, fill and
+eCPM per country and format in one call) and `admobctl_analyze_trend`
 (the day a change started, weekday patterns, the first day an app had traffic).
 
 Rows marked `enough_data: false` in the versions and consent analyses have too few requests to judge. Show them if
