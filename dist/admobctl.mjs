@@ -7202,7 +7202,7 @@ var require_dist = __commonJS({
 });
 
 // src/cli/program.ts
-import { chmodSync as chmodSync5, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
+import { chmodSync as chmodSync5, readFileSync as readFileSync5, writeFileSync as writeFileSync3 } from "node:fs";
 
 // node_modules/commander/lib/error.js
 var CommanderError = class extends Error {
@@ -12215,6 +12215,42 @@ async function checkAppAds(svc, opts) {
   return { account: account.name, publisherId: account.publisherId, expectedLine, apps: results, ...summarize(results, expectedLine) };
 }
 
+// src/core/audit.ts
+import { appendFileSync, chmodSync as chmodSync4, readFileSync as readFileSync3 } from "node:fs";
+import { join as join3 } from "node:path";
+function appendAudit(dir, entry) {
+  ensurePrivateDir(dir);
+  const file2 = join3(dir, "audit.log");
+  appendFileSync(file2, `${JSON.stringify(entry)}
+`, { mode: 384 });
+  chmodSync4(file2, 384);
+}
+function readAudit(dir, opts = {}) {
+  const file2 = join3(dir, "audit.log");
+  let text = "";
+  try {
+    text = readFileSync3(file2, "utf8");
+  } catch (err) {
+    if (err.code !== "ENOENT") throw err;
+  }
+  let skipped = 0;
+  let entries = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const e = JSON.parse(line);
+      if (typeof e?.time !== "string" || typeof e.action !== "string") throw new Error("not an entry");
+      entries.push(e);
+    } catch {
+      skipped++;
+    }
+  }
+  entries.reverse();
+  if (opts.failed) entries = entries.filter((e) => !e.ok);
+  if (opts.last !== void 0) entries = entries.slice(0, opts.last);
+  return { file: file2, entries, skipped };
+}
+
 // src/version.ts
 var VERSION = true ? "0.2.0" : "0.0.0-dev";
 
@@ -12391,17 +12427,6 @@ async function exportJournal(svc, q) {
   )}
 `;
   return { content, notes };
-}
-
-// src/core/audit.ts
-import { appendFileSync, chmodSync as chmodSync4 } from "node:fs";
-import { join as join3 } from "node:path";
-function appendAudit(dir, entry) {
-  ensurePrivateDir(dir);
-  const file2 = join3(dir, "audit.log");
-  appendFileSync(file2, `${JSON.stringify(entry)}
-`, { mode: 384 });
-  chmodSync4(file2, 384);
 }
 
 // src/core/write.ts
@@ -12706,7 +12731,7 @@ function audit(svc, e) {
 }
 
 // src/core/auth/adc.ts
-import { readFileSync as readFileSync3 } from "node:fs";
+import { readFileSync as readFileSync4 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { join as join4 } from "node:path";
 function adcPath(env = process.env, platform = process.platform, home = homedir2()) {
@@ -12716,7 +12741,7 @@ function adcPath(env = process.env, platform = process.platform, home = homedir2
   if (platform === "win32") return join4(env.APPDATA ?? join4(home, "AppData", "Roaming"), "gcloud", file2);
   return join4(home, ".config", "gcloud", file2);
 }
-function readAdcInfo(path2 = adcPath(), read = (p) => readFileSync3(p, "utf8")) {
+function readAdcInfo(path2 = adcPath(), read = (p) => readFileSync4(p, "utf8")) {
   let raw;
   try {
     raw = read(path2);
@@ -14272,6 +14297,31 @@ function writeView(plans, results) {
     notes: applied ? [] : plans.flatMap((p) => [requestLine(p), JSON.stringify(p.body, null, 2)])
   };
 }
+function auditLogView(log2) {
+  return {
+    data: log2,
+    table: {
+      columns: [
+        { key: "time", label: "Time (UTC)" },
+        { key: "action", label: "Action" },
+        { key: "request", label: "Request" },
+        { key: "outcome", label: "Outcome" },
+        { key: "profile", label: "Profile" }
+      ],
+      rows: log2.entries.map((e) => ({
+        time: e.time.replace("T", " ").replace(/\.\d+Z$/, ""),
+        action: e.action,
+        request: `${e.method} ${e.path}`,
+        outcome: e.ok ? e.result ?? "ok" : `failed: ${e.error ?? "unknown"}`,
+        profile: e.profile
+      }))
+    },
+    notes: [
+      ...log2.entries.length ? [] : [`No applied writes recorded in ${log2.file}.`],
+      ...log2.skipped ? [`Skipped ${log2.skipped} unreadable ${log2.skipped === 1 ? "line" : "lines"} in ${log2.file}.`] : []
+    ]
+  };
+}
 
 // src/cli/program.ts
 var list = (v, prev = []) => [...prev, ...v.split(",").map((s) => s.trim()).filter(Boolean)];
@@ -14293,7 +14343,7 @@ function parseDays(v) {
 function readJsonFile(path2) {
   let text;
   try {
-    text = readFileSync4(path2, "utf8");
+    text = readFileSync5(path2, "utf8");
   } catch (err) {
     throw new AdmobctlError("USAGE", `Cannot read ${path2}: ${err.message}`);
   }
@@ -14584,6 +14634,7 @@ function buildProgram(io) {
     });
     await new Promise((resolve) => process.stdin.on("close", resolve));
   });
+  program2.command("audit-log").description("Show the writes applied with --yes (from the local audit log), newest first").option("--last <n>", "only the newest n entries", positiveInt).option("--failed", "only writes the API rejected").action((o, cmd) => emit(cmd, auditLogView(readAudit(dir(), o))));
   const config2 = program2.command("config").description("Read and write ~/.admobctl/config.json (no secrets)");
   config2.command("get [key]").description("Show the resolved profile, or one key").action((key, _o, cmd) => {
     const p = resolveProfile(loadConfig(dir()), g(cmd).profile);
