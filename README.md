@@ -63,6 +63,7 @@ admobctl finance forecast                             # this month so far + mont
 admobctl finance export --month 2026-09               # Revenue Journal JSON for accounting imports
 admobctl finance export --from 2026-01 --to 2026-09 --as revenue-journal-csv
 
+admobctl check                                        # exits 1 if earnings or fill dropped
 admobctl insights --last 30d --by ad-unit
 
 admobctl analyze versions --by sdk                  # match/show rate per SDK version, per platform
@@ -103,6 +104,18 @@ All earnings are **estimates**. Reconcile them against AdMob Payments, because t
 ### Insights
 
 `insights` compares a period with the equally long period before it, by app, ad unit, country, format or platform. It reports earnings, share, eCPM, request RPM, match rate, show rate and CTR. Highlights cover top and bottom earners, high requests with low fill, low show rate, and swings above `--swing` percent, and a plain-language summary gives the numbers behind each claim.
+
+### Check
+
+`admobctl check` is a health check for cron or a scheduled agent. It compares the last complete day with the seven days before it, per app and for all apps together, and exits 1 when daily earnings, match rate or show rate dropped by 30% or more:
+
+```bash
+admobctl check                                   # yesterday against the week before
+admobctl check --window 3d --baseline 14d --drop 40
+admobctl check || echo "AdMob dropped" | mail -s "AdMob check" you@example.com
+```
+
+Apps with fewer than 1000 baseline requests are listed as `too little data` and not judged (`--min-requests`). Save your own defaults with `admobctl config set check.drop 40` (also `check.window`, `check.baseline`, `check.minRequests`).
 
 ### Analyze
 
@@ -166,7 +179,7 @@ The MCP server stays read-only: no write is exposed as an MCP tool.
 
 ## MCP server
 
-`admobctl mcp` serves read-only tools over stdio: `admobctl_list_accounts`, `admobctl_list_apps`, `admobctl_list_ad_units`, `admobctl_network_report`, `admobctl_mediation_report`, `admobctl_finance_month`, `admobctl_finance_range`, `admobctl_finance_export`, `admobctl_finance_forecast`, `admobctl_insights`, `admobctl_analyze_versions`, `admobctl_analyze_consent`, `admobctl_analyze_waterfall`, `admobctl_campaign_report`, `admobctl_list_ad_sources`, `admobctl_list_adapters`, `admobctl_list_mediation_groups`, `admobctl_list_ad_unit_mappings` and `admobctl_check_app_ads`. Reports default to 200 rows and are trimmed with a notice to stay within roughly 25k tokens.
+`admobctl mcp` serves read-only tools over stdio: `admobctl_list_accounts`, `admobctl_list_apps`, `admobctl_list_ad_units`, `admobctl_network_report`, `admobctl_mediation_report`, `admobctl_finance_month`, `admobctl_finance_range`, `admobctl_finance_export`, `admobctl_finance_forecast`, `admobctl_insights`, `admobctl_check`, `admobctl_analyze_versions`, `admobctl_analyze_consent`, `admobctl_analyze_waterfall`, `admobctl_campaign_report`, `admobctl_list_ad_sources`, `admobctl_list_adapters`, `admobctl_list_mediation_groups`, `admobctl_list_ad_unit_mappings` and `admobctl_check_app_ads`. Reports default to 200 rows and are trimmed with a notice to stay within roughly 25k tokens.
 
 ## Agent plugin (Claude Code and Codex)
 

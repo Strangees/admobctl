@@ -7,6 +7,7 @@ import { configDir, configPath, loadConfig, resolveProfile, saveConfig, setProfi
 import { analyzeConsent, analyzeVersions, analyzeWaterfall, VERSION_KINDS, type VersionKind } from "../core/analyze.js";
 import { checkAppAds } from "../core/app-ads.js";
 import { readAudit } from "../core/audit.js";
+import { check } from "../core/check.js";
 import { AdmobctlError } from "../core/errors.js";
 import { financeForecast, financeMonth, financeRange, journalRows } from "../core/finance.js";
 import { EXPORT_FORMATS, exportJournal } from "../core/journal.js";
@@ -38,6 +39,7 @@ import {
   appAdsView,
   appsView,
   auditLogView,
+  checkView,
   consentView,
   doctorView,
   financeForecastView,
@@ -87,9 +89,9 @@ function parseFilters(values: string[] = []): Record<string, string[]> {
   return out;
 }
 
-function parseDays(v: string): number {
+function parseDays(v: string, flag = "--last"): number {
   const m = /^(\d+)d$/.exec(v.trim());
-  if (!m) throw new AdmobctlError("USAGE", `--last expects a number of days like 30d, got "${v}"`);
+  if (!m) throw new AdmobctlError("USAGE", `${flag} expects a number of days like 30d, got "${v}"`);
   return Number(m[1]);
 }
 
@@ -550,7 +552,7 @@ export function buildProgram(io: CliIO): Command {
   program
     .command("insights")
     .description("Monetization insights: top/bottom earners, low fill, swings vs the previous period")
-    .option("--last <Nd>", "the last N complete days (default 30d)", parseDays)
+    .option("--last <Nd>", "the last N complete days (default 30d)", (v) => parseDays(v))
     .option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)")
     .option("--to <date>", "end, YYYY-MM or YYYY-MM-DD")
     .addOption(new Option("--by <dimension>", "group by").choices([...INSIGHT_DIMENSIONS]).default("ad-unit"))
@@ -568,11 +570,26 @@ export function buildProgram(io: CliIO): Command {
       emit(cmd, insightsView(r));
     });
 
+  // ── check ─────────────────────────────────────────────────────────
+  program
+    .command("check")
+    .description("Health check for cron: exits 1 when an app's earnings, match rate or show rate dropped against the days before")
+    .option("--window <Nd>", "complete days to judge, ending yesterday (default 1d)", (v) => parseDays(v, "--window"))
+    .option("--baseline <Nd>", "days just before the window to compare with (default 7d)", (v) => parseDays(v, "--baseline"))
+    .option("--drop <percent>", "a drop of this much or more is a breach (default 30)", positiveInt)
+    .option("--min-requests <n>", "baseline requests an app needs before it is judged (default 1000)", positiveInt)
+    .option("--app <alias|id>", "only this app")
+    .action(async (o: { window?: number; baseline?: number; drop?: number; minRequests?: number; app?: string }, cmd: Command) => {
+      const r = await check(svc(cmd), { ...o, drop: o.drop === undefined ? undefined : o.drop / 100 });
+      emit(cmd, checkView(r));
+      if (r.breaches) process.exitCode = 1;
+    });
+
   // ── analyze ───────────────────────────────────────────────────────
   type RangeOpts = { last?: number; from?: string; to?: string };
   const withRange = (cmd: Command) =>
     cmd
-      .option("--last <Nd>", "the last N complete days (default 30d)", parseDays)
+      .option("--last <Nd>", "the last N complete days (default 30d)", (v) => parseDays(v))
       .option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)")
       .option("--to <date>", "end, YYYY-MM or YYYY-MM-DD");
   const range = (o: RangeOpts) => ({ last: o.last, from: o.from, to: o.to });

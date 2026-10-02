@@ -10948,7 +10948,8 @@ function resolveProfile(config2, name) {
   };
 }
 var SCALAR_KEYS = /* @__PURE__ */ new Set(["account", "quotaProject", "authMode", "oauthClientId", "website"]);
-var MAP_KEYS = new Set(Object.keys(DEFAULT_FINANCE).map((k) => `finance.${k}`));
+var CHECK_KEYS = ["check.window", "check.baseline", "check.drop", "check.minRequests"];
+var MAP_KEYS = /* @__PURE__ */ new Set([...Object.keys(DEFAULT_FINANCE).map((k) => `finance.${k}`), ...CHECK_KEYS]);
 var AUTH_MODES = ["auto", "adc", "oauth"];
 var SETTABLE_KEYS = [...SCALAR_KEYS, ...MAP_KEYS, "aliases.<alias>", "websites.<alias>"];
 function setProfileValue(config2, profile, key, value) {
@@ -10963,6 +10964,9 @@ function setProfileValue(config2, profile, key, value) {
   }
   if (key === "finance.decimalSeparator" && value !== void 0 && value !== "." && value !== ",") {
     throw usageError('finance.decimalSeparator must be "." or ","');
+  }
+  if (CHECK_KEYS.includes(key) && value !== void 0 && !/^[1-9]\d*$/.test(value)) {
+    throw usageError(`${key} must be a positive whole number, got "${value}"`);
   }
   const [head, sub, ...rest] = key.split(".");
   if (rest.length === 0 && sub && (MAP_KEYS.has(key) || head === "aliases" || head === "websites")) {
@@ -11699,26 +11703,26 @@ async function insights(svc, opts) {
   const currency = cur.report.currency ?? acct.currencyCode;
   const money = (micros) => `${formatMicros(micros)} ${currency}`;
   const highlights = [];
-  const add = (kind, r, message) => highlights.push({ kind, key: r.key, label: r.label, message });
+  const add2 = (kind, r, message) => highlights.push({ kind, key: r.key, label: r.label, message });
   const topN = Math.min(3, Math.floor(rows.length / 2) || rows.length);
   const top = rows.slice(0, topN);
   for (const r of top) {
-    add("top", r, `${r.label} earned ${money(r.earnings_micros)} (${pct(r.share)} of total, eCPM ${r.ecpm.toFixed(2)}).`);
+    add2("top", r, `${r.label} earned ${money(r.earnings_micros)} (${pct(r.share)} of total, eCPM ${r.ecpm.toFixed(2)}).`);
   }
   const minRequests = Math.max(1e3, totalRequests * 0.05);
   const bottom = rows.slice(topN).filter((r) => r.requests >= 1e3).reverse().slice(0, 3);
   for (const r of bottom) {
-    add("bottom", r, `${r.label} earned only ${money(r.earnings_micros)} from ${r.requests} requests (request RPM ${r.request_rpm.toFixed(2)}).`);
+    add2("bottom", r, `${r.label} earned only ${money(r.earnings_micros)} from ${r.requests} requests (request RPM ${r.request_rpm.toFixed(2)}).`);
   }
   for (const r of rows) {
     if (r.requests >= minRequests && r.match_rate < 0.5) {
-      add("low-fill", r, `${r.label} has low fill: ${pct(r.match_rate)} match rate on ${r.requests} requests.`);
+      add2("low-fill", r, `${r.label} has low fill: ${pct(r.match_rate)} match rate on ${r.requests} requests.`);
     }
   }
   const minMatched = Math.max(1e3, totalMatched * 0.05);
   for (const r of rows) {
     if (r.matched_requests >= minMatched && r.show_rate < 0.5) {
-      add("low-show-rate", r, `${r.label} shows only ${pct(r.show_rate)} of matched ads (${r.impressions} of ${r.matched_requests}); check when ads are loaded vs shown.`);
+      add2("low-show-rate", r, `${r.label} shows only ${pct(r.show_rate)} of matched ads (${r.impressions} of ${r.matched_requests}); check when ads are loaded vs shown.`);
     }
   }
   const threshold = opts.swingThreshold ?? 0.3;
@@ -11727,13 +11731,13 @@ async function insights(svc, opts) {
     const p = prevAgg.get(r.key)?.earnings ?? 0;
     const delta = r.earnings_micros - p;
     if (Math.abs(delta) < minSwing) continue;
-    if (p === 0) add("new", r, `${r.label} is new this period: ${money(r.earnings_micros)}.`);
+    if (p === 0) add2("new", r, `${r.label} is new this period: ${money(r.earnings_micros)}.`);
     else if (r.change !== void 0 && Math.abs(r.change) >= threshold) {
-      add(r.change > 0 ? "swing-up" : "swing-down", r, `${r.label} ${r.change > 0 ? "rose" : "fell"} ${signedPct(r.change)}: ${money(p)} \u2192 ${money(r.earnings_micros)}.`);
+      add2(r.change > 0 ? "swing-up" : "swing-down", r, `${r.label} ${r.change > 0 ? "rose" : "fell"} ${signedPct(r.change)}: ${money(p)} \u2192 ${money(r.earnings_micros)}.`);
     }
   }
   for (const p of prevAgg.values()) {
-    if (!curAgg.has(p.key) && p.earnings >= minSwing) add("gone", p, `${p.label} earned ${money(p.earnings)} last period and nothing this period.`);
+    if (!curAgg.has(p.key) && p.earnings >= minSwing) add2("gone", p, `${p.label} earned ${money(p.earnings)} last period and nothing this period.`);
   }
   const change2 = prevTotal > 0 ? (total - prevTotal) / prevTotal : void 0;
   const from = formatDate(range.startDate);
@@ -12317,6 +12321,136 @@ function readAudit(dir, opts = {}) {
   if (opts.failed) entries = entries.filter((e) => !e.ok);
   if (opts.last !== void 0) entries = entries.slice(0, opts.last);
   return { file: file2, entries, skipped };
+}
+
+// src/core/check.ts
+var CHECK_DEFAULTS = { window: 1, baseline: 7, drop: 0.3, minRequests: 1e3 };
+var ZERO = { earnings: 0, requests: 0, matched: 0, impressions: 0 };
+function sumByApp(report) {
+  const out = /* @__PURE__ */ new Map();
+  for (const row of report.rows) {
+    const id = row.dimensions.APP?.value ?? "unknown";
+    const s = out.get(id) ?? { ...ZERO };
+    s.earnings += row.metrics.ESTIMATED_EARNINGS ?? 0;
+    s.requests += row.metrics.AD_REQUESTS ?? 0;
+    s.matched += row.metrics.MATCHED_REQUESTS ?? 0;
+    s.impressions += row.metrics.IMPRESSIONS ?? 0;
+    out.set(id, s);
+  }
+  return out;
+}
+var add = (a, b) => ({
+  earnings: a.earnings + b.earnings,
+  requests: a.requests + b.requests,
+  matched: a.matched + b.matched,
+  impressions: a.impressions + b.impressions
+});
+function wholeNumber(value, configured, fallback, name, max) {
+  const n = value ?? (configured === void 0 ? fallback : Number(configured));
+  if (!Number.isInteger(n) || n < 1 || n > max) throw usageError(`${name} must be a whole number between 1 and ${max}, got "${value ?? configured}"`);
+  return n;
+}
+async function check(svc, opts = {}) {
+  const cfg = svc.profile.check ?? {};
+  const windowDays = wholeNumber(opts.window, cfg.window, CHECK_DEFAULTS.window, "The window (--window, check.window) in days", 90);
+  const baselineDays = wholeNumber(opts.baseline, cfg.baseline, CHECK_DEFAULTS.baseline, "The baseline (--baseline, check.baseline) in days", 366);
+  const dropPercent = opts.drop !== void 0 ? opts.drop * 100 : cfg.drop === void 0 ? CHECK_DEFAULTS.drop * 100 : Number(cfg.drop);
+  if (!(dropPercent >= 1 && dropPercent <= 99)) throw usageError("The drop threshold (--drop, check.drop) must be between 1 and 99 (percent).");
+  const drop = dropPercent / 100;
+  const minRequests = wholeNumber(opts.minRequests, cfg.minRequests, CHECK_DEFAULTS.minRequests, "The minimum requests (--min-requests, check.minRequests)", 1e9);
+  const acct = await svc.account();
+  const window = lastNDays(windowDays, todayIn(acct.reportingTimeZone, svc.now()));
+  const baselineEnd = addDays(window.startDate, -1);
+  const baseline = { startDate: addDays(baselineEnd, -(baselineDays - 1)), endDate: baselineEnd };
+  const [{ current, previous }, apps] = await Promise.all([
+    svc.rawReportWithPrevious(
+      "network",
+      {
+        dateRange: window,
+        by: ["app"],
+        metrics: ["earnings", "requests", "matched-requests", "impressions"],
+        filters: opts.app ? { app: [opts.app] } : void 0
+      },
+      { dateRange: baseline }
+    ),
+    svc.apps()
+  ]);
+  const currency = current.report.currency ?? acct.currencyCode;
+  const now = sumByApp(current.report);
+  const before = sumByApp(previous.report);
+  const alias = new Map(apps.map((a) => [a.appId, a.alias]));
+  const perDay = (micros, days) => Math.round(micros / days);
+  const money = (micros) => `${formatMicros(micros)} ${currency}`;
+  const findings = [];
+  const judge = (app, appId, w, b) => {
+    const earnings = perDay(w.earnings, windowDays);
+    const baseEarnings = perDay(b.earnings, baselineDays);
+    const row = {
+      app,
+      app_id: appId,
+      status: "ok",
+      earnings_per_day: microsToAmount(earnings),
+      earnings_per_day_micros: earnings,
+      baseline_earnings_per_day: microsToAmount(baseEarnings),
+      baseline_earnings_per_day_micros: baseEarnings,
+      requests: w.requests,
+      baseline_requests: b.requests,
+      match_rate: ratio(w.matched, w.requests),
+      baseline_match_rate: ratio(b.matched, b.requests),
+      show_rate: ratio(w.impressions, w.matched),
+      baseline_show_rate: ratio(b.impressions, b.matched)
+    };
+    if (b.earnings > 0) row.earnings_change = (w.earnings / windowDays - b.earnings / baselineDays) / (b.earnings / baselineDays);
+    if (b.requests < minRequests) {
+      row.status = "thin";
+      return row;
+    }
+    const breach = (metric2, change2, message) => {
+      row.status = "breach";
+      findings.push({ app, metric: metric2, change: change2, message });
+    };
+    if (row.earnings_change !== void 0 && row.earnings_change <= -drop) {
+      breach(
+        "earnings",
+        row.earnings_change,
+        w.requests === 0 ? `${app} sent no ad requests in the window; its baseline is ${money(baseEarnings)} per day. Check that the app still loads ads (release, SDK, app-ads.txt, account status).` : `${app} earned ${money(earnings)} per day, ${pct(-row.earnings_change)} below its ${money(baseEarnings)} baseline.`
+      );
+    }
+    const rate = (metric2, name, value, base, denominator) => {
+      if (denominator < minRequests / 10 || base <= 0) return;
+      const change2 = (value - base) / base;
+      if (change2 <= -drop) breach(metric2, change2, `${app}: ${name} fell to ${pct(value)} from ${pct(base)}.`);
+    };
+    rate("match_rate", "match rate", row.match_rate, row.baseline_match_rate, w.requests);
+    rate("show_rate", "show rate", row.show_rate, row.baseline_show_rate, w.matched);
+    return row;
+  };
+  const ids = [.../* @__PURE__ */ new Set([...before.keys(), ...now.keys()])].sort(
+    (a, b) => (before.get(b)?.earnings ?? 0) - (before.get(a)?.earnings ?? 0) || (now.get(b)?.earnings ?? 0) - (now.get(a)?.earnings ?? 0)
+  );
+  const rows = ids.map((id) => judge(alias.get(id) ?? id, id, now.get(id) ?? ZERO, before.get(id) ?? ZERO));
+  const result = {
+    window: { from: formatDate(window.startDate), to: formatDate(window.endDate), days: windowDays },
+    baseline: { from: formatDate(baseline.startDate), to: formatDate(baseline.endDate), days: baselineDays },
+    thresholds: { drop, min_requests: minRequests },
+    currency,
+    timeZone: current.report.timeZone ?? acct.reportingTimeZone,
+    estimate: true,
+    breaches: 0,
+    rows,
+    findings,
+    summary: [],
+    notices: [...current.report.warnings.map((w) => `API warning: ${w}`), ...current.notices]
+  };
+  if (!opts.app) result.total = judge("(all apps)", "", [...now.values()].reduce(add, ZERO), [...before.values()].reduce(add, ZERO));
+  result.breaches = findings.length;
+  const thin = rows.filter((r) => r.status === "thin").length;
+  if (thin) {
+    result.notices.push(`${thin} ${thin === 1 ? "app" : "apps"} had fewer than ${minRequests} requests in the baseline and ${thin === 1 ? "was" : "were"} not judged.`);
+  }
+  const span = `${result.window.from}${windowDays > 1 ? ` \u2192 ${result.window.to}` : ""} against ${result.baseline.from} \u2192 ${result.baseline.to}`;
+  result.summary = findings.length ? [`${findings.length} ${findings.length === 1 ? "drop" : "drops"} of ${pct(drop)} or more, ${span}.`, ...findings.map((f) => f.message), ESTIMATE_LABEL] : [`No drop of ${pct(drop)} or more in earnings, match rate or show rate, ${span}.`, ESTIMATE_LABEL];
+  return result;
 }
 
 // src/version.ts
@@ -13869,13 +14003,13 @@ var AdmobService = class _AdmobService {
   }
   /**
    * A report and the same report for the equal-length period just before it, fetched together.
-   * `previousQuery` overrides parts of the query for the earlier period (e.g. no row cap).
+   * `previousQuery` overrides parts of the query for the earlier period (e.g. no row cap, or another range).
    */
   async rawReportWithPrevious(kind, q, previousQuery = {}) {
     const range = q.dateRange ?? dateRangeFromArgs(q.from ?? "", q.to ?? q.from ?? "");
     const [current, previous] = await Promise.all([
       this.rawReport(kind, { ...q, dateRange: range }),
-      this.rawReport(kind, { ...q, ...previousQuery, dateRange: previousPeriod(range) })
+      this.rawReport(kind, { ...q, dateRange: previousPeriod(range), ...previousQuery })
     ]);
     return { current, previous };
   }
@@ -14504,6 +14638,35 @@ function auditLogView(log2) {
     ]
   };
 }
+var CHECK_STATUS = { ok: "ok", breach: "DROP", thin: "too little data" };
+function checkView(r) {
+  const row = (c) => ({
+    app: c.app,
+    status: CHECK_STATUS[c.status],
+    earnings: formatMicros(c.earnings_per_day_micros),
+    baseline: formatMicros(c.baseline_earnings_per_day_micros),
+    change: c.earnings_change === void 0 ? "" : signedPercent(c.earnings_change),
+    match_rate: `${formatPercent(c.match_rate)} (${formatPercent(c.baseline_match_rate)})`,
+    show_rate: `${formatPercent(c.show_rate)} (${formatPercent(c.baseline_show_rate)})`
+  });
+  return {
+    data: r,
+    table: {
+      columns: [
+        { key: "app", label: "App" },
+        { key: "status", label: "Status" },
+        { key: "earnings", label: `Per day (${r.currency})`, align: "right" },
+        { key: "baseline", label: "Baseline", align: "right" },
+        { key: "change", label: "\u0394", align: "right" },
+        { key: "match_rate", label: "Match rate (baseline)", align: "right" },
+        { key: "show_rate", label: "Show rate (baseline)", align: "right" }
+      ],
+      rows: r.rows.map(row),
+      footer: r.total ? [{ ...row(r.total), app: "All apps" }] : void 0
+    },
+    notes: [...r.summary, ...r.notices]
+  };
+}
 
 // src/cli/program.ts
 var list = (v, prev = []) => [...prev, ...v.split(",").map((s) => s.trim()).filter(Boolean)];
@@ -14517,9 +14680,9 @@ function parseFilters(values = []) {
   }
   return out;
 }
-function parseDays(v) {
+function parseDays(v, flag = "--last") {
   const m = /^(\d+)d$/.exec(v.trim());
-  if (!m) throw new AdmobctlError("USAGE", `--last expects a number of days like 30d, got "${v}"`);
+  if (!m) throw new AdmobctlError("USAGE", `${flag} expects a number of days like 30d, got "${v}"`);
   return Number(m[1]);
 }
 function readJsonFile(path2) {
@@ -14782,7 +14945,7 @@ function buildProgram(io) {
       () => journalView(r.months.flatMap((m) => journalRows(m, s.profile.finance)), r.notes)
     );
   });
-  program2.command("insights").description("Monetization insights: top/bottom earners, low fill, swings vs the previous period").option("--last <Nd>", "the last N complete days (default 30d)", parseDays).option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD").addOption(new Option("--by <dimension>", "group by").choices([...INSIGHT_DIMENSIONS]).default("ad-unit")).option("--swing <percent>", "change that counts as a swing (default 30)", positiveInt).option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)").action(async (o, cmd) => {
+  program2.command("insights").description("Monetization insights: top/bottom earners, low fill, swings vs the previous period").option("--last <Nd>", "the last N complete days (default 30d)", (v) => parseDays(v)).option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD").addOption(new Option("--by <dimension>", "group by").choices([...INSIGHT_DIMENSIONS]).default("ad-unit")).option("--swing <percent>", "change that counts as a swing (default 30)", positiveInt).option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)").action(async (o, cmd) => {
     const r = await insights(svc(cmd), {
       last: o.last,
       from: o.from,
@@ -14793,7 +14956,12 @@ function buildProgram(io) {
     });
     emit(cmd, insightsView(r));
   });
-  const withRange = (cmd) => cmd.option("--last <Nd>", "the last N complete days (default 30d)", parseDays).option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD");
+  program2.command("check").description("Health check for cron: exits 1 when an app's earnings, match rate or show rate dropped against the days before").option("--window <Nd>", "complete days to judge, ending yesterday (default 1d)", (v) => parseDays(v, "--window")).option("--baseline <Nd>", "days just before the window to compare with (default 7d)", (v) => parseDays(v, "--baseline")).option("--drop <percent>", "a drop of this much or more is a breach (default 30)", positiveInt).option("--min-requests <n>", "baseline requests an app needs before it is judged (default 1000)", positiveInt).option("--app <alias|id>", "only this app").action(async (o, cmd) => {
+    const r = await check(svc(cmd), { ...o, drop: o.drop === void 0 ? void 0 : o.drop / 100 });
+    emit(cmd, checkView(r));
+    if (r.breaches) process.exitCode = 1;
+  });
+  const withRange = (cmd) => cmd.option("--last <Nd>", "the last N complete days (default 30d)", (v) => parseDays(v)).option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD");
   const range = (o) => ({ last: o.last, from: o.from, to: o.to });
   const analyze = program2.command("analyze").description("Curated analyses: SDK/app/OS version health, consent (serving restriction) impact, mediation waterfall");
   withRange(
@@ -15548,7 +15716,7 @@ var ZodType = class {
     const result = await (isAsync(maybeAsyncResult) ? maybeAsyncResult : Promise.resolve(maybeAsyncResult));
     return handleResult(ctx, result);
   }
-  refine(check2, message) {
+  refine(check3, message) {
     const getIssueProperties = (val) => {
       if (typeof message === "string" || typeof message === "undefined") {
         return { message };
@@ -15559,7 +15727,7 @@ var ZodType = class {
       }
     };
     return this._refinement((val, ctx) => {
-      const result = check2(val);
+      const result = check3(val);
       const setError = () => ctx.addIssue({
         code: ZodIssueCode.custom,
         ...getIssueProperties(val)
@@ -15582,9 +15750,9 @@ var ZodType = class {
       }
     });
   }
-  refinement(check2, refinementData) {
+  refinement(check3, refinementData) {
     return this._refinement((val, ctx) => {
-      if (!check2(val)) {
+      if (!check3(val)) {
         ctx.addIssue(typeof refinementData === "function" ? refinementData(val, ctx) : refinementData);
         return false;
       } else {
@@ -15806,70 +15974,70 @@ var ZodString = class _ZodString2 extends ZodType {
     }
     const status = new ParseStatus();
     let ctx = void 0;
-    for (const check2 of this._def.checks) {
-      if (check2.kind === "min") {
-        if (input2.data.length < check2.value) {
+    for (const check3 of this._def.checks) {
+      if (check3.kind === "min") {
+        if (input2.data.length < check3.value) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             code: ZodIssueCode.too_small,
-            minimum: check2.value,
+            minimum: check3.value,
             type: "string",
             inclusive: true,
             exact: false,
-            message: check2.message
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "max") {
-        if (input2.data.length > check2.value) {
+      } else if (check3.kind === "max") {
+        if (input2.data.length > check3.value) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             code: ZodIssueCode.too_big,
-            maximum: check2.value,
+            maximum: check3.value,
             type: "string",
             inclusive: true,
             exact: false,
-            message: check2.message
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "length") {
-        const tooBig = input2.data.length > check2.value;
-        const tooSmall = input2.data.length < check2.value;
+      } else if (check3.kind === "length") {
+        const tooBig = input2.data.length > check3.value;
+        const tooSmall = input2.data.length < check3.value;
         if (tooBig || tooSmall) {
           ctx = this._getOrReturnCtx(input2, ctx);
           if (tooBig) {
             addIssueToContext(ctx, {
               code: ZodIssueCode.too_big,
-              maximum: check2.value,
+              maximum: check3.value,
               type: "string",
               inclusive: true,
               exact: true,
-              message: check2.message
+              message: check3.message
             });
           } else if (tooSmall) {
             addIssueToContext(ctx, {
               code: ZodIssueCode.too_small,
-              minimum: check2.value,
+              minimum: check3.value,
               type: "string",
               inclusive: true,
               exact: true,
-              message: check2.message
+              message: check3.message
             });
           }
           status.dirty();
         }
-      } else if (check2.kind === "email") {
+      } else if (check3.kind === "email") {
         if (!emailRegex.test(input2.data)) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             validation: "email",
             code: ZodIssueCode.invalid_string,
-            message: check2.message
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "emoji") {
+      } else if (check3.kind === "emoji") {
         if (!emojiRegex) {
           emojiRegex = new RegExp(_emojiRegex, "u");
         }
@@ -15878,61 +16046,61 @@ var ZodString = class _ZodString2 extends ZodType {
           addIssueToContext(ctx, {
             validation: "emoji",
             code: ZodIssueCode.invalid_string,
-            message: check2.message
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "uuid") {
+      } else if (check3.kind === "uuid") {
         if (!uuidRegex.test(input2.data)) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             validation: "uuid",
             code: ZodIssueCode.invalid_string,
-            message: check2.message
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "nanoid") {
+      } else if (check3.kind === "nanoid") {
         if (!nanoidRegex.test(input2.data)) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             validation: "nanoid",
             code: ZodIssueCode.invalid_string,
-            message: check2.message
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "cuid") {
+      } else if (check3.kind === "cuid") {
         if (!cuidRegex.test(input2.data)) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             validation: "cuid",
             code: ZodIssueCode.invalid_string,
-            message: check2.message
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "cuid2") {
+      } else if (check3.kind === "cuid2") {
         if (!cuid2Regex.test(input2.data)) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             validation: "cuid2",
             code: ZodIssueCode.invalid_string,
-            message: check2.message
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "ulid") {
+      } else if (check3.kind === "ulid") {
         if (!ulidRegex.test(input2.data)) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             validation: "ulid",
             code: ZodIssueCode.invalid_string,
-            message: check2.message
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "url") {
+      } else if (check3.kind === "url") {
         try {
           new URL(input2.data);
         } catch {
@@ -15940,153 +16108,153 @@ var ZodString = class _ZodString2 extends ZodType {
           addIssueToContext(ctx, {
             validation: "url",
             code: ZodIssueCode.invalid_string,
-            message: check2.message
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "regex") {
-        check2.regex.lastIndex = 0;
-        const testResult = check2.regex.test(input2.data);
+      } else if (check3.kind === "regex") {
+        check3.regex.lastIndex = 0;
+        const testResult = check3.regex.test(input2.data);
         if (!testResult) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             validation: "regex",
             code: ZodIssueCode.invalid_string,
-            message: check2.message
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "trim") {
+      } else if (check3.kind === "trim") {
         input2.data = input2.data.trim();
-      } else if (check2.kind === "includes") {
-        if (!input2.data.includes(check2.value, check2.position)) {
+      } else if (check3.kind === "includes") {
+        if (!input2.data.includes(check3.value, check3.position)) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             code: ZodIssueCode.invalid_string,
-            validation: { includes: check2.value, position: check2.position },
-            message: check2.message
+            validation: { includes: check3.value, position: check3.position },
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "toLowerCase") {
+      } else if (check3.kind === "toLowerCase") {
         input2.data = input2.data.toLowerCase();
-      } else if (check2.kind === "toUpperCase") {
+      } else if (check3.kind === "toUpperCase") {
         input2.data = input2.data.toUpperCase();
-      } else if (check2.kind === "startsWith") {
-        if (!input2.data.startsWith(check2.value)) {
+      } else if (check3.kind === "startsWith") {
+        if (!input2.data.startsWith(check3.value)) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             code: ZodIssueCode.invalid_string,
-            validation: { startsWith: check2.value },
-            message: check2.message
+            validation: { startsWith: check3.value },
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "endsWith") {
-        if (!input2.data.endsWith(check2.value)) {
+      } else if (check3.kind === "endsWith") {
+        if (!input2.data.endsWith(check3.value)) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             code: ZodIssueCode.invalid_string,
-            validation: { endsWith: check2.value },
-            message: check2.message
+            validation: { endsWith: check3.value },
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "datetime") {
-        const regex = datetimeRegex(check2);
+      } else if (check3.kind === "datetime") {
+        const regex = datetimeRegex(check3);
         if (!regex.test(input2.data)) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             code: ZodIssueCode.invalid_string,
             validation: "datetime",
-            message: check2.message
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "date") {
+      } else if (check3.kind === "date") {
         const regex = dateRegex;
         if (!regex.test(input2.data)) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             code: ZodIssueCode.invalid_string,
             validation: "date",
-            message: check2.message
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "time") {
-        const regex = timeRegex(check2);
+      } else if (check3.kind === "time") {
+        const regex = timeRegex(check3);
         if (!regex.test(input2.data)) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             code: ZodIssueCode.invalid_string,
             validation: "time",
-            message: check2.message
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "duration") {
+      } else if (check3.kind === "duration") {
         if (!durationRegex.test(input2.data)) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             validation: "duration",
             code: ZodIssueCode.invalid_string,
-            message: check2.message
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "ip") {
-        if (!isValidIP(input2.data, check2.version)) {
+      } else if (check3.kind === "ip") {
+        if (!isValidIP(input2.data, check3.version)) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             validation: "ip",
             code: ZodIssueCode.invalid_string,
-            message: check2.message
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "jwt") {
-        if (!isValidJWT(input2.data, check2.alg)) {
+      } else if (check3.kind === "jwt") {
+        if (!isValidJWT(input2.data, check3.alg)) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             validation: "jwt",
             code: ZodIssueCode.invalid_string,
-            message: check2.message
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "cidr") {
-        if (!isValidCidr(input2.data, check2.version)) {
+      } else if (check3.kind === "cidr") {
+        if (!isValidCidr(input2.data, check3.version)) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             validation: "cidr",
             code: ZodIssueCode.invalid_string,
-            message: check2.message
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "base64") {
+      } else if (check3.kind === "base64") {
         if (!base64Regex.test(input2.data)) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             validation: "base64",
             code: ZodIssueCode.invalid_string,
-            message: check2.message
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "base64url") {
+      } else if (check3.kind === "base64url") {
         if (!base64urlRegex.test(input2.data)) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             validation: "base64url",
             code: ZodIssueCode.invalid_string,
-            message: check2.message
+            message: check3.message
           });
           status.dirty();
         }
       } else {
-        util.assertNever(check2);
+        util.assertNever(check3);
       }
     }
     return { status: status.value, value: input2.data };
@@ -16098,10 +16266,10 @@ var ZodString = class _ZodString2 extends ZodType {
       ...errorUtil.errToObj(message)
     });
   }
-  _addCheck(check2) {
+  _addCheck(check3) {
     return new _ZodString2({
       ...this._def,
-      checks: [...this._def.checks, check2]
+      checks: [...this._def.checks, check3]
     });
   }
   email(message) {
@@ -16366,67 +16534,67 @@ var ZodNumber = class _ZodNumber extends ZodType {
     }
     let ctx = void 0;
     const status = new ParseStatus();
-    for (const check2 of this._def.checks) {
-      if (check2.kind === "int") {
+    for (const check3 of this._def.checks) {
+      if (check3.kind === "int") {
         if (!util.isInteger(input2.data)) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             code: ZodIssueCode.invalid_type,
             expected: "integer",
             received: "float",
-            message: check2.message
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "min") {
-        const tooSmall = check2.inclusive ? input2.data < check2.value : input2.data <= check2.value;
+      } else if (check3.kind === "min") {
+        const tooSmall = check3.inclusive ? input2.data < check3.value : input2.data <= check3.value;
         if (tooSmall) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             code: ZodIssueCode.too_small,
-            minimum: check2.value,
+            minimum: check3.value,
             type: "number",
-            inclusive: check2.inclusive,
+            inclusive: check3.inclusive,
             exact: false,
-            message: check2.message
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "max") {
-        const tooBig = check2.inclusive ? input2.data > check2.value : input2.data >= check2.value;
+      } else if (check3.kind === "max") {
+        const tooBig = check3.inclusive ? input2.data > check3.value : input2.data >= check3.value;
         if (tooBig) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             code: ZodIssueCode.too_big,
-            maximum: check2.value,
+            maximum: check3.value,
             type: "number",
-            inclusive: check2.inclusive,
+            inclusive: check3.inclusive,
             exact: false,
-            message: check2.message
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "multipleOf") {
-        if (floatSafeRemainder(input2.data, check2.value) !== 0) {
+      } else if (check3.kind === "multipleOf") {
+        if (floatSafeRemainder(input2.data, check3.value) !== 0) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             code: ZodIssueCode.not_multiple_of,
-            multipleOf: check2.value,
-            message: check2.message
+            multipleOf: check3.value,
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "finite") {
+      } else if (check3.kind === "finite") {
         if (!Number.isFinite(input2.data)) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             code: ZodIssueCode.not_finite,
-            message: check2.message
+            message: check3.message
           });
           status.dirty();
         }
       } else {
-        util.assertNever(check2);
+        util.assertNever(check3);
       }
     }
     return { status: status.value, value: input2.data };
@@ -16457,10 +16625,10 @@ var ZodNumber = class _ZodNumber extends ZodType {
       ]
     });
   }
-  _addCheck(check2) {
+  _addCheck(check3) {
     return new _ZodNumber({
       ...this._def,
-      checks: [...this._def.checks, check2]
+      checks: [...this._def.checks, check3]
     });
   }
   int(message) {
@@ -16595,45 +16763,45 @@ var ZodBigInt = class _ZodBigInt extends ZodType {
     }
     let ctx = void 0;
     const status = new ParseStatus();
-    for (const check2 of this._def.checks) {
-      if (check2.kind === "min") {
-        const tooSmall = check2.inclusive ? input2.data < check2.value : input2.data <= check2.value;
+    for (const check3 of this._def.checks) {
+      if (check3.kind === "min") {
+        const tooSmall = check3.inclusive ? input2.data < check3.value : input2.data <= check3.value;
         if (tooSmall) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             code: ZodIssueCode.too_small,
             type: "bigint",
-            minimum: check2.value,
-            inclusive: check2.inclusive,
-            message: check2.message
+            minimum: check3.value,
+            inclusive: check3.inclusive,
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "max") {
-        const tooBig = check2.inclusive ? input2.data > check2.value : input2.data >= check2.value;
+      } else if (check3.kind === "max") {
+        const tooBig = check3.inclusive ? input2.data > check3.value : input2.data >= check3.value;
         if (tooBig) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             code: ZodIssueCode.too_big,
             type: "bigint",
-            maximum: check2.value,
-            inclusive: check2.inclusive,
-            message: check2.message
+            maximum: check3.value,
+            inclusive: check3.inclusive,
+            message: check3.message
           });
           status.dirty();
         }
-      } else if (check2.kind === "multipleOf") {
-        if (input2.data % check2.value !== BigInt(0)) {
+      } else if (check3.kind === "multipleOf") {
+        if (input2.data % check3.value !== BigInt(0)) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             code: ZodIssueCode.not_multiple_of,
-            multipleOf: check2.value,
-            message: check2.message
+            multipleOf: check3.value,
+            message: check3.message
           });
           status.dirty();
         }
       } else {
-        util.assertNever(check2);
+        util.assertNever(check3);
       }
     }
     return { status: status.value, value: input2.data };
@@ -16673,10 +16841,10 @@ var ZodBigInt = class _ZodBigInt extends ZodType {
       ]
     });
   }
-  _addCheck(check2) {
+  _addCheck(check3) {
     return new _ZodBigInt({
       ...this._def,
-      checks: [...this._def.checks, check2]
+      checks: [...this._def.checks, check3]
     });
   }
   positive(message) {
@@ -16796,35 +16964,35 @@ var ZodDate = class _ZodDate extends ZodType {
     }
     const status = new ParseStatus();
     let ctx = void 0;
-    for (const check2 of this._def.checks) {
-      if (check2.kind === "min") {
-        if (input2.data.getTime() < check2.value) {
+    for (const check3 of this._def.checks) {
+      if (check3.kind === "min") {
+        if (input2.data.getTime() < check3.value) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             code: ZodIssueCode.too_small,
-            message: check2.message,
+            message: check3.message,
             inclusive: true,
             exact: false,
-            minimum: check2.value,
+            minimum: check3.value,
             type: "date"
           });
           status.dirty();
         }
-      } else if (check2.kind === "max") {
-        if (input2.data.getTime() > check2.value) {
+      } else if (check3.kind === "max") {
+        if (input2.data.getTime() > check3.value) {
           ctx = this._getOrReturnCtx(input2, ctx);
           addIssueToContext(ctx, {
             code: ZodIssueCode.too_big,
-            message: check2.message,
+            message: check3.message,
             inclusive: true,
             exact: false,
-            maximum: check2.value,
+            maximum: check3.value,
             type: "date"
           });
           status.dirty();
         }
       } else {
-        util.assertNever(check2);
+        util.assertNever(check3);
       }
     }
     return {
@@ -16832,10 +17000,10 @@ var ZodDate = class _ZodDate extends ZodType {
       value: new Date(input2.data.getTime())
     };
   }
-  _addCheck(check2) {
+  _addCheck(check3) {
     return new _ZodDate({
       ...this._def,
-      checks: [...this._def.checks, check2]
+      checks: [...this._def.checks, check3]
     });
   }
   min(minDate, message) {
@@ -23542,7 +23710,7 @@ function isRecursive(inst, stack, resolve) {
     return PROVEN;
   stack.add(inst);
   let result = NONE;
-  const check2 = (child) => {
+  const check3 = (child) => {
     if (result !== PROVEN && child?._zod) {
       const answer = isRecursive(child, stack, resolve);
       if (answer > result)
@@ -23571,32 +23739,32 @@ function isRecursive(inst, stack, resolve) {
     case "object": {
       const raw = rawShape(def);
       merge2(raw ? shape(raw, true) : ASSUMED);
-      check2(def.catchall);
+      check3(def.catchall);
       break;
     }
     case "array":
-      check2(def.element);
+      check3(def.element);
       break;
     case "tuple":
       for (const el of def.items)
-        check2(el);
-      check2(def.rest);
+        check3(el);
+      check3(def.rest);
       break;
     case "record":
     case "map":
-      check2(def.keyType);
-      check2(def.valueType);
+      check3(def.keyType);
+      check3(def.valueType);
       break;
     case "set":
-      check2(def.valueType);
+      check3(def.valueType);
       break;
     case "union":
       for (const el of def.options)
-        check2(el);
+        check3(el);
       break;
     case "intersection":
-      check2(def.left);
-      check2(def.right);
+      check3(def.left);
+      check3(def.right);
       break;
     case "optional":
     case "nullable":
@@ -23607,15 +23775,15 @@ function isRecursive(inst, stack, resolve) {
     case "nonoptional":
     case "promise":
     case "success":
-      check2(def.innerType);
+      check3(def.innerType);
       break;
     case "pipe":
-      check2(def.in);
-      check2(def.out);
+      check3(def.in);
+      check3(def.out);
       break;
     case "function":
-      check2(def.input);
-      check2(def.output);
+      check3(def.input);
+      check3(def.output);
       break;
     // `$ZodLazy` caches its inner on the def, so a resolved edge is followed exactly
     case "lazy": {
@@ -23656,10 +23824,10 @@ function isRecursive(inst, stack, resolve) {
         if (!value || typeof value !== "object")
           continue;
         if (value._zod)
-          check2(value);
+          check3(value);
         else if (Array.isArray(value))
           for (const el of value)
-            check2(el);
+            check3(el);
       }
     }
   }
@@ -31605,8 +31773,8 @@ function generateChecks(doc, ctx, schema, accessor) {
   if (!schemaChecks || schemaChecks.length === 0)
     return accessor;
   let currentAccessor = accessor;
-  for (const check2 of schemaChecks) {
-    const def = check2._zod.def;
+  for (const check3 of schemaChecks) {
+    const def = check3._zod.def;
     if (def.when && !WHEN_DEFAULTED_CHECKS.has(def.check)) {
       throw new ZodCompileUnsupportedError(`check with a custom "when" condition`);
     }
@@ -31654,7 +31822,7 @@ function generateChecks(doc, ctx, schema, accessor) {
         currentAccessor = generateStringFormatCheck(doc, ctx, def, currentAccessor);
         break;
       case "custom":
-        currentAccessor = generateCustomRefineCheck(doc, ctx, check2, currentAccessor);
+        currentAccessor = generateCustomRefineCheck(doc, ctx, check3, currentAccessor);
         break;
       case "bigint_format":
         generateBigIntFormatCheck(doc, def, currentAccessor);
@@ -31670,7 +31838,7 @@ function generateChecks(doc, ctx, schema, accessor) {
         break;
       case "overwrite": {
         const newAccessor = newVar(ctx);
-        generateOverwriteCheck(doc, ctx, check2, currentAccessor, newAccessor);
+        generateOverwriteCheck(doc, ctx, check3, currentAccessor, newAccessor);
         currentAccessor = newAccessor;
         break;
       }
@@ -31793,8 +31961,8 @@ function generatePropertyCheck(doc, ctx, def, accessor) {
   const propAccessor = `${accessor}[${JSON.stringify(def.property)}]`;
   generateCheck(doc, ctx, def.schema, propAccessor);
 }
-function generateOverwriteCheck(doc, ctx, check2, currentAccessor, newAccessor) {
-  const tx = check2._zod.def.tx;
+function generateOverwriteCheck(doc, ctx, check3, currentAccessor, newAccessor) {
+  const tx = check3._zod.def.tx;
   if (!tx) {
     throw new ZodCompileUnsupportedError("overwrite check without a transform function");
   }
@@ -31810,8 +31978,8 @@ function throwAsync() {
 function pushIssue(issue2) {
   this.issues.push(issue2);
 }
-function generateCustomRefineCheck(doc, ctx, check2, accessor) {
-  const def = check2._zod.def;
+function generateCustomRefineCheck(doc, ctx, check3, accessor) {
+  const def = check3._zod.def;
   if (def.fn) {
     if (isAsyncFunction(def.fn)) {
       throw new ZodCompileAsyncError("z.compile: async .refine() predicates are not supported");
@@ -31824,11 +31992,11 @@ function generateCustomRefineCheck(doc, ctx, check2, accessor) {
     doc.write(`if (!${resVar}) return INVALID;`);
     return accessor;
   }
-  if (check2._zod.check) {
-    if (isAsyncFunction(check2._zod.check)) {
+  if (check3._zod.check) {
+    if (isAsyncFunction(check3._zod.check)) {
       throw new ZodCompileAsyncError("z.compile: async .superRefine() / check functions are not supported");
     }
-    const checkFn = check2._zod.check;
+    const checkFn = check3._zod.check;
     const helperFn = (value) => {
       const fakePayload = { value, issues: [], addIssue: pushIssue };
       const result = checkFn(fakePayload);
@@ -35911,7 +36079,7 @@ __export(external_exports, {
   bigint: () => bigint2,
   boolean: () => boolean2,
   catch: () => _catch2,
-  check: () => check,
+  check: () => check2,
   cidrv4: () => cidrv42,
   cidrv6: () => cidrv62,
   clone: () => clone,
@@ -36162,7 +36330,7 @@ __export(schemas_exports2, {
   bigint: () => bigint2,
   boolean: () => boolean2,
   catch: () => _catch2,
-  check: () => check,
+  check: () => check2,
   cidrv4: () => cidrv42,
   cidrv6: () => cidrv62,
   codec: () => codec,
@@ -36387,8 +36555,8 @@ var ZodType2 = /* @__PURE__ */ $constructor("ZodType", (inst, def) => {
     reg.add(this, meta3);
     return this;
   },
-  refine(check2, params) {
-    return this.check(refine(check2, params));
+  refine(check3, params) {
+    return this.check(refine(check3, params));
   },
   superRefine(refinement, params) {
     return this.check(superRefine(refinement, params));
@@ -37747,7 +37915,7 @@ var ZodCustom = /* @__PURE__ */ $constructor("ZodCustom", (inst, def) => {
   ZodType2.init(inst, def);
   inst._zod.processJSONSchema = (ctx, json2, params) => customProcessor(inst, ctx, json2, params);
 });
-function check(fn) {
+function check2(fn) {
   const ch = new $ZodCheck({
     check: "custom"
     // ...util.normalizeParams(params),
@@ -40330,38 +40498,38 @@ function parseBigintDef(def, refs) {
   };
   if (!def.checks)
     return res;
-  for (const check2 of def.checks) {
-    switch (check2.kind) {
+  for (const check3 of def.checks) {
+    switch (check3.kind) {
       case "min":
         if (refs.target === "jsonSchema7") {
-          if (check2.inclusive) {
-            setResponseValueAndErrors(res, "minimum", check2.value, check2.message, refs);
+          if (check3.inclusive) {
+            setResponseValueAndErrors(res, "minimum", check3.value, check3.message, refs);
           } else {
-            setResponseValueAndErrors(res, "exclusiveMinimum", check2.value, check2.message, refs);
+            setResponseValueAndErrors(res, "exclusiveMinimum", check3.value, check3.message, refs);
           }
         } else {
-          if (!check2.inclusive) {
+          if (!check3.inclusive) {
             res.exclusiveMinimum = true;
           }
-          setResponseValueAndErrors(res, "minimum", check2.value, check2.message, refs);
+          setResponseValueAndErrors(res, "minimum", check3.value, check3.message, refs);
         }
         break;
       case "max":
         if (refs.target === "jsonSchema7") {
-          if (check2.inclusive) {
-            setResponseValueAndErrors(res, "maximum", check2.value, check2.message, refs);
+          if (check3.inclusive) {
+            setResponseValueAndErrors(res, "maximum", check3.value, check3.message, refs);
           } else {
-            setResponseValueAndErrors(res, "exclusiveMaximum", check2.value, check2.message, refs);
+            setResponseValueAndErrors(res, "exclusiveMaximum", check3.value, check3.message, refs);
           }
         } else {
-          if (!check2.inclusive) {
+          if (!check3.inclusive) {
             res.exclusiveMaximum = true;
           }
-          setResponseValueAndErrors(res, "maximum", check2.value, check2.message, refs);
+          setResponseValueAndErrors(res, "maximum", check3.value, check3.message, refs);
         }
         break;
       case "multipleOf":
-        setResponseValueAndErrors(res, "multipleOf", check2.value, check2.message, refs);
+        setResponseValueAndErrors(res, "multipleOf", check3.value, check3.message, refs);
         break;
     }
   }
@@ -40417,15 +40585,15 @@ var integerDateParser = (def, refs) => {
   if (refs.target === "openApi3") {
     return res;
   }
-  for (const check2 of def.checks) {
-    switch (check2.kind) {
+  for (const check3 of def.checks) {
+    switch (check3.kind) {
       case "min":
         setResponseValueAndErrors(
           res,
           "minimum",
-          check2.value,
+          check3.value,
           // This is in milliseconds
-          check2.message,
+          check3.message,
           refs
         );
         break;
@@ -40433,9 +40601,9 @@ var integerDateParser = (def, refs) => {
         setResponseValueAndErrors(
           res,
           "maximum",
-          check2.value,
+          check3.value,
           // This is in milliseconds
-          check2.message,
+          check3.message,
           refs
         );
         break;
@@ -40581,118 +40749,118 @@ function parseStringDef(def, refs) {
     type: "string"
   };
   if (def.checks) {
-    for (const check2 of def.checks) {
-      switch (check2.kind) {
+    for (const check3 of def.checks) {
+      switch (check3.kind) {
         case "min":
-          setResponseValueAndErrors(res, "minLength", typeof res.minLength === "number" ? Math.max(res.minLength, check2.value) : check2.value, check2.message, refs);
+          setResponseValueAndErrors(res, "minLength", typeof res.minLength === "number" ? Math.max(res.minLength, check3.value) : check3.value, check3.message, refs);
           break;
         case "max":
-          setResponseValueAndErrors(res, "maxLength", typeof res.maxLength === "number" ? Math.min(res.maxLength, check2.value) : check2.value, check2.message, refs);
+          setResponseValueAndErrors(res, "maxLength", typeof res.maxLength === "number" ? Math.min(res.maxLength, check3.value) : check3.value, check3.message, refs);
           break;
         case "email":
           switch (refs.emailStrategy) {
             case "format:email":
-              addFormat(res, "email", check2.message, refs);
+              addFormat(res, "email", check3.message, refs);
               break;
             case "format:idn-email":
-              addFormat(res, "idn-email", check2.message, refs);
+              addFormat(res, "idn-email", check3.message, refs);
               break;
             case "pattern:zod":
-              addPattern2(res, zodPatterns.email, check2.message, refs);
+              addPattern2(res, zodPatterns.email, check3.message, refs);
               break;
           }
           break;
         case "url":
-          addFormat(res, "uri", check2.message, refs);
+          addFormat(res, "uri", check3.message, refs);
           break;
         case "uuid":
-          addFormat(res, "uuid", check2.message, refs);
+          addFormat(res, "uuid", check3.message, refs);
           break;
         case "regex":
-          addPattern2(res, check2.regex, check2.message, refs);
+          addPattern2(res, check3.regex, check3.message, refs);
           break;
         case "cuid":
-          addPattern2(res, zodPatterns.cuid, check2.message, refs);
+          addPattern2(res, zodPatterns.cuid, check3.message, refs);
           break;
         case "cuid2":
-          addPattern2(res, zodPatterns.cuid2, check2.message, refs);
+          addPattern2(res, zodPatterns.cuid2, check3.message, refs);
           break;
         case "startsWith":
-          addPattern2(res, RegExp(`^${escapeLiteralCheckValue(check2.value, refs)}`), check2.message, refs);
+          addPattern2(res, RegExp(`^${escapeLiteralCheckValue(check3.value, refs)}`), check3.message, refs);
           break;
         case "endsWith":
-          addPattern2(res, RegExp(`${escapeLiteralCheckValue(check2.value, refs)}$`), check2.message, refs);
+          addPattern2(res, RegExp(`${escapeLiteralCheckValue(check3.value, refs)}$`), check3.message, refs);
           break;
         case "datetime":
-          addFormat(res, "date-time", check2.message, refs);
+          addFormat(res, "date-time", check3.message, refs);
           break;
         case "date":
-          addFormat(res, "date", check2.message, refs);
+          addFormat(res, "date", check3.message, refs);
           break;
         case "time":
-          addFormat(res, "time", check2.message, refs);
+          addFormat(res, "time", check3.message, refs);
           break;
         case "duration":
-          addFormat(res, "duration", check2.message, refs);
+          addFormat(res, "duration", check3.message, refs);
           break;
         case "length":
-          setResponseValueAndErrors(res, "minLength", typeof res.minLength === "number" ? Math.max(res.minLength, check2.value) : check2.value, check2.message, refs);
-          setResponseValueAndErrors(res, "maxLength", typeof res.maxLength === "number" ? Math.min(res.maxLength, check2.value) : check2.value, check2.message, refs);
+          setResponseValueAndErrors(res, "minLength", typeof res.minLength === "number" ? Math.max(res.minLength, check3.value) : check3.value, check3.message, refs);
+          setResponseValueAndErrors(res, "maxLength", typeof res.maxLength === "number" ? Math.min(res.maxLength, check3.value) : check3.value, check3.message, refs);
           break;
         case "includes": {
-          addPattern2(res, RegExp(escapeLiteralCheckValue(check2.value, refs)), check2.message, refs);
+          addPattern2(res, RegExp(escapeLiteralCheckValue(check3.value, refs)), check3.message, refs);
           break;
         }
         case "ip": {
-          if (check2.version !== "v6") {
-            addFormat(res, "ipv4", check2.message, refs);
+          if (check3.version !== "v6") {
+            addFormat(res, "ipv4", check3.message, refs);
           }
-          if (check2.version !== "v4") {
-            addFormat(res, "ipv6", check2.message, refs);
+          if (check3.version !== "v4") {
+            addFormat(res, "ipv6", check3.message, refs);
           }
           break;
         }
         case "base64url":
-          addPattern2(res, zodPatterns.base64url, check2.message, refs);
+          addPattern2(res, zodPatterns.base64url, check3.message, refs);
           break;
         case "jwt":
-          addPattern2(res, zodPatterns.jwt, check2.message, refs);
+          addPattern2(res, zodPatterns.jwt, check3.message, refs);
           break;
         case "cidr": {
-          if (check2.version !== "v6") {
-            addPattern2(res, zodPatterns.ipv4Cidr, check2.message, refs);
+          if (check3.version !== "v6") {
+            addPattern2(res, zodPatterns.ipv4Cidr, check3.message, refs);
           }
-          if (check2.version !== "v4") {
-            addPattern2(res, zodPatterns.ipv6Cidr, check2.message, refs);
+          if (check3.version !== "v4") {
+            addPattern2(res, zodPatterns.ipv6Cidr, check3.message, refs);
           }
           break;
         }
         case "emoji":
-          addPattern2(res, zodPatterns.emoji(), check2.message, refs);
+          addPattern2(res, zodPatterns.emoji(), check3.message, refs);
           break;
         case "ulid": {
-          addPattern2(res, zodPatterns.ulid, check2.message, refs);
+          addPattern2(res, zodPatterns.ulid, check3.message, refs);
           break;
         }
         case "base64": {
           switch (refs.base64Strategy) {
             case "format:binary": {
-              addFormat(res, "binary", check2.message, refs);
+              addFormat(res, "binary", check3.message, refs);
               break;
             }
             case "contentEncoding:base64": {
-              setResponseValueAndErrors(res, "contentEncoding", "base64", check2.message, refs);
+              setResponseValueAndErrors(res, "contentEncoding", "base64", check3.message, refs);
               break;
             }
             case "pattern:zod": {
-              addPattern2(res, zodPatterns.base64, check2.message, refs);
+              addPattern2(res, zodPatterns.base64, check3.message, refs);
               break;
             }
           }
           break;
         }
         case "nanoid": {
-          addPattern2(res, zodPatterns.nanoid, check2.message, refs);
+          addPattern2(res, zodPatterns.nanoid, check3.message, refs);
         }
         case "toLowerCase":
         case "toUpperCase":
@@ -40700,7 +40868,7 @@ function parseStringDef(def, refs) {
           break;
         default:
           /* @__PURE__ */ ((_) => {
-          })(check2);
+          })(check3);
       }
     }
   }
@@ -41070,42 +41238,42 @@ function parseNumberDef(def, refs) {
   };
   if (!def.checks)
     return res;
-  for (const check2 of def.checks) {
-    switch (check2.kind) {
+  for (const check3 of def.checks) {
+    switch (check3.kind) {
       case "int":
         res.type = "integer";
-        addErrorMessage(res, "type", check2.message, refs);
+        addErrorMessage(res, "type", check3.message, refs);
         break;
       case "min":
         if (refs.target === "jsonSchema7") {
-          if (check2.inclusive) {
-            setResponseValueAndErrors(res, "minimum", check2.value, check2.message, refs);
+          if (check3.inclusive) {
+            setResponseValueAndErrors(res, "minimum", check3.value, check3.message, refs);
           } else {
-            setResponseValueAndErrors(res, "exclusiveMinimum", check2.value, check2.message, refs);
+            setResponseValueAndErrors(res, "exclusiveMinimum", check3.value, check3.message, refs);
           }
         } else {
-          if (!check2.inclusive) {
+          if (!check3.inclusive) {
             res.exclusiveMinimum = true;
           }
-          setResponseValueAndErrors(res, "minimum", check2.value, check2.message, refs);
+          setResponseValueAndErrors(res, "minimum", check3.value, check3.message, refs);
         }
         break;
       case "max":
         if (refs.target === "jsonSchema7") {
-          if (check2.inclusive) {
-            setResponseValueAndErrors(res, "maximum", check2.value, check2.message, refs);
+          if (check3.inclusive) {
+            setResponseValueAndErrors(res, "maximum", check3.value, check3.message, refs);
           } else {
-            setResponseValueAndErrors(res, "exclusiveMaximum", check2.value, check2.message, refs);
+            setResponseValueAndErrors(res, "exclusiveMaximum", check3.value, check3.message, refs);
           }
         } else {
-          if (!check2.inclusive) {
+          if (!check3.inclusive) {
             res.exclusiveMaximum = true;
           }
-          setResponseValueAndErrors(res, "maximum", check2.value, check2.message, refs);
+          setResponseValueAndErrors(res, "maximum", check3.value, check3.message, refs);
         }
         break;
       case "multipleOf":
-        setResponseValueAndErrors(res, "multipleOf", check2.value, check2.message, refs);
+        setResponseValueAndErrors(res, "multipleOf", check3.value, check3.message, refs);
         break;
     }
   }
@@ -44162,6 +44330,7 @@ var SERVICE_TTL_MS = 5 * 6e4;
 var INSTRUCTIONS = `Read-only access to the user's Google AdMob account via admobctl.
 - Apps are referred to by alias (e.g. "my-game-ios"); call admobctl_list_apps to see them.
 - All earnings are ESTIMATES. When reporting money, say so and that they should be reconciled against AdMob Payments (finalized).
+- For "is everything OK?" or "did revenue drop?" use admobctl_check: it compares the last complete day with the week before.
 - For "what did I earn in <month>" use admobctl_finance_month; for trends and recommendations use admobctl_insights.
 - For a file an accounting system can import, use admobctl_finance_export and hand over its \`content\` unchanged.
 - For SDK/app-version problems, consent impact or mediation waterfalls use the admobctl_analyze_* tools.
@@ -44465,6 +44634,46 @@ function createMcpServer(deps) {
       const r = await insights(svc(a), { last: a.last_days, from: a.from, to: a.to, by: a.by ?? "ad-unit", currency: a.currency });
       return fitRows({ ...r });
     })
+  );
+  server.registerTool(
+    "admobctl_check",
+    {
+      title: "AdMob health check",
+      description: 'Did anything break? Compares the last complete day(s) with the days just before, per app and in total, and reports `findings` where daily earnings, match rate or show rate dropped by the threshold or more (`breaches` is their count; 0 means nothing dropped). Rows with status `thin` had too little baseline traffic to judge: do not report them as problems. Use for "is everything OK", "did revenue drop" or a daily check; use admobctl_insights for a fuller analysis. Earnings are estimates.',
+      inputSchema: {
+        window_days: external_exports.number().int().min(1).max(90).optional().describe("Complete days to judge, ending yesterday (default 1)"),
+        baseline_days: external_exports.number().int().min(1).max(366).optional().describe("Days just before the window to compare with (default 7)"),
+        drop_percent: external_exports.number().int().min(1).max(99).optional().describe("A drop of this percent or more is a breach (default 30)"),
+        min_requests: external_exports.number().int().positive().optional().describe("Baseline requests an app needs before it is judged (default 1000)"),
+        ...appArg,
+        ...accountArg
+      },
+      outputSchema: loose({
+        window: anyRecord,
+        baseline: anyRecord,
+        thresholds: anyRecord,
+        currency: external_exports.string(),
+        estimate: external_exports.literal(true),
+        breaches: external_exports.number(),
+        rows: external_exports.array(anyRecord),
+        total: anyRecord.optional(),
+        findings: external_exports.array(anyRecord),
+        summary: external_exports.array(external_exports.string()),
+        notices: external_exports.array(external_exports.string())
+      }),
+      annotations
+    },
+    wrap(
+      async (a) => fitRows({
+        ...await check(svc(a), {
+          window: a.window_days,
+          baseline: a.baseline_days,
+          drop: a.drop_percent === void 0 ? void 0 : a.drop_percent / 100,
+          minRequests: a.min_requests,
+          app: a.app
+        })
+      })
+    )
   );
   server.registerTool(
     "admobctl_campaign_report",

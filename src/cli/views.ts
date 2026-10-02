@@ -3,6 +3,7 @@ import type { ConsentResult, VersionsResult, WaterfallResult } from "../core/ana
 import type { AppAdsResult } from "../core/app-ads.js";
 import type { AuditLog } from "../core/audit.js";
 import type { Check } from "../core/auth/doctor.js";
+import type { CheckResult, CheckRow } from "../core/check.js";
 import { JOURNAL_COLUMNS, type FinanceForecast, type FinanceMonth, type FinanceRange, type JournalRow } from "../core/finance.js";
 import type { InsightsResult } from "../core/insights.js";
 import type { PublisherAccount } from "../core/client.js";
@@ -509,5 +510,36 @@ export function auditLogView(log: AuditLog): Output {
       ...(log.entries.length ? [] : [`No applied writes recorded in ${log.file}.`]),
       ...(log.skipped ? [`Skipped ${log.skipped} unreadable ${log.skipped === 1 ? "line" : "lines"} in ${log.file}.`] : []),
     ],
+  };
+}
+
+const CHECK_STATUS: Record<CheckRow["status"], string> = { ok: "ok", breach: "DROP", thin: "too little data" };
+
+export function checkView(r: CheckResult): Output {
+  const row = (c: CheckRow) => ({
+    app: c.app,
+    status: CHECK_STATUS[c.status],
+    earnings: formatMicros(c.earnings_per_day_micros),
+    baseline: formatMicros(c.baseline_earnings_per_day_micros),
+    change: c.earnings_change === undefined ? "" : signedPercent(c.earnings_change),
+    match_rate: `${formatPercent(c.match_rate)} (${formatPercent(c.baseline_match_rate)})`,
+    show_rate: `${formatPercent(c.show_rate)} (${formatPercent(c.baseline_show_rate)})`,
+  });
+  return {
+    data: r,
+    table: {
+      columns: [
+        { key: "app", label: "App" },
+        { key: "status", label: "Status" },
+        { key: "earnings", label: `Per day (${r.currency})`, align: "right" },
+        { key: "baseline", label: "Baseline", align: "right" },
+        { key: "change", label: "Δ", align: "right" },
+        { key: "match_rate", label: "Match rate (baseline)", align: "right" },
+        { key: "show_rate", label: "Show rate (baseline)", align: "right" },
+      ],
+      rows: r.rows.map(row),
+      footer: r.total ? [{ ...row(r.total), app: "All apps" }] : undefined,
+    },
+    notes: [...r.summary, ...r.notices],
   };
 }

@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { analyzeConsent, analyzeVersions, analyzeWaterfall, VERSION_KINDS } from "../core/analyze.js";
 import { checkAppAds } from "../core/app-ads.js";
+import { check } from "../core/check.js";
 import { AdmobctlError } from "../core/errors.js";
 import { financeForecast, financeMonth, financeRange, JOURNAL_COLUMNS, journalRows } from "../core/finance.js";
 import { exportJournal } from "../core/journal.js";
@@ -32,6 +33,7 @@ export interface McpDeps {
 const INSTRUCTIONS = `Read-only access to the user's Google AdMob account via admobctl.
 - Apps are referred to by alias (e.g. "my-game-ios"); call admobctl_list_apps to see them.
 - All earnings are ESTIMATES. When reporting money, say so and that they should be reconciled against AdMob Payments (finalized).
+- For "is everything OK?" or "did revenue drop?" use admobctl_check: it compares the last complete day with the week before.
 - For "what did I earn in <month>" use admobctl_finance_month; for trends and recommendations use admobctl_insights.
 - For a file an accounting system can import, use admobctl_finance_export and hand over its \`content\` unchanged.
 - For SDK/app-version problems, consent impact or mediation waterfalls use the admobctl_analyze_* tools.
@@ -392,6 +394,48 @@ export function createMcpServer(deps: McpDeps): McpServer {
       const r = await insights(svc(a), { last: a.last_days, from: a.from, to: a.to, by: a.by ?? "ad-unit", currency: a.currency });
       return fitRows({ ...r }) as unknown as Record<string, unknown>;
     }),
+  );
+
+  server.registerTool(
+    "admobctl_check",
+    {
+      title: "AdMob health check",
+      description:
+        "Did anything break? Compares the last complete day(s) with the days just before, per app and in total, and reports `findings` where daily earnings, match rate or show rate dropped by the threshold or more (`breaches` is their count; 0 means nothing dropped). Rows with status `thin` had too little baseline traffic to judge: do not report them as problems. Use for \"is everything OK\", \"did revenue drop\" or a daily check; use admobctl_insights for a fuller analysis. Earnings are estimates.",
+      inputSchema: {
+        window_days: z.number().int().min(1).max(90).optional().describe("Complete days to judge, ending yesterday (default 1)"),
+        baseline_days: z.number().int().min(1).max(366).optional().describe("Days just before the window to compare with (default 7)"),
+        drop_percent: z.number().int().min(1).max(99).optional().describe("A drop of this percent or more is a breach (default 30)"),
+        min_requests: z.number().int().positive().optional().describe("Baseline requests an app needs before it is judged (default 1000)"),
+        ...appArg,
+        ...accountArg,
+      },
+      outputSchema: loose({
+        window: anyRecord,
+        baseline: anyRecord,
+        thresholds: anyRecord,
+        currency: z.string(),
+        estimate: z.literal(true),
+        breaches: z.number(),
+        rows: z.array(anyRecord),
+        total: anyRecord.optional(),
+        findings: z.array(anyRecord),
+        summary: z.array(z.string()),
+        notices: z.array(z.string()),
+      }),
+      annotations,
+    },
+    wrap(async (a: { window_days?: number; baseline_days?: number; drop_percent?: number; min_requests?: number; app?: string; account?: string }) =>
+      fitRows({
+        ...(await check(svc(a), {
+          window: a.window_days,
+          baseline: a.baseline_days,
+          drop: a.drop_percent === undefined ? undefined : a.drop_percent / 100,
+          minRequests: a.min_requests,
+          app: a.app,
+        })),
+      }) as unknown as Record<string, unknown>,
+    ),
   );
 
   server.registerTool(
