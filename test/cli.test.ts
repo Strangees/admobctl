@@ -171,7 +171,7 @@ describe("cli", () => {
       from: "2026-09-01",
       to: "2026-09-30",
       dimensions: ["country"],
-      metrics: ["estimated_earnings"],
+      metrics: ["earnings"],
       rows: [{ country: "C0" }, { country: "C1" }],
       truncated: true,
       warnings: [],

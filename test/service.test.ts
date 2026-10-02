@@ -116,6 +116,20 @@ describe("AdmobService", () => {
     expect(r.truncated).toBe(false);
   });
 
+  it("lists dimensions and metrics by the keys used in rows and totals", async () => {
+    const { svc } = service();
+    const r = await svc.networkReport({ from: "2026-09", to: "2026-09", by: ["app"] });
+    expect(r.dimensions).toEqual(["app"]);
+    expect(r.metrics).toContain("earnings");
+    expect(r.metrics).toContain("rpm");
+    expect(r.metrics).not.toContain("estimated_earnings");
+    expect(r.metrics).not.toContain("impression_rpm");
+    for (const row of r.rows) {
+      for (const key of [...r.dimensions, ...r.metrics]) expect(row).toHaveProperty(key);
+    }
+    for (const key of r.metrics) expect(r.totals).toHaveProperty(key);
+  });
+
   it("flags truncation when the row cap cuts the report", async () => {
     const { svc } = service();
     const r = await svc.networkReport({ from: "2026-09", to: "2026-09", by: ["app"], maxRows: 2 });

@@ -7,7 +7,7 @@ import { dateRangeFromArgs, formatDate, type DateRange } from "./dates.js";
 import { AdmobctlError } from "./errors.js";
 import type { Exec } from "./exec.js";
 import { buildReportSpec, normalizeDimension, normalizeMetric, type Report, type ReportKind } from "./report.js";
-import { computeTotals, toViewRows, type ViewRow } from "./report-view.js";
+import { computeTotals, dimensionKey, metricKey, toViewRows, type ViewRow } from "./report-view.js";
 
 export interface ServiceOptions {
   profile?: string;
@@ -220,8 +220,8 @@ export class AdmobService {
       timeZone: report.timeZone ?? acct.reportingTimeZone,
       from: formatDate(range.startDate),
       to: formatDate(range.endDate),
-      dimensions: dimensions.map((d) => d.toLowerCase()),
-      metrics: metrics.map((m) => m.toLowerCase()),
+      dimensions: dimensions.map(dimensionKey),
+      metrics: metrics.map(metricKey),
       rows: toViewRows(report, dimensions, metrics, apps),
       truncated,
       warnings: report.warnings,

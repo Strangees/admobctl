@@ -70,19 +70,6 @@ const METRIC_LABELS: Record<string, string> = {
 const MONEY_KEYS = new Set(["earnings", "rpm", "ecpm"]);
 const RATE_KEYS = new Set(["match_rate", "show_rate", "ctr"]);
 
-const METRIC_FROM_API: Record<string, string> = {
-  estimated_earnings: "earnings",
-  ad_requests: "requests",
-  matched_requests: "matched_requests",
-  impressions: "impressions",
-  clicks: "clicks",
-  match_rate: "match_rate",
-  show_rate: "show_rate",
-  impression_ctr: "ctr",
-  impression_rpm: "rpm",
-  observed_ecpm: "ecpm",
-};
-
 function titleCase(key: string): string {
   const s = key.replace(/_/g, " ");
   return s.charAt(0).toUpperCase() + s.slice(1);
@@ -103,8 +90,7 @@ function displayRow(row: ViewRow): Record<string, unknown> {
 
 export function reportView(r: ReportResult): Output {
   const columns: Column[] = r.dimensions.map((d) => ({ key: d, label: d === "app" ? "App" : titleCase(d) }));
-  for (const m of r.metrics) {
-    const key = METRIC_FROM_API[m] ?? m;
+  for (const key of r.metrics) {
     const label = METRIC_LABELS[key] ?? titleCase(key);
     columns.push({ key, label: MONEY_KEYS.has(key) && r.currency ? `${label} (${r.currency})` : label, align: "right" });
   }

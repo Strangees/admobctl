@@ -12079,6 +12079,9 @@ var METRIC_KEYS = {
   IMPRESSION_RPM: "rpm",
   OBSERVED_ECPM: "ecpm"
 };
+function metricKey(metric) {
+  return METRIC_KEYS[metric] ?? metric.toLowerCase();
+}
 function dimensionKey(dim) {
   return friendlyName(dim).replace(/-/g, "_");
 }
@@ -12110,7 +12113,7 @@ function toViewRows(report, dimensions, metrics, apps = []) {
       }
     }
     for (const m of metrics) {
-      const key = METRIC_KEYS[m] ?? m.toLowerCase();
+      const key = metricKey(m);
       const value = row.metrics[m] ?? 0;
       if (MONEY_METRICS.has(m)) {
         out[key] = microsToAmount(value);
@@ -12298,8 +12301,8 @@ var AdmobService = class _AdmobService {
       timeZone: report.timeZone ?? acct.reportingTimeZone,
       from: formatDate(range.startDate),
       to: formatDate(range.endDate),
-      dimensions: dimensions.map((d) => d.toLowerCase()),
-      metrics: metrics.map((m) => m.toLowerCase()),
+      dimensions: dimensions.map(dimensionKey),
+      metrics: metrics.map(metricKey),
       rows: toViewRows(report, dimensions, metrics, apps),
       truncated,
       warnings: report.warnings
@@ -12447,18 +12450,6 @@ var METRIC_LABELS = {
 };
 var MONEY_KEYS = /* @__PURE__ */ new Set(["earnings", "rpm", "ecpm"]);
 var RATE_KEYS = /* @__PURE__ */ new Set(["match_rate", "show_rate", "ctr"]);
-var METRIC_FROM_API = {
-  estimated_earnings: "earnings",
-  ad_requests: "requests",
-  matched_requests: "matched_requests",
-  impressions: "impressions",
-  clicks: "clicks",
-  match_rate: "match_rate",
-  show_rate: "show_rate",
-  impression_ctr: "ctr",
-  impression_rpm: "rpm",
-  observed_ecpm: "ecpm"
-};
 function titleCase(key) {
   const s = key.replace(/_/g, " ");
   return s.charAt(0).toUpperCase() + s.slice(1);
@@ -12476,8 +12467,7 @@ function displayRow(row) {
 }
 function reportView(r) {
   const columns = r.dimensions.map((d) => ({ key: d, label: d === "app" ? "App" : titleCase(d) }));
-  for (const m of r.metrics) {
-    const key = METRIC_FROM_API[m] ?? m;
+  for (const key of r.metrics) {
     const label = METRIC_LABELS[key] ?? titleCase(key);
     columns.push({ key, label: MONEY_KEYS.has(key) && r.currency ? `${label} (${r.currency})` : label, align: "right" });
   }

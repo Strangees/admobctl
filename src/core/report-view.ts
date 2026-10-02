@@ -18,6 +18,12 @@ export const METRIC_KEYS: Record<string, string> = {
   OBSERVED_ECPM: "ecpm",
 };
 
+/** Row key for an API metric, as used in `rows`, `totals` and `ReportResult.metrics`. */
+export function metricKey(metric: string): string {
+  return METRIC_KEYS[metric] ?? metric.toLowerCase();
+}
+
+/** Row key for an API dimension, as used in `rows` and `ReportResult.dimensions`. */
 export function dimensionKey(dim: string): string {
   return friendlyName(dim).replace(/-/g, "_");
 }
@@ -52,7 +58,7 @@ export function toViewRows(report: Report, dimensions: string[], metrics: string
       }
     }
     for (const m of metrics) {
-      const key = METRIC_KEYS[m] ?? m.toLowerCase();
+      const key = metricKey(m);
       const value = row.metrics[m] ?? 0;
       if (MONEY_METRICS.has(m)) {
         out[key] = microsToAmount(value);
