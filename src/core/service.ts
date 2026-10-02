@@ -1,15 +1,17 @@
 import { buildAppIndex, resolveApp, type AppRef } from "./aliases.js";
 import { resolveTokenProvider } from "./auth/index.js";
 import type { TokenProvider } from "./auth/types.js";
-import { AdmobClient, type AdUnit, type PublisherAccount } from "./client.js";
+import { mergeCampaignChunks, RATIO_BASES } from "./campaign.js";
+import { AdmobClient, type AdSource, type AdUnit, type PublisherAccount } from "./client.js";
 import { configDir, loadConfig, resolveProfile, type ResolvedProfile } from "./config.js";
-import { dateRangeFromArgs, formatDate, todayIn, type DateRange } from "./dates.js";
-import { AdmobctlError } from "./errors.js";
+import { dateRangeFromArgs, formatDate, splitRange, todayIn, type DateRange } from "./dates.js";
+import { AdmobctlError, usageError } from "./errors.js";
 import type { Exec } from "./exec.js";
 import { freshnessNotices } from "./freshness.js";
 import {
   API_MAX_ROWS,
   buildReportSpec,
+  checkCombination,
   compatibleMetrics,
   friendlyMetric,
   friendlyName,
@@ -49,7 +51,77 @@ export const DEFAULT_METRICS: Record<ReportKind, string[]> = {
     "MATCH_RATE", "SHOW_RATE", "IMPRESSION_CTR", "IMPRESSION_RPM",
   ],
   mediation: ["ESTIMATED_EARNINGS", "AD_REQUESTS", "MATCHED_REQUESTS", "IMPRESSIONS", "CLICKS", "MATCH_RATE", "OBSERVED_ECPM"],
+  campaign: ["IMPRESSIONS", "CLICKS", "CLICK_THROUGH_RATE", "INSTALLS", "ESTIMATED_COST", "AVERAGE_CPI"],
 };
+
+/** campaignReport:generate accepts at most 30 days per request. */
+export const CAMPAIGN_MAX_DAYS = 30;
+
+export interface AdapterView {
+  adapterId: string;
+  title: string;
+  adSource: string;
+  adSourceId: string;
+  platform: string;
+  formats: string[];
+  /** The keys an ad unit mapping for this adapter fills in (adUnitConfigurations). */
+  settings: Array<{ id: string; label: string; required: boolean }>;
+}
+
+export interface MediationLineView {
+  id: string;
+  name: string;
+  adSource: string;
+  adSourceId: string;
+  cpmMode: string;
+  /** Manual CPM in USD (the only currency the API supports for lines); absent for LIVE lines. */
+  cpm?: number;
+  cpm_micros?: number;
+  state: string;
+  /** A/B experiment variant: A (control) or B (treatment). */
+  variant?: "A" | "B";
+  /** ad unit ID → ad unit mapping resource name */
+  mappings: Record<string, string>;
+}
+
+export interface MediationGroupView {
+  id: string;
+  name: string;
+  state: string;
+  platform: string;
+  format: string;
+  adUnits: Array<{ adUnitId: string; name: string; app: string }>;
+  regions: string[];
+  excludedRegions: string[];
+  idfa?: string;
+  /** Mediation A/B experiment: running or none. */
+  experiment: "running" | "none" | "unknown";
+  lines: MediationLineView[];
+  resource: string;
+}
+
+export interface MediationGroupFilter {
+  app?: string;
+  adSource?: string;
+  format?: string;
+  platform?: string;
+  state?: string;
+}
+
+export interface AdUnitMappingView {
+  id: string;
+  name: string;
+  adUnit: string;
+  adUnitId: string;
+  adapterId: string;
+  state: string;
+  /** adapter setting ID → value */
+  settings: Record<string, string>;
+  resource: string;
+}
+
+/** Quote a value for the API's EBNF filter syntax. */
+const filterValue = (v: string) => `"${v.replace(/["\\]/g, (c) => `\\${c}`)}"`;
 
 export interface ReportQuery {
   from?: string;
@@ -94,6 +166,7 @@ export class AdmobService {
   private accountPromise?: Promise<PublisherAccount>;
   private appsPromise?: Promise<AppRef[]>;
   private adUnitsPromise?: Promise<AdUnit[]>;
+  private adSourcesPromise?: Promise<AdSource[]>;
 
   private constructor(
     readonly profile: ResolvedProfile,
@@ -198,6 +271,175 @@ export class AdmobService {
       }));
   }
 
+  /** Resolve an ad unit by ad unit ID, its numeric fragment or its exact name. */
+  async resolveAdUnit(input: string): Promise<AdUnit> {
+    const q = input.trim();
+    const units = await this.rawAdUnits();
+    const exact = units.find((u) => u.adUnitId === q || u.name === q || u.adUnitId.endsWith(`/${q}`));
+    if (exact) return exact;
+    const byName = units.filter((u) => u.displayName.toLowerCase() === q.toLowerCase());
+    if (byName.length === 1) return byName[0]!;
+    if (byName.length > 1) throw usageError(`Ad unit name "${input}" is ambiguous: ${byName.map((u) => u.adUnitId).join(", ")}`);
+    throw usageError(`Unknown ad unit "${input}". Run: admobctl ad-units list`);
+  }
+
+  // ── v1beta reads ──────────────────────────────────────────────────
+
+  adSources(): Promise<AdSource[]> {
+    if (this.adSourcesPromise) return this.adSourcesPromise;
+    const p = (async () => this.client.listAdSources((await this.account()).name))();
+    this.adSourcesPromise = p;
+    p.catch(() => {
+      if (this.adSourcesPromise === p) this.adSourcesPromise = undefined;
+    });
+    return p;
+  }
+
+  /** Resolve an ad source by ID or title (case-insensitive). */
+  async resolveAdSource(input: string): Promise<AdSource> {
+    const q = input.trim().toLowerCase();
+    const sources = await this.adSources();
+    const hit = sources.find((s) => s.adSourceId === input.trim() || s.title.toLowerCase() === q);
+    if (hit) return hit;
+    throw usageError(`Unknown ad source "${input}". Ad sources: ${sources.map((s) => s.title).join(", ") || "(none)"}`);
+  }
+
+  async adapters(adSource: string): Promise<AdapterView[]> {
+    const source = await this.resolveAdSource(adSource);
+    const adapters = await this.client.listAdapters((await this.account()).name, source.adSourceId);
+    return adapters.map((a) => ({
+      adapterId: a.adapterId,
+      title: a.title,
+      adSource: source.title,
+      adSourceId: source.adSourceId,
+      platform: a.platform,
+      formats: a.formats ?? [],
+      settings: (a.adapterConfigMetadata ?? []).map((m) => ({
+        id: m.adapterConfigMetadataId,
+        label: m.adapterConfigMetadataLabel,
+        required: Boolean(m.isRequired),
+      })),
+    }));
+  }
+
+  async mediationGroups(f: MediationGroupFilter = {}): Promise<MediationGroupView[]> {
+    const parts: string[] = [];
+    if (f.app) parts.push(`CONTAINS_ANY(APP_IDS, ${filterValue((await this.resolveApp(f.app)).appId)})`);
+    if (f.adSource) parts.push(`CONTAINS_ANY(AD_SOURCE_IDS, ${filterValue((await this.resolveAdSource(f.adSource)).adSourceId)})`);
+    if (f.format) parts.push(`IN(FORMAT, ${filterValue(f.format.toUpperCase())})`);
+    if (f.platform) parts.push(`IN(PLATFORM, ${filterValue(f.platform.toUpperCase())})`);
+    if (f.state) parts.push(`IN(STATE, ${filterValue(f.state.toUpperCase())})`);
+    const acct = await this.account();
+    const [groups, sources, units, apps] = await Promise.all([
+      this.client.listMediationGroups(acct.name, parts.join(" AND ") || undefined),
+      this.adSources().catch(() => [] as AdSource[]),
+      this.rawAdUnits(),
+      this.apps(),
+    ]);
+    const sourceTitle = new Map(sources.map((s) => [s.adSourceId, s.title]));
+    const unitById = new Map(units.map((u) => [u.adUnitId, u]));
+    const aliasById = new Map(apps.map((a) => [a.appId, a.alias]));
+    const MODE_ORDER: Record<string, number> = { LIVE: 0, MANUAL: 1 };
+    return groups.map((g) => {
+      const lines = Object.values(g.mediationGroupLines ?? {})
+        .filter((l) => l.state !== "REMOVED")
+        .map((l): MediationLineView => {
+          const line: MediationLineView = {
+            id: l.id,
+            name: l.displayName ?? l.id,
+            adSource: sourceTitle.get(l.adSourceId) ?? l.adSourceId,
+            adSourceId: l.adSourceId,
+            cpmMode: l.cpmMode ?? "",
+            state: l.state ?? "",
+            mappings: l.adUnitMappings ?? {},
+          };
+          if (l.cpmMode !== "LIVE" && l.cpmMicros !== undefined) {
+            line.cpm_micros = Number(l.cpmMicros);
+            line.cpm = line.cpm_micros / 1_000_000;
+          }
+          if (l.experimentVariant === "VARIANT_A") line.variant = "A";
+          if (l.experimentVariant === "VARIANT_B") line.variant = "B";
+          return line;
+        })
+        .sort((a, b) => (MODE_ORDER[a.cpmMode] ?? 2) - (MODE_ORDER[b.cpmMode] ?? 2) || (b.cpm_micros ?? 0) - (a.cpm_micros ?? 0));
+      const t = g.targeting ?? {};
+      const view: MediationGroupView = {
+        id: g.mediationGroupId,
+        name: g.displayName,
+        state: g.state ?? "",
+        platform: t.platform ?? "",
+        format: t.format ?? "",
+        adUnits: (t.adUnitIds ?? []).map((id) => {
+          const u = unitById.get(id);
+          return { adUnitId: id, name: u?.displayName ?? id, app: u ? (aliasById.get(u.appId) ?? u.appId) : "" };
+        }),
+        regions: t.targetedRegionCodes ?? [],
+        excludedRegions: t.excludedRegionCodes ?? [],
+        experiment: g.mediationAbExperimentState === "RUNNING" ? "running" : g.mediationAbExperimentState === "NOT_RUNNING" ? "none" : "unknown",
+        lines,
+        resource: g.name,
+      };
+      if (t.idfaTargeting && t.idfaTargeting !== "IDFA_TARGETING_UNSPECIFIED") view.idfa = t.idfaTargeting;
+      return view;
+    });
+  }
+
+  async adUnitMappings(adUnit: string): Promise<AdUnitMappingView[]> {
+    const unit = await this.resolveAdUnit(adUnit);
+    const mappings = await this.client.listAdUnitMappings(unit.name);
+    return mappings.map((m) => ({
+      id: m.name.split("/").pop() ?? m.name,
+      name: m.displayName ?? "",
+      adUnit: unit.displayName,
+      adUnitId: unit.adUnitId,
+      adapterId: m.adapterId,
+      state: m.state ?? "",
+      settings: m.adUnitConfigurations ?? {},
+      resource: m.name,
+    }));
+  }
+
+  /**
+   * AdMob app-promotion campaign report (v1beta). The API takes at most 30 days per request, so longer
+   * ranges are fetched in chunks and added up (or concatenated when the report is by date).
+   */
+  async campaignReport(q: Omit<ReportQuery, "filters" | "maxRows" | "currency">): Promise<ReportResult> {
+    const range = q.dateRange ?? dateRangeFromArgs(q.from ?? "", q.to ?? q.from ?? "");
+    const dimensions = q.by.map((d) => normalizeDimension(d, "campaign"));
+    const metrics = (q.metrics?.length ? q.metrics : DEFAULT_METRICS.campaign).map((m) => normalizeMetric(m, "campaign"));
+    checkCombination(dimensions, metrics);
+    const chunks = splitRange(range, CAMPAIGN_MAX_DAYS);
+    const merge = chunks.length > 1 && !dimensions.includes("DATE");
+    // Adding chunks up needs the bases of the ratios.
+    const fetchMetrics = merge ? [...new Set([...metrics, ...metrics.flatMap((m) => RATIO_BASES[m] ?? [])])] : metrics;
+    const acct = await this.account();
+    const reports = await Promise.all(
+      chunks.map((dateRange) => this.client.campaignReport(acct.name, { dateRange, dimensions, metrics: fetchMetrics })),
+    );
+    const report: Report = merge ? mergeCampaignChunks(reports, dimensions) : { rows: reports.flatMap((r) => r.rows), warnings: reports.flatMap((r) => r.warnings) };
+    const truncated = reports.some((r) => r.rows.length >= API_MAX_ROWS);
+    const notices = [
+      "Cost and CPI are in the campaigns' reporting currency. These are AdMob app-promotion campaigns, where you are the advertiser.",
+    ];
+    if (chunks.length > 1) notices.push(`Campaign reports cover at most ${CAMPAIGN_MAX_DAYS} days; fetched as ${chunks.length} requests of at most ${CAMPAIGN_MAX_DAYS} days.`);
+    notices.push(...freshnessNotices("campaign", range, todayIn(acct.reportingTimeZone, this.now())));
+    const result: ReportResult = {
+      kind: "campaign",
+      account: acct.publisherId,
+      timeZone: acct.reportingTimeZone,
+      from: formatDate(range.startDate),
+      to: formatDate(range.endDate),
+      dimensions: dimensions.map(dimensionKey),
+      metrics: metrics.map(metricKey),
+      rows: toViewRows(report, dimensions, metrics),
+      truncated,
+      warnings: report.warnings,
+      notices,
+    };
+    if (!truncated) result.totals = computeTotals(report, metrics);
+    return result;
+  }
+
   networkReport(q: ReportQuery): Promise<ReportResult> {
     return this.report("network", q);
   }
@@ -226,6 +468,7 @@ export class AdmobService {
     const filters = await this.resolveFilters(kind, q.filters ?? {});
     const spec = buildReportSpec(kind, { dateRange: range, dimensions, metrics, filters, maxRows: q.maxRows, currency: q.currency });
     const acct = await this.account();
+    if (kind === "campaign") throw usageError("Use campaignReport() for campaign reports.");
     const report =
       kind === "network" ? await this.client.networkReport(acct.name, spec) : await this.client.mediationReport(acct.name, spec);
     notices.push(...freshnessNotices(kind, range, todayIn(acct.reportingTimeZone, this.now())));

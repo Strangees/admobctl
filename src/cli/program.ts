@@ -8,11 +8,13 @@ import { AdmobctlError } from "../core/errors.js";
 import { financeMonth, financeRange, journalRows } from "../core/finance.js";
 import { INSIGHT_DIMENSIONS, insights, type InsightDimension } from "../core/insights.js";
 import { log } from "../core/log.js";
-import { AdmobService, type ServiceDeps, type ServiceOptions } from "../core/service.js";
+import { AdmobService, type MediationGroupView, type ServiceDeps, type ServiceOptions } from "../core/service.js";
 import { defaultFormat, OUTPUT_FORMATS, render, renderTsv, type Output, type OutputFormat } from "../output/format.js";
 import { VERSION } from "../version.js";
 import {
   accountsView,
+  adaptersView,
+  adSourcesView,
   adUnitsView,
   appsView,
   consentView,
@@ -22,6 +24,9 @@ import {
   insightsView,
   journalView,
   keyValueView,
+  mappingsView,
+  mediationGroupsView,
+  mediationGroupView,
   reportView,
   versionsView,
   waterfallView,
@@ -69,6 +74,13 @@ function positiveInt(v: string): number {
   const n = Number(v);
   if (!Number.isInteger(n) || n <= 0) throw new AdmobctlError("USAGE", `Expected a positive integer, got "${v}"`);
   return n;
+}
+
+function findGroup(groups: MediationGroupView[], input: string): MediationGroupView {
+  const q = input.trim().toLowerCase();
+  const hit = groups.find((g) => g.id === input.trim() || g.name.toLowerCase() === q);
+  if (hit) return hit;
+  throw new AdmobctlError("USAGE", `Unknown mediation group "${input}". Groups: ${groups.map((g) => g.name).join(", ") || "(none)"}`);
 }
 
 export function buildProgram(io: CliIO): Command {
@@ -164,6 +176,7 @@ export function buildProgram(io: CliIO): Command {
         listAccounts: () => s.listAccounts(),
         account: () => s.account(),
         listApps: () => s.apps(),
+        betaProbes: { "ad sources": () => s.adSources(), "mediation groups": () => s.mediationGroups() },
       });
       emit(cmd, doctorView(checks));
       if (checks.some((c) => c.status === "fail")) process.exitCode = 1;
@@ -184,13 +197,44 @@ export function buildProgram(io: CliIO): Command {
     .description("List apps with their aliases")
     .action(async (_o, cmd: Command) => emit(cmd, appsView(await svc(cmd).apps())));
 
-  program
-    .command("ad-units")
-    .description("Ad units in the account")
+  const adUnits = program.command("ad-units").description("Ad units in the account");
+  adUnits
     .command("list")
     .description("List ad units")
     .option("--app <alias|id>", "only ad units of this app")
     .action(async (o: { app?: string }, cmd: Command) => emit(cmd, adUnitsView(await svc(cmd).adUnits({ app: o.app }))));
+  adUnits
+    .command("mappings <ad-unit>")
+    .description("Third-party ad unit mappings of an ad unit (name or ID; AdMob API v1beta)")
+    .action(async (adUnit: string, _o, cmd: Command) => emit(cmd, mappingsView(await svc(cmd).adUnitMappings(adUnit))));
+
+  // ── mediation (v1beta) ────────────────────────────────────────────
+  const adSources = program.command("ad-sources").description("Mediation ad sources and their adapters (AdMob API v1beta)");
+  adSources
+    .command("list")
+    .description("List the ad sources available for mediation")
+    .action(async (_o, cmd: Command) => emit(cmd, adSourcesView(await svc(cmd).adSources())));
+  adSources
+    .command("adapters <ad-source>")
+    .description("List an ad source's adapters and the settings an ad unit mapping needs")
+    .action(async (source: string, _o, cmd: Command) => emit(cmd, adaptersView(await svc(cmd).adapters(source))));
+
+  const groups = program.command("mediation-groups").description("Mediation groups (AdMob API v1beta; may need Google allowlisting)");
+  groups
+    .command("list")
+    .description("List mediation groups with their targeting, lines and A/B experiment state")
+    .option("--app <alias|id>", "only groups targeting this app")
+    .option("--ad-source <name|id>", "only groups with a line for this ad source")
+    .option("--format <format>", "e.g. banner, interstitial, rewarded")
+    .option("--platform <platform>", "ios or android")
+    .option("--state <state>", "enabled or disabled")
+    .action(async (o: { app?: string; adSource?: string; format?: string; platform?: string; state?: string }, cmd: Command) =>
+      emit(cmd, mediationGroupsView(await svc(cmd).mediationGroups(o))),
+    );
+  groups
+    .command("show <group>")
+    .description("Show one mediation group's lines (name or ID)")
+    .action(async (group: string, _o, cmd: Command) => emit(cmd, mediationGroupView(findGroup(await svc(cmd).mediationGroups(), group))));
 
   // ── report ────────────────────────────────────────────────────────
   const report = program.command("report").description("Network and mediation reports");
@@ -219,6 +263,18 @@ export function buildProgram(io: CliIO): Command {
         emit(cmd, reportView(kind === "network" ? await s.networkReport(q) : await s.mediationReport(q)));
       });
   }
+
+  report
+    .command("campaign")
+    .description("AdMob app-promotion campaign report: impressions, clicks, installs, cost, CPI (AdMob API v1beta)")
+    .requiredOption("--from <date>", "start, YYYY-MM or YYYY-MM-DD")
+    .option("--to <date>", "end, YYYY-MM or YYYY-MM-DD (default: same as --from); ranges over 30 days are fetched in chunks")
+    .option("--by <dims>", "dimensions, comma-separated (e.g. campaign, ad, placement, country, format, date)", list)
+    .option("--metrics <metrics>", "metrics: impressions, clicks, ctr, installs, cost, cpi, interactions", list)
+    .action(async (o: { from: string; to?: string; by?: string[]; metrics?: string[] }, cmd: Command) => {
+      const r = await svc(cmd).campaignReport({ from: o.from, to: o.to ?? o.from, by: o.by?.length ? o.by : ["campaign"], metrics: o.metrics });
+      emit(cmd, reportView(r));
+    });
 
   // ── finance ───────────────────────────────────────────────────────
   type AsFormat = "summary" | "journal" | "csv" | "json";

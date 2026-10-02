@@ -88,4 +88,17 @@ describe("runDoctor", () => {
     expect(checks.apps!.summary).toMatch(/1 in review/);
     expect(checks.apps!.fix).toMatch(/AdMob/);
   });
+
+  it("reports which v1beta methods this account can reach, as a warning only", async () => {
+    const denied = new AdmobctlError("BETA_ACCESS_DENIED", "Permission denied for mediationGroups.list (AdMob API v1beta).", { fix: "ask your account manager" });
+    const checks = byId(
+      await runDoctor({
+        ...okDeps(),
+        betaProbes: { "ad sources": async () => [], "mediation groups": async () => Promise.reject(denied) },
+      }),
+    );
+    expect(checks.beta!.status).toBe("warn");
+    expect(checks.beta!.summary).toMatch(/ad sources: ok; mediation groups: no access/);
+    expect(checks.beta!.fix).toBe("ask your account manager");
+  });
 });

@@ -2,7 +2,7 @@ import type { DateRange } from "./dates.js";
 import { usageError } from "./errors.js";
 import { parseMicros } from "./money.js";
 
-export type ReportKind = "network" | "mediation";
+export type ReportKind = "network" | "mediation" | "campaign";
 
 export const DIMENSIONS: Record<ReportKind, readonly string[]> = {
   network: [
@@ -13,6 +13,11 @@ export const DIMENSIONS: Record<ReportKind, readonly string[]> = {
     "DATE", "MONTH", "WEEK", "AD_SOURCE", "AD_SOURCE_INSTANCE", "AD_UNIT", "APP", "MEDIATION_GROUP",
     "COUNTRY", "FORMAT", "PLATFORM", "MOBILE_OS_VERSION", "GMA_SDK_VERSION", "APP_VERSION_NAME",
     "SERVING_RESTRICTION",
+  ],
+  // v1beta campaignReport: AdMob app-promotion campaigns (the publisher as advertiser).
+  campaign: [
+    "DATE", "CAMPAIGN_ID", "CAMPAIGN_NAME", "AD_ID", "AD_NAME", "PLACEMENT_ID", "PLACEMENT_NAME", "PLACEMENT_PLATFORM",
+    "COUNTRY", "FORMAT",
   ],
 };
 
@@ -25,12 +30,13 @@ export const METRICS: Record<ReportKind, readonly string[]> = {
     "AD_REQUESTS", "CLICKS", "ESTIMATED_EARNINGS", "IMPRESSIONS", "IMPRESSION_CTR", "MATCHED_REQUESTS",
     "MATCH_RATE", "OBSERVED_ECPM",
   ],
+  campaign: ["IMPRESSIONS", "CLICKS", "CLICK_THROUGH_RATE", "INSTALLS", "ESTIMATED_COST", "AVERAGE_CPI", "INTERACTIONS"],
 };
 
 /** Metrics the API returns as `microsValue` (money). */
-export const MONEY_METRICS = new Set(["ESTIMATED_EARNINGS", "IMPRESSION_RPM", "OBSERVED_ECPM"]);
+export const MONEY_METRICS = new Set(["ESTIMATED_EARNINGS", "IMPRESSION_RPM", "OBSERVED_ECPM", "ESTIMATED_COST", "AVERAGE_CPI"]);
 /** Metrics that are ratios in [0, 1]. */
-export const RATE_METRICS = new Set(["MATCH_RATE", "SHOW_RATE", "IMPRESSION_CTR"]);
+export const RATE_METRICS = new Set(["MATCH_RATE", "SHOW_RATE", "IMPRESSION_CTR", "CLICK_THROUGH_RATE"]);
 
 const METRIC_ALIASES: Record<string, string> = {
   EARNINGS: "ESTIMATED_EARNINGS",
@@ -40,6 +46,13 @@ const METRIC_ALIASES: Record<string, string> = {
   CTR: "IMPRESSION_CTR",
   RPM: "IMPRESSION_RPM",
   ECPM: "OBSERVED_ECPM",
+  COST: "ESTIMATED_COST",
+  CPI: "AVERAGE_CPI",
+};
+
+/** Aliases that mean something else in one report type. */
+const KIND_METRIC_ALIASES: Partial<Record<ReportKind, Record<string, string>>> = {
+  campaign: { CTR: "CLICK_THROUGH_RATE" },
 };
 
 const DIMENSION_ALIASES: Record<string, string> = {
@@ -48,6 +61,9 @@ const DIMENSION_ALIASES: Record<string, string> = {
   OS_VERSION: "MOBILE_OS_VERSION",
   SDK_VERSION: "GMA_SDK_VERSION",
   APP_VERSION: "APP_VERSION_NAME",
+  CAMPAIGN: "CAMPAIGN_NAME",
+  AD: "AD_NAME",
+  PLACEMENT: "PLACEMENT_NAME",
 };
 
 function canonical(name: string): string {
@@ -77,7 +93,7 @@ export function normalizeDimension(name: string, kind: ReportKind): string {
 
 export function normalizeMetric(name: string, kind: ReportKind): string {
   const c = canonical(name);
-  const resolved = METRIC_ALIASES[c] ?? c;
+  const resolved = KIND_METRIC_ALIASES[kind]?.[c] ?? METRIC_ALIASES[c] ?? c;
   if (!METRICS[kind].includes(resolved)) {
     throw usageError(
       `Metric "${name}" is not supported by ${kind} reports. Valid: ${METRICS[kind].map(friendlyName).join(", ")}`,
@@ -133,7 +149,7 @@ export function compatibleMetrics(_kind: ReportKind, dimensions: string[], metri
   return { kept: metrics.filter((m) => !excluded.has(m)), dropped: metrics.filter((m) => excluded.has(m)) };
 }
 
-function checkCombination(dimensions: string[], metrics: string[]): void {
+export function checkCombination(dimensions: string[], metrics: string[]): void {
   const timeDims = dimensions.filter((d) => TIME_DIMENSIONS.includes(d));
   if (timeDims.length > 1) {
     throw usageError(`A report can use only one time dimension (date, week or month), got ${timeDims.map(friendlyName).join(", ")}.`);
@@ -225,9 +241,13 @@ function metricNumber(v: RawMetricValue): number {
   return v.doubleValue ?? 0;
 }
 
-/** Parse the JSON array returned by networkReport/mediationReport:generate. */
+/**
+ * Parse a report response: the streamed JSON array of networkReport/mediationReport:generate
+ * (header, rows, footer), or campaignReport:generate's single `{ rows: [...] }` object.
+ */
 export function parseReport(raw: unknown): Report {
-  const chunks: RawChunk[] = Array.isArray(raw) ? raw : [raw as RawChunk];
+  const rows = (raw as { rows?: RawChunk["row"][] } | undefined)?.rows;
+  const chunks: RawChunk[] = Array.isArray(raw) ? raw : Array.isArray(rows) ? rows.map((row) => ({ row })) : [raw as RawChunk];
   const report: Report = { rows: [], warnings: [] };
   for (const chunk of chunks) {
     if (chunk.header) {

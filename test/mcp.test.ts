@@ -69,6 +69,11 @@ describe("mcp server", () => {
         "admobctl_analyze_consent",
         "admobctl_analyze_versions",
         "admobctl_analyze_waterfall",
+        "admobctl_campaign_report",
+        "admobctl_list_ad_sources",
+        "admobctl_list_ad_unit_mappings",
+        "admobctl_list_adapters",
+        "admobctl_list_mediation_groups",
         "admobctl_finance_month",
         "admobctl_finance_range",
         "admobctl_insights",
@@ -259,5 +264,25 @@ describe("mcp server", () => {
     expect(consent.structuredContent!.estimate).toBe(true);
     const wf = (await client.callTool({ name: "admobctl_analyze_waterfall", arguments: { group: "Interstitials" } })) as ToolResult;
     expect((wf.structuredContent!.rows as unknown[]).length).toBe(1);
+  });
+
+  it("serves the v1beta reads and reports allowlisting problems as tool errors", async () => {
+    const { client } = await connect({
+      "GET /v1beta/accounts/pub-0000000000000001/adSources?": () => jsonResponse(fixture("ad-sources.json")),
+      "GET /adSources/1000000000000000001/adapters": () => jsonResponse(fixture("adapters.json")),
+      "GET /v1beta/accounts/pub-0000000000000001/mediationGroups": () =>
+        jsonResponse({ error: { code: 403, message: "The caller does not have permission", status: "PERMISSION_DENIED" } }, 403),
+      "POST /campaignReport:generate": () => jsonResponse(fixture("campaign-report.json")),
+    });
+    const sources = (await client.callTool({ name: "admobctl_list_ad_sources", arguments: {} })) as ToolResult;
+    expect((sources.structuredContent!.adSources as unknown[]).length).toBe(3);
+    const adapters = (await client.callTool({ name: "admobctl_list_adapters", arguments: { ad_source: "Example Bidder" } })) as ToolResult;
+    expect((adapters.structuredContent!.adapters as unknown[]).length).toBe(2);
+    const groups = (await client.callTool({ name: "admobctl_list_mediation_groups", arguments: {} })) as ToolResult;
+    expect(groups.isError).toBe(true);
+    expect(groups.content[0]!.text).toMatch(/v1beta[\s\S]*Fix: .*account manager/);
+    const campaign = (await client.callTool({ name: "admobctl_campaign_report", arguments: { from: "2026-09", by: ["campaign"] } })) as ToolResult;
+    expect(campaign.isError, campaign.content[0]!.text).toBeFalsy();
+    expect(campaign.structuredContent!.kind).toBe("campaign");
   });
 });

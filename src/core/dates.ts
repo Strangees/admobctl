@@ -130,3 +130,13 @@ export function previousPeriod(r: DateRange): DateRange {
   const endDate = addDays(r.startDate, -1);
   return { startDate: addDays(endDate, -(len - 1)), endDate };
 }
+
+/** Split a range into consecutive chunks of at most `maxDays` days. */
+export function splitRange(r: DateRange, maxDays: number): DateRange[] {
+  const out: DateRange[] = [];
+  for (let start = r.startDate; compareDates(start, r.endDate) <= 0; start = addDays(start, maxDays)) {
+    const end = addDays(start, maxDays - 1);
+    out.push({ startDate: start, endDate: compareDates(end, r.endDate) < 0 ? end : r.endDate });
+  }
+  return out;
+}

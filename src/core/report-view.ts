@@ -16,6 +16,9 @@ export const METRIC_KEYS: Record<string, string> = {
   IMPRESSION_CTR: "ctr",
   IMPRESSION_RPM: "rpm",
   OBSERVED_ECPM: "ecpm",
+  CLICK_THROUGH_RATE: "ctr",
+  ESTIMATED_COST: "cost",
+  AVERAGE_CPI: "cpi",
 };
 
 /** Row key for an API metric, as used in `rows`, `totals` and `ReportResult.metrics`. */
@@ -97,6 +100,17 @@ export function computeTotals(report: Report, metrics: string[]): ViewRow {
   if (has("OBSERVED_ECPM") && has("IMPRESSIONS") && has("ESTIMATED_EARNINGS")) {
     t.ecpm = microsToAmount(Math.round(ratio(earnings, impressions) * 1000));
   }
+  // Campaign reports.
+  const installs = sum("INSTALLS");
+  const cost = sum("ESTIMATED_COST");
+  if (has("INSTALLS")) t.installs = installs;
+  if (has("INTERACTIONS")) t.interactions = sum("INTERACTIONS");
+  if (has("ESTIMATED_COST")) {
+    t.cost = microsToAmount(cost);
+    t.cost_micros = cost;
+  }
+  if (has("CLICK_THROUGH_RATE") && has("CLICKS") && has("IMPRESSIONS")) t.ctr = ratio(clicks, impressions);
+  if (has("AVERAGE_CPI") && has("ESTIMATED_COST") && has("INSTALLS")) t.cpi = microsToAmount(Math.round(ratio(cost, installs)));
   return t;
 }
 

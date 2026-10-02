@@ -1,0 +1,25 @@
+{
+  "adapters": [
+    {
+      "name": "accounts/pub-0000000000000001/adSources/1000000000000000001/adapters/2000000001",
+      "adapterId": "2000000001",
+      "title": "Example Bidder (iOS)",
+      "platform": "IOS",
+      "formats": ["BANNER", "INTERSTITIAL"],
+      "adapterConfigMetadata": [
+        { "adapterConfigMetadataId": "3000000001", "adapterConfigMetadataLabel": "Placement ID", "isRequired": true },
+        { "adapterConfigMetadataId": "3000000002", "adapterConfigMetadataLabel": "Reporting key", "isRequired": false }
+      ]
+    },
+    {
+      "name": "accounts/pub-0000000000000001/adSources/1000000000000000001/adapters/2000000002",
+      "adapterId": "2000000002",
+      "title": "Example Bidder (Android)",
+      "platform": "ANDROID",
+      "formats": ["BANNER"],
+      "adapterConfigMetadata": [
+        { "adapterConfigMetadataId": "3000000003", "adapterConfigMetadataLabel": "Placement ID", "isRequired": true }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "adSources": [
+    { "name": "accounts/pub-0000000000000001/adSources/1000000000000000000", "adSourceId": "1000000000000000000", "title": "AdMob Network" },
+    { "name": "accounts/pub-0000000000000001/adSources/1000000000000000001", "adSourceId": "1000000000000000001", "title": "Example Bidder" },
+    { "name": "accounts/pub-0000000000000001/adSources/1000000000000000002", "adSourceId": "1000000000000000002", "title": "Example Waterfall" }
+  ]
+}

@@ -1,0 +1,79 @@
+{
+  "mediationGroups": [
+    {
+      "name": "accounts/pub-0000000000000001/mediationGroups/1000000001",
+      "mediationGroupId": "1000000001",
+      "displayName": "Banners",
+      "state": "ENABLED",
+      "targeting": {
+        "platform": "IOS",
+        "format": "BANNER",
+        "adUnitIds": ["ca-app-pub-0000000000000001/9000000001"],
+        "targetedRegionCodes": ["NO", "SE"],
+        "idfaTargeting": "ALL"
+      },
+      "mediationGroupLines": {
+        "4000000000000001": {
+          "id": "4000000000000001",
+          "displayName": "AdMob Network",
+          "adSourceId": "1000000000000000000",
+          "cpmMode": "LIVE",
+          "state": "ENABLED",
+          "experimentVariant": "ORIGINAL"
+        },
+        "4000000000000002": {
+          "id": "4000000000000002",
+          "displayName": "Bidder floor 1",
+          "adSourceId": "1000000000000000001",
+          "cpmMode": "LIVE",
+          "state": "ENABLED",
+          "experimentVariant": "ORIGINAL",
+          "adUnitMappings": { "ca-app-pub-0000000000000001/9000000001": "accounts/pub-0000000000000001/adUnits/9000000001/adUnitMappings/5000000001" }
+        },
+        "4000000000000003": {
+          "id": "4000000000000003",
+          "displayName": "Waterfall 3.00",
+          "adSourceId": "1000000000000000002",
+          "cpmMode": "MANUAL",
+          "cpmMicros": "3000000",
+          "state": "ENABLED",
+          "experimentVariant": "ORIGINAL",
+          "adUnitMappings": { "ca-app-pub-0000000000000001/9000000001": "accounts/pub-0000000000000001/adUnits/9000000001/adUnitMappings/5000000002" }
+        }
+      },
+      "mediationAbExperimentState": "NOT_RUNNING"
+    },
+    {
+      "name": "accounts/pub-0000000000000001/mediationGroups/1000000002",
+      "mediationGroupId": "1000000002",
+      "displayName": "Interstitials",
+      "state": "ENABLED",
+      "targeting": {
+        "platform": "IOS",
+        "format": "INTERSTITIAL",
+        "adUnitIds": ["ca-app-pub-0000000000000001/9000000002"],
+        "idfaTargeting": "ALL"
+      },
+      "mediationGroupLines": {
+        "4000000000000004": {
+          "id": "4000000000000004",
+          "displayName": "AdMob Network",
+          "adSourceId": "1000000000000000000",
+          "cpmMode": "LIVE",
+          "state": "ENABLED",
+          "experimentVariant": "VARIANT_A"
+        },
+        "4000000000000005": {
+          "id": "4000000000000005",
+          "displayName": "Waterfall 8.00",
+          "adSourceId": "1000000000000000002",
+          "cpmMode": "MANUAL",
+          "cpmMicros": "8000000",
+          "state": "ENABLED",
+          "experimentVariant": "VARIANT_B"
+        }
+      },
+      "mediationAbExperimentState": "RUNNING"
+    }
+  ]
+}

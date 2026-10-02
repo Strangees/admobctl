@@ -5,7 +5,7 @@ import { AdmobctlError, LOGIN_COMMAND } from "../errors.js";
 export type CheckStatus = "ok" | "warn" | "fail" | "skip";
 
 export interface Check {
-  id: "credentials" | "token" | "scope" | "quota-project" | "api" | "account" | "apps";
+  id: "credentials" | "token" | "scope" | "quota-project" | "api" | "account" | "apps" | "beta";
   status: CheckStatus;
   summary: string;
   fix?: string;
@@ -28,6 +28,8 @@ export interface DoctorDeps {
   account: () => Promise<PublisherAccount>;
   /** When given, also checks that no app is waiting on the publisher in AdMob's app review. */
   listApps?: () => Promise<AppRef[]>;
+  /** v1beta reads to try; Google allowlists some of them per account. Missing access is a warning only. */
+  betaProbes?: Record<string, () => Promise<unknown>>;
 }
 
 const ADMOB_SCOPES = ["https://www.googleapis.com/auth/admob.readonly", "https://www.googleapis.com/auth/admob.report"];
@@ -151,6 +153,30 @@ export async function runDoctor(d: DoctorDeps): Promise<Check[]> {
     } catch (err) {
       checks.push(failed("apps", err));
     }
+  }
+
+  if (d.betaProbes) {
+    const results = await Promise.all(
+      Object.entries(d.betaProbes).map(async ([name, probe]) => {
+        try {
+          await probe();
+          return { name, err: undefined };
+        } catch (err) {
+          return { name, err };
+        }
+      }),
+    );
+    const denied = results.find((r) => r.err instanceof AdmobctlError && r.err.code === "BETA_ACCESS_DENIED")?.err as AdmobctlError | undefined;
+    const summary = results
+      .map((r) =>
+        `${r.name}: ${!r.err ? "ok" : r.err instanceof AdmobctlError && r.err.code === "BETA_ACCESS_DENIED" ? "no access" : `error (${(r.err as Error).message})`}`,
+      )
+      .join("; ");
+    checks.push(
+      results.every((r) => !r.err)
+        ? { id: "beta", status: "ok", summary: `AdMob API v1beta: ${summary}` }
+        : { id: "beta", status: "warn", summary: `AdMob API v1beta: ${summary}`, fix: denied?.fix },
+    );
   }
   return checks;
 }
