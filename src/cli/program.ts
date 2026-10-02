@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { Command, CommanderError, Option } from "commander";
 import { fetchTokenInfo, runDoctor } from "../core/auth/doctor.js";
 import { login, logout } from "../core/auth/login.js";
@@ -8,6 +8,7 @@ import { analyzeConsent, analyzeVersions, analyzeWaterfall, VERSION_KINDS, type 
 import { checkAppAds } from "../core/app-ads.js";
 import { AdmobctlError } from "../core/errors.js";
 import { financeMonth, financeRange, journalRows } from "../core/finance.js";
+import { EXPORT_FORMATS, exportJournal } from "../core/journal.js";
 import { INSIGHT_DIMENSIONS, insights, type InsightDimension } from "../core/insights.js";
 import { log } from "../core/log.js";
 import {
@@ -496,6 +497,30 @@ export function buildProgram(io: CliIO): Command {
       const m = await financeMonth(s, month);
       emitFinance(cmd, o.as, financeMonthView(m), () => journalView(journalRows(m, s.profile.finance), m.notes));
     });
+  finance
+    .command("export")
+    .description("Export accrual vouchers in the Revenue Journal format (spec/SPEC.md), for accounting imports")
+    .option("--month <YYYY-MM>", "one month")
+    .option("--from <YYYY-MM>", "first month of a range")
+    .option("--to <YYYY-MM>", "last month of a range")
+    .option("--as <format>", `export format: ${EXPORT_FORMATS.join(", ")}`, "revenue-journal-json")
+    .option("--integer-amounts", "write amounts as JSON integers instead of decimal strings (JSON only)")
+    .option("--scale <digits>", "decimal places the integers carry, 0-6 (default 2; 6 = micros)", (v) => Number(v))
+    .option("--out <file>", "write to this file (readable only by you) instead of stdout")
+    .action(
+      async (
+        o: { month?: string; from?: string; to?: string; as: string; integerAmounts?: boolean; scale?: number; out?: string },
+        cmd: Command,
+      ) => {
+        const { content, notes } = await exportJournal(svc(cmd), o);
+        if (o.out) {
+          writeFileSync(o.out, content, { mode: 0o600 });
+          chmodSync(o.out, 0o600);
+          io.stderr(`Wrote ${o.out}\n`);
+        } else io.stdout(content);
+        for (const n of notes) io.stderr(`${n}\n`);
+      },
+    );
   finance
     .command("range")
     .description("Estimated earnings per month over a range")

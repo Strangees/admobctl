@@ -1,0 +1,61 @@
+{
+  "format": "revenue-journal/1",
+  "producer": {
+    "name": "admobctl",
+    "version": "0.1.0"
+  },
+  "generated_at": "2026-10-02T08:00:00Z",
+  "vouchers": [
+    {
+      "voucher_id": "admob:pub-0000000000000001:accrual:2026-09",
+      "kind": "accrual",
+      "date": "2026-09-30",
+      "period": {
+        "from": "2026-09-01",
+        "to": "2026-09-30"
+      },
+      "currency": "NOK",
+      "status": "estimate",
+      "source": "admob",
+      "description": "AdMob opptjent september 2026",
+      "counterparty": "Google Ireland Limited",
+      "account_ref": "pub-0000000000000001",
+      "lines": [
+        {
+          "line": 1,
+          "role": "earnings_receivable",
+          "account": "1530",
+          "account_name": "Opptjent, ikke fakturert driftsinntekt",
+          "debit": "102.45"
+        },
+        {
+          "line": 2,
+          "role": "revenue",
+          "account": "3125",
+          "account_name": "Salgsinntekt tjenester, utførsel, avgiftsfri",
+          "credit": "60.13",
+          "vat_code": "52",
+          "dimension": "example-quiz-ios"
+        },
+        {
+          "line": 3,
+          "role": "revenue",
+          "account": "3125",
+          "account_name": "Salgsinntekt tjenester, utførsel, avgiftsfri",
+          "credit": "30.00",
+          "vat_code": "52",
+          "dimension": "example-quiz-android"
+        },
+        {
+          "line": 4,
+          "role": "revenue",
+          "account": "3125",
+          "account_name": "Salgsinntekt tjenester, utførsel, avgiftsfri",
+          "credit": "12.32",
+          "vat_code": "52",
+          "dimension": "sample-timer-ios"
+        }
+      ]
+    }
+  ]
+}

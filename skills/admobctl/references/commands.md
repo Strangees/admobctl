@@ -89,6 +89,8 @@ admobctl report campaign --from YYYY-MM[-DD] [--to …] [--by campaign,country] 
 ```bash
 admobctl finance month YYYY-MM [--as summary|journal|csv|json]
 admobctl finance range --from YYYY-MM --to YYYY-MM [--as …]
+admobctl finance export (--month YYYY-MM | --from YYYY-MM --to YYYY-MM) [--as revenue-journal-json|revenue-journal-csv]
+                        [--integer-amounts [--scale 0-6]] [--out file]   # Revenue Journal (spec/SPEC.md)
 ```
 
 - Per-app amounts are rounded so they sum exactly to the total.

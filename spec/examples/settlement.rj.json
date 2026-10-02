@@ -1,0 +1,46 @@
+{
+  "format": "revenue-journal/1",
+  "producer": {
+    "name": "admobctl",
+    "version": "0.1.0"
+  },
+  "vouchers": [
+    {
+      "voucher_id": "admob:pub-0000000000000001:settlement:2026-09",
+      "kind": "settlement",
+      "date": "2026-10-21",
+      "period": {
+        "from": "2026-09-01",
+        "to": "2026-09-30"
+      },
+      "currency": "NOK",
+      "status": "final",
+      "source": "admob",
+      "description": "AdMob payout for September 2026 (EUR 8.70)",
+      "counterparty": "Google Ireland Limited",
+      "account_ref": "pub-0000000000000001",
+      "lines": [
+        {
+          "line": 1,
+          "role": "bank",
+          "account_name": "Bank",
+          "debit": "101.40",
+          "foreign_currency": "EUR",
+          "foreign_amount": "8.70"
+        },
+        {
+          "line": 2,
+          "role": "fx_loss",
+          "account_name": "Currency loss",
+          "debit": "0.55"
+        },
+        {
+          "line": 3,
+          "role": "earnings_receivable",
+          "account_name": "Accounts receivable – AdMob",
+          "credit": "101.95"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "format": "revenue-journal/1",
+  "producer": {
+    "name": "admobctl",
+    "version": "0.1.0"
+  },
+  "vouchers": [
+    {
+      "voucher_id": "admob:pub-0000000000000001:adjustment:2026-09",
+      "kind": "adjustment",
+      "date": "2026-10-05",
+      "period": {
+        "from": "2026-09-01",
+        "to": "2026-09-30"
+      },
+      "currency": "NOK",
+      "status": "final",
+      "source": "admob",
+      "description": "AdMob September 2026 finalized: 101.95 (estimated 102.45)",
+      "counterparty": "Google Ireland Limited",
+      "account_ref": "pub-0000000000000001",
+      "lines": [
+        {
+          "line": 1,
+          "role": "estimate_adjustment",
+          "account_name": "Ad revenue adjustments – AdMob",
+          "debit": "0.50"
+        },
+        {
+          "line": 2,
+          "role": "earnings_receivable",
+          "account_name": "Accounts receivable – AdMob",
+          "credit": "0.50"
+        }
+      ]
+    }
+  ]
+}

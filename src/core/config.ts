@@ -44,6 +44,8 @@ export interface ResolvedProfile extends ProfileConfig {
   name: string;
   authMode: AuthMode;
   finance: Required<FinanceConfig>;
+  /** Only the finance settings the user set, without defaults (Revenue Journal exports use nothing else). */
+  financeConfigured: FinanceConfig;
   aliases: Record<string, string>;
 }
 
@@ -99,6 +101,7 @@ export function resolveProfile(config: ConfigFile, name?: string): ResolvedProfi
     name: profileName,
     authMode: p?.authMode ?? "auto",
     finance: { ...DEFAULT_FINANCE, ...p?.finance },
+    financeConfigured: { ...p?.finance },
     aliases: { ...p?.aliases },
   };
 }
