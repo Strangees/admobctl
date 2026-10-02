@@ -43,14 +43,15 @@ const previous: Unit[] = [
   { id: "u/3", label: "Timer banner", earn: 10_500_000, req: 5_100, matched: 5_000, imp: 1_600, clicks: 6 },
 ];
 
-function service() {
+function service(cur: Unit[] = current, prev: Unit[] = previous) {
   const dir = mkdtempSync(join(tmpdir(), "admobctl-ins-"));
   const f = fakeFetch({
     "GET /v1/accounts?": () => jsonResponse(fixture("accounts.json")),
     "GET /apps": (c) => jsonResponse(fixture(c.url.includes("pageToken=page2") ? "apps-page2.json" : "apps-page1.json")),
+    "GET /adUnits": () => jsonResponse(fixture("ad-units.json")),
     "POST /networkReport:generate": (c: RecordedCall) => {
       const spec = (c.body as { reportSpec: { dateRange: { startDate: { month: number } } } }).reportSpec;
-      return jsonResponse(report(spec.dateRange.startDate.month === 9 ? current : previous));
+      return jsonResponse(report(spec.dateRange.startDate.month === 9 ? cur : prev));
     },
   });
   const svc = AdmobService.create(
@@ -152,5 +153,16 @@ describe("insights", () => {
     expect(text).toMatch(/\+39\.9%/);
     expect(text).toMatch(/Quiz interstitial.*20\.0% match rate.*40000 requests/);
     expect(text).toMatch(/estimated/i);
+  });
+
+  it("labels ad units with their app, so same-named units in different apps stay apart", async () => {
+    const unit = (id: string, earn: number): Unit => ({ id, label: "ad", earn, req: 1000, matched: 1000, imp: 500, clicks: 5 });
+    const { svc } = service(
+      [unit("ca-app-pub-0000000000000001/9000000001", 40_000_000), unit("ca-app-pub-0000000000000001/9000000003", 13_000_000)],
+      [unit("ca-app-pub-0000000000000001/9000000001", 1_000_000), unit("ca-app-pub-0000000000000001/9000000003", 1_000_000)],
+    );
+    const r = await insights(svc, { last: 30, by: "ad-unit" });
+    expect(r.rows.map((x) => x.label)).toEqual(["example-quiz-ios / ad", "example-quiz-android / ad"]);
+    expect(r.summary.join("\n")).toMatch(/example-quiz-android \/ ad rose/);
   });
 });

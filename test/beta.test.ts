@@ -171,4 +171,16 @@ describe("campaign report", () => {
     const { svc } = service();
     await expect(svc.campaignReport({ from: "2026-09", by: ["app"] })).rejects.toThrow(/campaign reports/);
   });
+
+  it("explains a bare 400 from campaignReport and names a fix", async () => {
+    // Live: a valid spec on an account without app-promotion campaigns gets this with no details.
+    const { svc } = service({
+      "POST /v1beta/accounts/pub-0000000000000001/campaignReport:generate": () =>
+        jsonResponse({ error: { code: 400, message: "Request contains an invalid argument.", status: "INVALID_ARGUMENT" } }, 400),
+    });
+    const err = await svc.campaignReport({ from: "2026-09", by: ["campaign"] }).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: "CAMPAIGN_REPORT_REJECTED", status: 400 });
+    expect((err as Error).message).toMatch(/campaign report/i);
+    expect((err as { fix?: string }).fix).toMatch(/Campaigns/);
+  });
 });

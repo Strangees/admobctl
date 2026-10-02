@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { saveConfig } from "../src/core/config.js";
 import { AdmobService } from "../src/core/service.js";
 import type { TokenProvider } from "../src/core/auth/types.js";
-import { fakeFetch, fixture, jsonResponse, noSleep } from "./helpers.js";
+import { fakeFetch, fixture, jsonResponse, noSleep, type RecordedCall } from "./helpers.js";
 
 const token: TokenProvider = { mode: "adc", getToken: async () => "t", quotaProject: () => "adc-quota" };
 
@@ -146,15 +146,50 @@ describe("AdmobService", () => {
     expect(r.totals).toMatchObject({ earnings_micros: 102_450_000 });
   });
 
+  describe("when the API caps matchingRowCount at maxReportRows (as the live API does)", () => {
+    // Live: with maxReportRows 8 the footer said matchingRowCount 8 although more rows matched.
+    const capped = (c: RecordedCall) => {
+      const max = (c.body as { reportSpec: { maxReportRows?: number } }).reportSpec.maxReportRows ?? Infinity;
+      const all = fixture<Array<Record<string, unknown>>>("network-report-by-app.json").filter((e) => "row" in e);
+      const rows = all.slice(0, max);
+      return jsonResponse([
+        fixture<Array<Record<string, unknown>>>("network-report-by-app.json")[0],
+        ...rows,
+        { footer: { matchingRowCount: String(rows.length) } },
+      ]);
+    };
+    const routes = { "POST /networkReport:generate": capped } as unknown as Record<string, never>;
+
+    it("asks for one row more than --max-rows and flags truncation when it comes back", async () => {
+      const { svc, calls } = service({ routes });
+      const r = await svc.networkReport({ from: "2026-09", to: "2026-09", by: ["app"], maxRows: 2 });
+      const sent = calls.find((c) => c.url.includes("networkReport"))!.body as { reportSpec: { maxReportRows: number } };
+      expect(sent.reportSpec.maxReportRows).toBe(3);
+      expect(r.rows).toHaveLength(2);
+      expect(r.truncated).toBe(true);
+      expect(r.totals).toBeUndefined();
+      // The capped count (3) is not the real number of matching rows.
+      expect(r.matchingRowCount).toBeUndefined();
+    });
+
+    it("keeps a report complete when it has exactly --max-rows rows", async () => {
+      const { svc } = service({ routes });
+      const r = await svc.networkReport({ from: "2026-09", to: "2026-09", by: ["app"], maxRows: 3 });
+      expect(r.rows).toHaveLength(3);
+      expect(r.truncated).toBe(false);
+      expect(r.totals).toMatchObject({ earnings_micros: 102_450_000 });
+    });
+  });
+
   describe("when the API omits matchingRowCount", () => {
     const noFooter = () =>
       jsonResponse(fixture<Array<Record<string, unknown>>>("network-report-by-app.json").filter((e) => !("footer" in e)));
     const routes = { "POST /networkReport:generate": noFooter } as unknown as Record<string, never>;
 
-    it("treats a report that fills maxRows exactly as possibly truncated", async () => {
+    it("flags truncation when more rows than --max-rows come back", async () => {
       const { svc } = service({ routes });
-      const r = await svc.networkReport({ from: "2026-09", to: "2026-09", by: ["app"], maxRows: 3 });
-      expect(r.rows).toHaveLength(3);
+      const r = await svc.networkReport({ from: "2026-09", to: "2026-09", by: ["app"], maxRows: 2 });
+      expect(r.rows).toHaveLength(2);
       expect(r.truncated).toBe(true);
       expect(r.totals).toBeUndefined();
       expect(r.matchingRowCount).toBeUndefined();

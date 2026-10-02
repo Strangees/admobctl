@@ -235,9 +235,11 @@ interface RawChunk {
   };
 }
 
-function metricNumber(v: RawMetricValue): number {
+function metricNumber(key: string, v: RawMetricValue): number {
   if (v.microsValue !== undefined) return parseMicros(v.microsValue);
   if (v.integerValue !== undefined) return Number(v.integerValue);
+  // The live API sends IMPRESSION_RPM as a doubleValue in currency units (125.35), not micros.
+  if (MONEY_METRICS.has(key) && v.doubleValue !== undefined) return Math.round(v.doubleValue * 1_000_000);
   return v.doubleValue ?? 0;
 }
 
@@ -261,7 +263,7 @@ export function parseReport(raw: unknown): Report {
         dimensions[k] = v.displayLabel === undefined ? { value: v.value ?? "" } : { value: v.value ?? "", label: v.displayLabel };
       }
       const metrics: Record<string, number> = {};
-      for (const [k, v] of Object.entries(chunk.row.metricValues ?? {})) metrics[k] = metricNumber(v);
+      for (const [k, v] of Object.entries(chunk.row.metricValues ?? {})) metrics[k] = metricNumber(k, v);
       report.rows.push({ dimensions, metrics });
     }
     if (chunk.footer) {

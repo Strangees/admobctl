@@ -23,7 +23,7 @@
         "SHOW_RATE": { "doubleValue": 0.8 },
         "CLICKS": { "integerValue": "120" },
         "IMPRESSION_CTR": { "doubleValue": 0.01 },
-        "IMPRESSION_RPM": { "microsValue": "5010416" }
+        "IMPRESSION_RPM": { "doubleValue": 5.010416 }
       }
     }
   },
@@ -41,7 +41,7 @@
         "SHOW_RATE": { "doubleValue": 0.8 },
         "CLICKS": { "integerValue": "40" },
         "IMPRESSION_CTR": { "doubleValue": 0.005 },
-        "IMPRESSION_RPM": { "microsValue": "3750624" }
+        "IMPRESSION_RPM": { "doubleValue": 3.750624 }
       }
     }
   },
@@ -59,7 +59,7 @@
         "SHOW_RATE": { "doubleValue": 0.8824 },
         "CLICKS": { "integerValue": "45" },
         "IMPRESSION_CTR": { "doubleValue": 0.015 },
-        "IMPRESSION_RPM": { "microsValue": "4206667" }
+        "IMPRESSION_RPM": { "doubleValue": 4.206667 }
       }
     }
   },

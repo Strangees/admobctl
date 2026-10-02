@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { requestJson } from "../src/core/http.js";
 import { AdmobctlError } from "../src/core/errors.js";
+import { log } from "../src/core/log.js";
 import { jsonResponse } from "./helpers.js";
 
 function sequence(responses: Array<Response | Error>) {
@@ -212,5 +213,48 @@ describe("requestJson beforeAttempt", () => {
     const r = await requestJson("https://x.test/a", {}, { fetch: s.fetch, sleep: s.sleep, beforeAttempt: async () => void calls++ });
     expect(r).toEqual({ ok: true });
     expect(calls).toBe(3);
+  });
+});
+
+describe("requestJson verbose logging", () => {
+  afterEach(() => {
+    log.setVerbose(false);
+    vi.restoreAllMocks();
+  });
+
+  function captureStderr() {
+    const lines: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation(((chunk: string) => {
+      lines.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    return lines;
+  }
+
+  it("logs each request's method, URL, status and time to stderr with -v", async () => {
+    const lines = captureStderr();
+    log.setVerbose(true);
+    const { fetch, sleep } = sequence([jsonResponse({ ok: 1 })]);
+    await requestJson("https://admob.googleapis.com/v1/accounts", { method: "GET", headers: { authorization: "Bearer secret" } }, { fetch, sleep });
+    const out = lines.join("");
+    expect(out).toMatch(/GET https:\/\/admob\.googleapis\.com\/v1\/accounts → 200 \(\d+ms\)/);
+    expect(out).not.toContain("secret");
+  });
+
+  it("logs the API's error body on a failed request with -v", async () => {
+    const lines = captureStderr();
+    log.setVerbose(true);
+    const { fetch, sleep } = sequence([jsonResponse({ error: { code: 400, message: "Request contains an invalid argument." } }, 400)]);
+    await requestJson("https://admob.googleapis.com/v1beta/x:generate", { method: "POST", body: "{}" }, { fetch, sleep }).catch(() => {});
+    const out = lines.join("");
+    expect(out).toMatch(/POST https:\/\/admob\.googleapis\.com\/v1beta\/x:generate → 400/);
+    expect(out).toContain("Request contains an invalid argument.");
+  });
+
+  it("logs nothing without -v", async () => {
+    const lines = captureStderr();
+    const { fetch, sleep } = sequence([jsonResponse({ ok: 1 })]);
+    await requestJson("https://admob.googleapis.com/v1/accounts", { method: "GET" }, { fetch, sleep });
+    expect(lines.join("")).toBe("");
   });
 });

@@ -484,15 +484,22 @@ export class AdmobService {
   }
 
   private async report(kind: StreamedReportKind, q: ReportQuery): Promise<ReportResult> {
-    const { report, dimensions, metrics, range, notices } = await this.rawReport(kind, q);
+    const cap = q.maxRows ?? API_MAX_ROWS;
+    // The live API caps matchingRowCount at maxReportRows, so it cannot say whether rows were left out.
+    // Ask for one row more than --max-rows instead: if it comes back, the report was cut short.
+    const probe = cap < API_MAX_ROWS;
+    const { report, dimensions, metrics, range, notices } = await this.rawReport(kind, probe ? { ...q, maxRows: cap + 1 } : q);
     const needsApps = dimensions.includes("APP");
     const apps = needsApps ? await this.apps() : [];
-    const cap = q.maxRows ?? API_MAX_ROWS;
-    if (report.rows.length > cap) report.rows = report.rows.slice(0, cap);
-    // Only a report that fills the row cap can have been cut short. matchingRowCount then tells us
-    // whether it was; on its own it is not reliable ("does NOT always match the number of rows").
-    const truncated =
-      report.rows.length >= cap && (report.matchingRowCount === undefined || report.matchingRowCount > report.rows.length);
+    const fetched = report.rows.length;
+    // Without a probe, only a report that fills the API's row cap can have been cut short; matchingRowCount
+    // then tells us whether it was. On its own it is not reliable ("does NOT always match the number of rows").
+    const truncated = probe
+      ? fetched > cap
+      : fetched >= cap && (report.matchingRowCount === undefined || report.matchingRowCount > fetched);
+    // A count no larger than what came back is just the cap echoed, not the real number of matching rows.
+    if (truncated && report.matchingRowCount !== undefined && report.matchingRowCount <= fetched) report.matchingRowCount = undefined;
+    if (fetched > cap) report.rows = report.rows.slice(0, cap);
     const acct = await this.account();
     const result: ReportResult = {
       kind,
