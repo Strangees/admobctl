@@ -12631,6 +12631,124 @@ async function exportJournal(svc, q) {
   return { content, notes };
 }
 
+// src/core/geo.ts
+var DEFAULT_MIN_REQUESTS = 1e3;
+var SHARE = 0.05;
+async function analyzeGeo(svc, opts = {}) {
+  const minRequests = opts.minRequests ?? DEFAULT_MIN_REQUESTS;
+  if (!Number.isInteger(minRequests) || minRequests < 1) throw usageError("--min-requests must be a positive whole number");
+  const r = await fetchReport(svc, "network", {
+    ...opts,
+    by: ["COUNTRY", "FORMAT"],
+    metrics: ["ESTIMATED_EARNINGS", "AD_REQUESTS", "MATCHED_REQUESTS", "IMPRESSIONS"],
+    filters: opts.app ? { app: [opts.app] } : void 0
+  });
+  const cells = r.report.rows.map((row) => ({
+    country: row.dimensions.COUNTRY?.value ?? "(unknown)",
+    format: row.dimensions.FORMAT?.label ?? row.dimensions.FORMAT?.value ?? "(unknown)",
+    earnings: row.metrics.ESTIMATED_EARNINGS ?? 0,
+    requests: row.metrics.AD_REQUESTS ?? 0,
+    matched: row.metrics.MATCHED_REQUESTS ?? 0,
+    impressions: row.metrics.IMPRESSIONS ?? 0
+  }));
+  const total = sumMicros(cells.map((c) => c.earnings));
+  const sumBy = (key) => {
+    const out = /* @__PURE__ */ new Map();
+    for (const c of cells) {
+      const s = out.get(c[key]) ?? { earnings: 0, requests: 0, matched: 0, impressions: 0 };
+      s.earnings += c.earnings;
+      s.requests += c.requests;
+      s.matched += c.matched;
+      s.impressions += c.impressions;
+      out.set(c[key], s);
+    }
+    return out;
+  };
+  const formats = sumBy("format");
+  const byCountry = sumBy("country");
+  const rows = cells.sort((a, b) => b.earnings - a.earnings || b.requests - a.requests).map((c) => {
+    const f = formats.get(c.format);
+    const row = {
+      country: c.country,
+      format: c.format,
+      earnings: microsToAmount(c.earnings),
+      earnings_micros: c.earnings,
+      earnings_share: ratio(c.earnings, total),
+      requests: c.requests,
+      format_request_share: ratio(c.requests, f.requests),
+      impressions: c.impressions,
+      match_rate: ratio(c.matched, c.requests),
+      show_rate: ratio(c.impressions, c.matched),
+      ecpm: perMille(c.earnings, c.impressions),
+      enough_data: c.requests >= minRequests
+    };
+    if (f.earnings > 0 && f.impressions > 0 && c.impressions > 0) row.ecpm_vs_format = ratio(c.earnings / c.impressions, f.earnings / f.impressions);
+    return row;
+  });
+  const countries = [...byCountry.entries()].sort((a, b) => b[1].earnings - a[1].earnings || b[1].requests - a[1].requests).map(([country, s]) => ({
+    country,
+    earnings: microsToAmount(s.earnings),
+    earnings_micros: s.earnings,
+    earnings_share: ratio(s.earnings, total),
+    requests: s.requests,
+    ecpm: perMille(s.earnings, s.impressions)
+  }));
+  const highlights = [];
+  const top = countries[0];
+  if (top && countries.length > 1 && top.earnings_share >= 0.5) {
+    highlights.push({
+      kind: "concentration",
+      key: top.country,
+      label: top.country,
+      message: `${top.country} brings ${pct(top.earnings_share)} of earnings (${formatMicros(top.earnings_micros)} ${r.currency}); a change there moves the whole account.`
+    });
+  }
+  for (const [i, row] of rows.entries()) {
+    if (!row.enough_data) continue;
+    const c = cells[i];
+    const f = formats.get(row.format);
+    const key = `${row.country} ${row.format}`;
+    const elsewhere = ratio(f.matched - c.matched, f.requests - c.requests);
+    if (row.format_request_share >= SHARE && f.requests - c.requests >= minRequests && row.match_rate < 0.7 * elsewhere) {
+      highlights.push({
+        kind: "low-fill",
+        key,
+        label: key,
+        message: `${key} fills ${pct(row.match_rate)} of ${row.requests} requests; ${row.format} fills ${pct(elsewhere)} elsewhere. Check mediation coverage and floors for ${row.country}.`
+      });
+    }
+    if (row.ecpm_vs_format !== void 0 && row.ecpm_vs_format >= 1.5 && row.format_request_share < SHARE) {
+      highlights.push({
+        kind: "high-ecpm",
+        key,
+        label: key,
+        message: `${key} pays eCPM ${row.ecpm.toFixed(2)} ${r.currency}, ${row.ecpm_vs_format.toFixed(1)}\xD7 the ${row.format} average, on only ${pct(row.format_request_share)} of ${row.format} requests: more users there are worth more.`
+      });
+    }
+  }
+  const thin = rows.filter((x) => !x.enough_data).length;
+  const summary = rows.length ? [
+    `Estimated earnings ${formatMicros(total)} ${r.currency} from ${countries.length} ${countries.length === 1 ? "country" : "countries"} and ${formats.size} ${formats.size === 1 ? "format" : "formats"}, ${r.from} \u2192 ${r.to}.`,
+    ...highlights.length ? highlights.map((h) => h.message) : ["No country and format with enough traffic stands out on fill or eCPM."],
+    ESTIMATE_LABEL
+  ] : [`No ad traffic ${r.from} \u2192 ${r.to}.`];
+  return {
+    from: r.from,
+    to: r.to,
+    timeZone: r.timeZone,
+    currency: r.currency,
+    estimate: true,
+    rows,
+    countries,
+    highlights,
+    summary,
+    notices: [
+      ...r.notices,
+      ...thin ? [`${thin} of ${rows.length} country and format rows had fewer than ${minRequests} requests; treat their rates and eCPM as noise, not findings.`] : []
+    ]
+  };
+}
+
 // src/core/lint.ts
 async function lint(svc, opts = {}) {
   const acct = await svc.account();
@@ -14977,6 +15095,36 @@ function lintView(r) {
     notes: [...r.summary, `Traffic checked ${r.from} \u2192 ${r.to}.`, ...r.notices]
   };
 }
+function geoView(r) {
+  return {
+    data: r,
+    table: {
+      columns: [
+        { key: "country", label: "Country" },
+        { key: "format", label: "Format" },
+        { key: "earnings", label: `Earnings (${r.currency})`, align: "right" },
+        { key: "earnings_share", label: "Share", align: "right" },
+        { key: "requests", label: "Requests", align: "right" },
+        { key: "match_rate", label: "Match", align: "right" },
+        { key: "show_rate", label: "Show", align: "right" },
+        { key: "ecpm", label: "eCPM", align: "right" },
+        { key: "ecpm_vs_format", label: "vs format", align: "right" },
+        { key: "data", label: "Data" }
+      ],
+      rows: r.rows.map((x) => ({
+        ...x,
+        earnings: formatMicros(x.earnings_micros),
+        earnings_share: formatPercent(x.earnings_share),
+        match_rate: formatPercent(x.match_rate),
+        show_rate: formatPercent(x.show_rate),
+        ecpm: x.ecpm.toFixed(2),
+        ecpm_vs_format: x.ecpm_vs_format === void 0 ? "" : `${x.ecpm_vs_format.toFixed(1)}\xD7`,
+        data: x.enough_data ? "" : "thin"
+      }))
+    },
+    notes: [...r.summary, ...r.notices]
+  };
+}
 
 // src/cli/program.ts
 var list = (v, prev = []) => [...prev, ...v.split(",").map((s) => s.trim()).filter(Boolean)];
@@ -15280,7 +15428,7 @@ function buildProgram(io) {
     emit(cmd, lintView(r));
     if (r.problems) process.exitCode = 1;
   });
-  const analyze = program2.command("analyze").description("Curated analyses: SDK/app/OS version health, consent (serving restriction) impact, mediation waterfall, daily trend");
+  const analyze = program2.command("analyze").description("Curated analyses: SDK/app/OS version health, consent (serving restriction) impact, mediation waterfall, country and format mix, daily trend");
   withRange(
     analyze.command("versions").description("Match and show rate per SDK, app or OS version, flagging versions that do worse than the rest").addOption(new Option("--by <kind>", "which version").choices([...VERSION_KINDS]).default("sdk")).option("--app <alias|id>", "only this app")
   ).action(async (o, cmd) => {
@@ -15295,6 +15443,11 @@ function buildProgram(io) {
     analyze.command("waterfall").description("Mediation lines per group by observed eCPM, with idle and low-fill lines flagged").option("--app <alias|id>", "only this app").option("--group <name|id>", "only this mediation group").option("--currency <code>", "convert earnings to this ISO 4217 currency")
   ).action(async (o, cmd) => {
     emit(cmd, waterfallView(await analyzeWaterfall(svc(cmd), { ...range(o), app: o.app, group: o.group, currency: o.currency })));
+  });
+  withRange(
+    analyze.command("geo").description("Earnings, fill and eCPM per country and format, flagging big cells that fill badly and small ones that pay well").option("--app <alias|id>", "only this app").option("--min-requests <n>", "requests a country and format need before they are judged (default 1000)", positiveInt).option("--currency <code>", "convert earnings to this ISO 4217 currency")
+  ).action(async (o, cmd) => {
+    emit(cmd, geoView(await analyzeGeo(svc(cmd), { ...range(o), app: o.app, minRequests: o.minRequests, currency: o.currency })));
   });
   withRange(
     analyze.command("trend").description("Daily earnings series: the day a level change started, weekday pattern, first day with traffic").addOption(new Option("--by <split>", "one series per").choices([...TREND_SPLITS]).default("total")).option("--app <alias|id>", "only this app").option("--currency <code>", "convert earnings to this ISO 4217 currency")
@@ -45120,6 +45273,26 @@ function createMcpServer(deps) {
     wrap(
       async (a) => fitRows({ ...await analyzeWaterfall(svc(a), { ...range(a), app: a.app, group: a.group, currency: a.currency }) })
     )
+  );
+  server.registerTool(
+    "admobctl_analyze_geo",
+    {
+      title: "AdMob country and format mix",
+      description: "Earnings, share, requests, match rate, show rate and eCPM per country and ad format, with each cell's eCPM relative to its format across all countries, plus totals per country (`countries`). Highlights: concentration (one country brings half or more of the earnings), low-fill (a big cell fills far worse than the same format elsewhere) and high-ecpm (a small cell pays 1.5\xD7 its format's average or more). Rows with enough_data=false have too few requests to judge. Earnings are estimates.",
+      inputSchema: {
+        ...appArg,
+        min_requests: external_exports.number().int().positive().optional().describe("Requests a country and format need before they are judged (default 1000)"),
+        ...rangeInput,
+        ...currencyArg,
+        ...accountArg
+      },
+      outputSchema: analysisOutput({ currency: external_exports.string(), estimate: external_exports.literal(true), countries: external_exports.array(anyRecord) }),
+      annotations
+    },
+    wrap(async (a) => {
+      const r = await analyzeGeo(svc(a), { ...range(a), app: a.app, minRequests: a.min_requests, currency: a.currency });
+      return fitRows({ ...r, countries: r.countries.slice(0, 25) });
+    })
   );
   server.registerTool(
     "admobctl_lint",

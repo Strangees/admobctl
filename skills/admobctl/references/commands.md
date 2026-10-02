@@ -163,6 +163,7 @@ is null.
 admobctl analyze versions  [--by sdk|app|os] [--app <alias>] [--last 30d | --from … --to …]
 admobctl analyze consent   [--app <alias>] [--currency X] [--last 30d | --from … --to …]
 admobctl analyze waterfall [--app <alias>] [--group <name|id>] [--currency X] [--last 30d | --from … --to …]
+admobctl analyze geo       [--app <alias>] [--min-requests 1000] [--currency X] [--last 30d | --from … --to …]
 admobctl analyze trend     [--by total|app|format|country|platform] [--app <alias>] [--currency X] [--last 30d | --from … --to …]
 ```
 
@@ -175,6 +176,10 @@ admobctl analyze trend     [--by total|app|format|country|platform] [--app <alia
   earnings and `earnings_share` of the group, requests, match rate, impressions), sorted by group earnings then eCPM.
   Highlights `top` (per group), `idle` (requests but no impressions), `low-fill` (<2% match rate on ≥5% of the group's requests).
 
+- `geo`: `rows` (one per country and format: earnings and `earnings_share`, requests and `format_request_share`,
+  match rate, show rate, `ecpm`, `ecpm_vs_format`, `enough_data`) and `countries` (totals per country). Highlights:
+  `concentration` (one country ≥ 50% of earnings), `low-fill` (≥ 5% of a format's requests, match rate under 70% of
+  that format elsewhere), `high-ecpm` (eCPM ≥ 1.5× the format's average on < 5% of its requests).
 - `trend`: one series (the account, or `--app`) or one per `--by` value (the ten biggest). Per series: `earnings`,
   `average_per_day`, `first_active` (first day with traffic; earlier days are left out of the averages, later days
   without traffic count as zero), `weekdays` (average per weekday) and `days` (date, weekday, earnings, requests,
@@ -187,7 +192,7 @@ admobctl analyze trend     [--by total|app|format|country|platform] [--app <alia
 admobctl_list_accounts, admobctl_list_apps, admobctl_list_ad_units, admobctl_network_report,
 admobctl_mediation_report, admobctl_finance_month, admobctl_finance_range, admobctl_finance_export, admobctl_finance_forecast,
 admobctl_insights, admobctl_check, admobctl_lint,
-admobctl_analyze_versions, admobctl_analyze_consent, admobctl_analyze_waterfall, admobctl_analyze_trend (`include_days` for the daily rows), admobctl_campaign_report,
+admobctl_analyze_versions, admobctl_analyze_consent, admobctl_analyze_waterfall, admobctl_analyze_geo, admobctl_analyze_trend (`include_days` for the daily rows), admobctl_campaign_report,
 admobctl_list_ad_sources, admobctl_list_adapters (`ad_source`), admobctl_list_mediation_groups,
 admobctl_list_ad_unit_mappings (`ad_unit`), admobctl_check_app_ads.
 They take the same arguments as the CLI, in snake_case: `max_rows`, `sort`, `compare`, `include_journal`, `last_days`.

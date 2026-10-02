@@ -67,6 +67,7 @@ describe("mcp server", () => {
     expect(tools.map((t) => t.name).sort()).toEqual(
       [
         "admobctl_analyze_consent",
+        "admobctl_analyze_geo",
         "admobctl_analyze_trend",
         "admobctl_analyze_versions",
         "admobctl_analyze_waterfall",

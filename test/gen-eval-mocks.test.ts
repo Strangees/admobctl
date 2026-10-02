@@ -11,7 +11,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { it } from "vitest";
 import { AdmobService } from "../src/core/service.js";
 import { createMcpServer } from "../src/mcp/server.js";
-import { fakeFetch, fixture, jsonResponse, noSleep, type RecordedCall } from "./helpers.js";
+import { fakeFetch, fixture, jsonResponse, noSleep, synthReport, type RecordedCall } from "./helpers.js";
 
 type Unit = [id: string, label: string, earnings: number, requests: number, matched: number, impressions: number, clicks: number];
 const unitId = (n: number) => `ca-app-pub-0000000000000001/900000000${n}`;
@@ -70,6 +70,19 @@ function dailyReport() {
   ];
 }
 
+const geoCell = (country: string, format: string, earnings: number, requests: number, matched: number, impressions: number): Parameters<typeof synthReport>[0][number] => [
+  { COUNTRY: [country], FORMAT: [format] },
+  { ESTIMATED_EARNINGS: earnings, AD_REQUESTS: requests, MATCHED_REQUESTS: matched, IMPRESSIONS: impressions },
+];
+const geoReport = () =>
+  synthReport([
+    geoCell("NO", "banner", 50e6, 30000, 27000, 22000),
+    geoCell("SE", "banner", 18e6, 28000, 9000, 7500), // low fill
+    geoCell("NO", "interstitial", 25e6, 4000, 3600, 1800),
+    geoCell("US", "banner", 9e6, 1500, 1400, 1200), // high eCPM, little traffic
+    geoCell("DK", "banner", 0.4e6, 400, 380, 300),
+  ]);
+
 it.skipIf(!process.env.GEN_MOCKS)("generate eval mocks", async () => {
   const f = fakeFetch({
     "GET /v1/accounts?": () => jsonResponse(fixture("accounts.json")),
@@ -77,6 +90,7 @@ it.skipIf(!process.env.GEN_MOCKS)("generate eval mocks", async () => {
     "GET /adUnits": () => jsonResponse(fixture("ad-units.json")),
     "POST /networkReport:generate": (c: RecordedCall) => {
       const spec = (c.body as { reportSpec: { dimensions: string[]; dateRange: { startDate: { month: number } } } }).reportSpec;
+      if (spec.dimensions.includes("COUNTRY")) return jsonResponse(geoReport());
       if (spec.dimensions.includes("DATE")) return jsonResponse(dailyReport());
       if (spec.dimensions.includes("AD_UNIT")) return jsonResponse(adUnitReport(spec.dateRange.startDate.month === 9 ? current : previous));
       if (spec.dimensions.includes("GMA_SDK_VERSION")) return jsonResponse(fixture("network-report-by-sdk-version.json"));
@@ -125,6 +139,7 @@ it.skipIf(!process.env.GEN_MOCKS)("generate eval mocks", async () => {
     admobctl_analyze_consent: { last_days: 30 },
     admobctl_analyze_waterfall: { last_days: 30 },
     admobctl_analyze_trend: { last_days: 30 },
+    admobctl_analyze_geo: { last_days: 30 },
     admobctl_campaign_report: { from: "2026-09", by: ["campaign"] },
     admobctl_list_ad_sources: {},
     admobctl_list_adapters: { ad_source: "Example Bidder" },
