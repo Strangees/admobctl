@@ -287,6 +287,20 @@ describe("mcp server", () => {
     expect(String(r.structuredContent!.notices)).toMatch(/Includes today/);
   });
 
+  it("passes sort and compare through to the report", async () => {
+    const { client, calls } = await connect();
+    const r = (await client.callTool({
+      name: "admobctl_network_report",
+      arguments: { from: "2026-09", by: ["app"], sort: "impressions:asc", compare: "previous" },
+    })) as ToolResult;
+    expect(r.isError, r.content[0]!.text).toBeFalsy();
+    const sent = calls.filter((c) => c.url.includes("networkReport")).map((c) => (c.body as { reportSpec: { sortConditions: unknown } }).reportSpec);
+    expect(sent).toHaveLength(2);
+    expect(sent[0]!.sortConditions).toEqual([{ metric: "IMPRESSIONS", order: "ASCENDING" }]);
+    expect(r.structuredContent!.previous).toMatchObject({ from: "2026-08-02", to: "2026-08-31" });
+    expect((r.structuredContent!.rows as Array<Record<string, unknown>>)[0]).toHaveProperty("previous_earnings");
+  });
+
   it("serves the curated analyses", async () => {
     const { client } = await connect({
       "POST /networkReport:generate": (c) => {

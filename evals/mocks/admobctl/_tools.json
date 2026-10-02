@@ -250,6 +250,17 @@
             "exclusiveMinimum": 0,
             "maximum": 5000
           },
+          "sort": {
+            "description": "Sort by a dimension or metric of the report, e.g. \"impressions\", \"match-rate:asc\", \"country\". Default: by time, else by earnings.",
+            "type": "string"
+          },
+          "compare": {
+            "description": "previous: add previous_<metric> and <metric>_change (a fraction) to each row and the totals, against the equal-length period just before. Not with date, week or month.",
+            "type": "string",
+            "enum": [
+              "previous"
+            ]
+          },
           "currency": {
             "description": "ISO 4217 code to convert earnings into, e.g. USD. Default: the account currency.",
             "type": "string",
@@ -299,6 +310,13 @@
           },
           "truncated": {
             "type": "boolean"
+          },
+          "previous": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
           },
           "notice": {
             "type": "string"
@@ -379,6 +397,17 @@
             "exclusiveMinimum": 0,
             "maximum": 5000
           },
+          "sort": {
+            "description": "Sort by a dimension or metric of the report, e.g. \"impressions\", \"match-rate:asc\", \"country\". Default: by time, else by earnings.",
+            "type": "string"
+          },
+          "compare": {
+            "description": "previous: add previous_<metric> and <metric>_change (a fraction) to each row and the totals, against the equal-length period just before. Not with date, week or month.",
+            "type": "string",
+            "enum": [
+              "previous"
+            ]
+          },
           "currency": {
             "description": "ISO 4217 code to convert earnings into, e.g. USD. Default: the account currency.",
             "type": "string",
@@ -428,6 +457,13 @@
           },
           "truncated": {
             "type": "boolean"
+          },
+          "previous": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
           },
           "notice": {
             "type": "string"
@@ -908,6 +944,13 @@
           },
           "truncated": {
             "type": "boolean"
+          },
+          "previous": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
           },
           "notice": {
             "type": "string"

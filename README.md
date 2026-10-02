@@ -79,6 +79,8 @@ Global flags:
 | `--account pub-…` | Pick the publisher account (otherwise auto-selected when there is only one) |
 | `-v, --verbose` | Debug logs to stderr |
 
+Network and mediation reports take `--sort <field>[:asc|desc]` (any dimension or metric in the report) and `--compare previous`, which adds each row's value in the equal-length period just before and the change.
+
 Reports, `insights` and `analyze consent|waterfall` take `--currency USD` (any ISO 4217 code) to convert earnings at
 Google's daily average rate; the default is the account currency. Combinations the AdMob API rejects (two time
 dimensions, `ad-type` with requests, match rate or RPM) fail before any API call, and default metrics that do not

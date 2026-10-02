@@ -11583,15 +11583,14 @@ async function insights(svc, opts) {
   }
   const acct = await svc.account();
   const range = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
-  const prevRange = previousPeriod(range);
   const metrics = ["earnings", "requests", "matched-requests", "impressions", "clicks"];
   const dim = DIM_API[opts.by];
-  const [cur, prev, apps, units] = await Promise.all([
-    svc.rawReport("network", { dateRange: range, by: [opts.by], metrics, currency: opts.currency }),
-    svc.rawReport("network", { dateRange: prevRange, by: [opts.by], metrics, currency: opts.currency }),
+  const [{ current: cur, previous: prev }, apps, units] = await Promise.all([
+    svc.rawReportWithPrevious("network", { dateRange: range, by: [opts.by], metrics, currency: opts.currency }),
     opts.by === "app" ? svc.apps() : [],
     opts.by === "ad-unit" ? svc.adUnits() : []
   ]);
+  const prevRange = prev.range;
   const labelOf = (id, name) => {
     if (opts.by === "app") return apps.find((a) => a.appId === id)?.alias;
     const unit = units.find((u) => u.adUnitId === id);
@@ -11667,11 +11666,11 @@ async function insights(svc, opts) {
   for (const p of prevAgg.values()) {
     if (!curAgg.has(p.key) && p.earnings >= minSwing) add("gone", p, `${p.label} earned ${money(p.earnings)} last period and nothing this period.`);
   }
-  const change = prevTotal > 0 ? (total - prevTotal) / prevTotal : void 0;
+  const change2 = prevTotal > 0 ? (total - prevTotal) / prevTotal : void 0;
   const from = formatDate(range.startDate);
   const to = formatDate(range.endDate);
   const summary = [
-    `Estimated earnings ${money(total)} for ${from} \u2192 ${to}` + (change === void 0 ? "." : `, ${signedPct(change)} vs the previous period (${money(prevTotal)}).`),
+    `Estimated earnings ${money(total)} for ${from} \u2192 ${to}` + (change2 === void 0 ? "." : `, ${signedPct(change2)} vs the previous period (${money(prevTotal)}).`),
     `Overall eCPM ${perMille(total, totalImpressions).toFixed(2)} ${currency}, match rate ${pct(ratio(totalMatched, totalRequests))}, show rate ${pct(ratio(totalImpressions, totalMatched))}.`,
     ...highlights.filter((h) => h.kind !== "top" && h.kind !== "bottom").map((h) => h.message),
     ...highlights.filter((h) => h.kind === "top").slice(0, 1).map((h) => `Top: ${h.message}`),
@@ -11686,7 +11685,7 @@ async function insights(svc, opts) {
     match_rate: ratio(totalMatched, totalRequests),
     show_rate: ratio(totalImpressions, totalMatched)
   };
-  if (change !== void 0) totals.change = change;
+  if (change2 !== void 0) totals.change = change2;
   return {
     by: opts.by,
     from,
@@ -13151,6 +13150,27 @@ function normalizeCurrency(code2) {
   if (!/^[A-Z]{3}$/.test(c)) throw usageError(`Currency must be an ISO 4217 code like USD or EUR, got "${code2}"`);
   return c;
 }
+function parseSort(input2, kind, dimensions, metrics) {
+  const [field = "", dir, ...rest] = input2.split(":").map((p) => p.trim());
+  const order = dir?.toLowerCase();
+  if (rest.length || order !== void 0 && order !== "asc" && order !== "desc") {
+    throw usageError(`--sort expects <field>[:asc|desc] with asc or desc, got "${input2}"`);
+  }
+  const named = (resolve) => {
+    try {
+      return resolve();
+    } catch {
+      return void 0;
+    }
+  };
+  const dimension = named(() => normalizeDimension(field, kind));
+  if (dimension && dimensions.includes(dimension)) return { dimension, order: order === "desc" ? "DESCENDING" : "ASCENDING" };
+  const metric2 = named(() => normalizeMetric(field, kind));
+  if (metric2 && metrics.includes(metric2)) return { metric: metric2, order: order === "asc" ? "ASCENDING" : "DESCENDING" };
+  throw usageError(
+    `Cannot sort by "${field}": it is not in this report. Sort by one of: ${[...dimensions.map(friendlyName), ...metrics.map(friendlyMetric)].join(", ")}`
+  );
+}
 function buildReportSpec(kind, input2) {
   const dimensions = input2.dimensions.map((d) => normalizeDimension(d, kind));
   const metrics = input2.metrics.map((m) => normalizeMetric(m, kind));
@@ -13164,7 +13184,8 @@ function buildReportSpec(kind, input2) {
     }));
   }
   const timeDim = dimensions.find((d) => TIME_DIMENSIONS.includes(d));
-  if (timeDim) spec.sortConditions = [{ dimension: timeDim, order: "ASCENDING" }];
+  if (input2.sort !== void 0) spec.sortConditions = [parseSort(input2.sort, kind, dimensions, metrics)];
+  else if (timeDim) spec.sortConditions = [{ dimension: timeDim, order: "ASCENDING" }];
   else if (metrics.includes("ESTIMATED_EARNINGS")) {
     spec.sortConditions = [{ metric: "ESTIMATED_EARNINGS", order: "DESCENDING" }];
   }
@@ -13486,6 +13507,7 @@ var DEFAULT_METRICS = {
 };
 var CAMPAIGN_MAX_DAYS = 30;
 var filterValue = (v) => `"${v.replace(/["\\]/g, (c) => `\\${c}`)}"`;
+var COMPARISONS = ["previous"];
 var AdmobService = class _AdmobService {
   constructor(profile, client, tokenProvider, accountOverride, now, configDir2, fetch2) {
     this.profile = profile;
@@ -13770,11 +13792,23 @@ var AdmobService = class _AdmobService {
       }
     }
     const filters = await this.resolveFilters(kind, q.filters ?? {});
-    const spec = buildReportSpec(kind, { dateRange: range, dimensions, metrics, filters, maxRows: q.maxRows, currency: q.currency });
+    const spec = buildReportSpec(kind, { dateRange: range, dimensions, metrics, filters, maxRows: q.maxRows, currency: q.currency, sort: q.sort });
     const acct = await this.account();
     const report = kind === "network" ? await this.client.networkReport(acct.name, spec) : await this.client.mediationReport(acct.name, spec);
     notices.push(...freshnessNotices(kind, range, todayIn(acct.reportingTimeZone, this.now())));
     return { report, dimensions, metrics, range, notices };
+  }
+  /**
+   * A report and the same report for the equal-length period just before it, fetched together.
+   * `previousQuery` overrides parts of the query for the earlier period (e.g. no row cap).
+   */
+  async rawReportWithPrevious(kind, q, previousQuery = {}) {
+    const range = q.dateRange ?? dateRangeFromArgs(q.from ?? "", q.to ?? q.from ?? "");
+    const [current, previous] = await Promise.all([
+      this.rawReport(kind, { ...q, dateRange: range }),
+      this.rawReport(kind, { ...q, ...previousQuery, dateRange: previousPeriod(range) })
+    ]);
+    return { current, previous };
   }
   async resolveFilters(kind, filters) {
     const out = {};
@@ -13787,7 +13821,15 @@ var AdmobService = class _AdmobService {
   async report(kind, q) {
     const cap = q.maxRows ?? API_MAX_ROWS;
     const probe2 = cap < API_MAX_ROWS;
-    const { report, dimensions, metrics, range, notices } = await this.rawReport(kind, probe2 ? { ...q, maxRows: cap + 1 } : q);
+    if (q.compare !== void 0 && !COMPARISONS.includes(q.compare)) {
+      throw usageError(`Unknown comparison "${q.compare}". Supported: ${COMPARISONS.join(", ")}`);
+    }
+    if (q.compare && q.by.some((d) => TIME_DIMENSIONS.includes(normalizeDimension(d, kind)))) {
+      throw usageError("--compare does not work with date, week or month: the rows of two periods never line up. Drop the time dimension.");
+    }
+    const currentQuery = probe2 ? { ...q, maxRows: cap + 1 } : q;
+    const pair = q.compare ? await this.rawReportWithPrevious(kind, currentQuery, { maxRows: void 0 }) : void 0;
+    const { report, dimensions, metrics, range, notices } = pair?.current ?? await this.rawReport(kind, currentQuery);
     const needsApps = dimensions.includes("APP");
     const apps = needsApps ? await this.apps() : [];
     const fetched = report.rows.length;
@@ -13811,9 +13853,47 @@ var AdmobService = class _AdmobService {
     };
     if (!truncated) result.totals = computeTotals(report, metrics);
     if (report.matchingRowCount !== void 0) result.matchingRowCount = report.matchingRowCount;
+    if (pair) addComparison(result, report, pair.previous, dimensions, metrics);
     return result;
   }
 };
+var change = (cur, prev) => prev > 0 ? (cur - prev) / prev : void 0;
+function addComparison(result, report, previous, dimensions, metrics) {
+  const keyOf = (row) => dimensions.map((d) => row.dimensions[d]?.value ?? "").join("\0");
+  const before = new Map(previous.report.rows.map((row) => [keyOf(row), row]));
+  const seen = /* @__PURE__ */ new Set();
+  report.rows.forEach((row, i) => {
+    const key = keyOf(row);
+    const prev = before.get(key);
+    const out = result.rows[i];
+    if (!prev || !out) return;
+    seen.add(key);
+    for (const m of metrics) {
+      const k = metricKey(m);
+      const was = prev.metrics[m] ?? 0;
+      if (MONEY_METRICS.has(m)) {
+        out[`previous_${k}`] = microsToAmount(was);
+        out[`previous_${k}_micros`] = was;
+      } else out[`previous_${k}`] = was;
+      const c = change(row.metrics[m] ?? 0, was);
+      if (c !== void 0) out[`${k}_change`] = c;
+    }
+  });
+  result.previous = { from: formatDate(previous.range.startDate), to: formatDate(previous.range.endDate) };
+  if (result.totals) {
+    const totals = computeTotals(previous.report, metrics);
+    result.previous.totals = totals;
+    for (const k of Object.keys(result.totals).filter((k2) => !k2.endsWith("_micros"))) {
+      const exact = (t) => Number(t[`${k}_micros`] ?? t[k] ?? 0);
+      const c = change(exact(result.totals), exact(totals));
+      if (c !== void 0) result.totals[`${k}_change`] = c;
+    }
+    const gone = previous.report.rows.filter((row) => !seen.has(keyOf(row))).length;
+    if (gone) {
+      result.notices.push(`${gone} ${gone === 1 ? "row" : "rows"} existed only in the previous period (${result.previous.from} \u2192 ${result.previous.to}) and ${gone === 1 ? "is" : "are"} not listed.`);
+    }
+  }
+}
 
 // src/output/format.ts
 var OUTPUT_FORMATS = ["json", "table", "csv", "markdown"];
@@ -13981,6 +14061,9 @@ function titleCase(key) {
 function formatPercent(fraction) {
   return `${(fraction * 100).toFixed(1)}%`;
 }
+function signedPercent(fraction) {
+  return `${fraction >= 0 ? "+" : ""}${formatPercent(fraction)}`;
+}
 function displayRow(row) {
   const out = { ...row };
   for (const k of Object.keys(row)) {
@@ -13991,20 +14074,30 @@ function displayRow(row) {
 }
 function reportView(r) {
   const columns = r.dimensions.map((d) => ({ key: d, label: d === "app" ? "App" : titleCase(d) }));
+  const compared = r.previous ? r.metrics[0] : void 0;
   for (const key of r.metrics) {
     const label2 = METRIC_LABELS[key] ?? titleCase(key);
     columns.push({ key, label: MONEY_KEYS.has(key) && r.currency ? `${label2} (${r.currency})` : label2, align: "right" });
+    if (key === compared) columns.push({ key: "change", label: `\u0394 ${label2}`, align: "right" });
   }
+  const withChange = (row, missing) => {
+    const out = displayRow(row);
+    if (!compared) return out;
+    const c = row[`${compared}_change`];
+    out.change = typeof c === "number" ? signedPercent(c) : row[`previous_${compared}`] === void 0 ? missing : "";
+    return out;
+  };
   const notes = [`${titleCase(r.kind)} report ${r.from} \u2192 ${r.to}, ${r.timeZone ?? ""}.${r.kind === "campaign" ? "" : ` ${ESTIMATE_NOTE}`}`];
+  if (r.previous) notes.push(`Compared with ${r.previous.from} \u2192 ${r.previous.to}. JSON output has the previous value and change of every metric.`);
   if (r.truncated) {
     notes.push(`Truncated: ${shownRows(r)}. Raise --max-rows or narrow the query.`);
   }
   for (const w of r.warnings) notes.push(`API warning: ${w}`);
   notes.push(...r.notices);
-  const footer = r.totals && r.rows.length > 1 ? [{ ...displayRow(r.totals), [columns[0].key]: "Total" }] : void 0;
+  const footer = r.totals && r.rows.length > 1 ? [{ ...withChange(r.totals, ""), [columns[0].key]: "Total" }] : void 0;
   return {
     data: r,
-    table: { columns, rows: r.rows.map(displayRow), footer },
+    table: { columns, rows: r.rows.map((row) => withChange(row, "new")), footer },
     notes
   };
 }
@@ -14533,7 +14626,7 @@ function buildProgram(io) {
   });
   const report = program2.command("report").description("Network and mediation reports");
   for (const kind of ["network", "mediation"]) {
-    report.command(kind).description(`Generate a ${kind} report`).requiredOption("--from <date>", "start, YYYY-MM or YYYY-MM-DD").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD (default: same as --from)").option("--by <dims>", `dimensions, comma-separated (e.g. app,country${kind === "mediation" ? ",ad-source" : ""})`, list).option("--metrics <metrics>", "metrics, comma-separated (default: all common ones)", list).option("--filter <k=v,\u2026>", "filter, repeatable (e.g. country=NO,SE or app=<alias>)", (v, p = []) => [...p, v]).option("--max-rows <n>", "cap the number of rows", positiveInt).option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)").action(async (o, cmd) => {
+    report.command(kind).description(`Generate a ${kind} report`).requiredOption("--from <date>", "start, YYYY-MM or YYYY-MM-DD").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD (default: same as --from)").option("--by <dims>", `dimensions, comma-separated (e.g. app,country${kind === "mediation" ? ",ad-source" : ""})`, list).option("--metrics <metrics>", "metrics, comma-separated (default: all common ones)", list).option("--filter <k=v,\u2026>", "filter, repeatable (e.g. country=NO,SE or app=<alias>)", (v, p = []) => [...p, v]).option("--max-rows <n>", "cap the number of rows", positiveInt).option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)").option("--sort <field[:asc|desc]>", "sort by a dimension or metric of the report (default: by time, else by earnings)").addOption(new Option("--compare <period>", "add each row's change against the equal-length period just before").choices([...COMPARISONS])).action(async (o, cmd) => {
       const s = svc(cmd);
       const q = {
         from: o.from,
@@ -14542,7 +14635,9 @@ function buildProgram(io) {
         metrics: o.metrics,
         filters: parseFilters(o.filter),
         maxRows: o.maxRows,
-        currency: o.currency
+        currency: o.currency,
+        sort: o.sort,
+        compare: o.compare
       };
       emit(cmd, reportView(kind === "network" ? await s.networkReport(q) : await s.mediationReport(q)));
     });
@@ -44040,6 +44135,8 @@ var reportInput = {
   metrics: external_exports.array(external_exports.string()).optional().describe('Metrics, e.g. ["earnings","impressions","match-rate","show-rate","rpm"]. Default: all common metrics.'),
   filters: external_exports.record(external_exports.string(), external_exports.array(external_exports.string())).optional().describe('Dimension filters, e.g. {"country":["NO","SE"],"app":["my-game-ios"]}. App filters accept aliases.'),
   max_rows: external_exports.number().int().positive().max(HARD_MAX_ROWS).optional().describe(`Row cap (default ${DEFAULT_MAX_ROWS}).`),
+  sort: external_exports.string().optional().describe('Sort by a dimension or metric of the report, e.g. "impressions", "match-rate:asc", "country". Default: by time, else by earnings.'),
+  compare: external_exports.enum(COMPARISONS).optional().describe("previous: add previous_<metric> and <metric>_change (a fraction) to each row and the totals, against the equal-length period just before. Not with date, week or month."),
   ...currencyArg,
   ...accountArg
 };
@@ -44051,6 +44148,7 @@ var reportOutput = loose({
   rows: external_exports.array(anyRecord),
   totals: anyRecord.optional(),
   truncated: external_exports.boolean(),
+  previous: anyRecord.optional(),
   notice: external_exports.string().optional(),
   notices: external_exports.array(external_exports.string())
 });
@@ -44143,7 +44241,9 @@ function createMcpServer(deps) {
           metrics: a.metrics,
           filters: a.filters,
           maxRows: a.max_rows ?? DEFAULT_MAX_ROWS,
-          currency: a.currency
+          currency: a.currency,
+          sort: a.sort,
+          compare: a.compare
         };
         return reportPayload(kind === "network" ? await s.networkReport(q) : await s.mediationReport(q));
       })

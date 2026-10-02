@@ -27,7 +27,7 @@ import {
   planUpdateLine,
   type WritePlan,
 } from "../core/write.js";
-import { AdmobService, type ServiceDeps, type ServiceOptions } from "../core/service.js";
+import { AdmobService, COMPARISONS, type ServiceDeps, type ServiceOptions } from "../core/service.js";
 import { defaultFormat, OUTPUT_FORMATS, render, renderTsv, type Output, type OutputFormat } from "../output/format.js";
 import { VERSION } from "../version.js";
 import {
@@ -441,7 +441,9 @@ export function buildProgram(io: CliIO): Command {
       .option("--filter <k=v,…>", "filter, repeatable (e.g. country=NO,SE or app=<alias>)", (v, p: string[] = []) => [...p, v])
       .option("--max-rows <n>", "cap the number of rows", positiveInt)
       .option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)")
-      .action(async (o: { from: string; to?: string; by?: string[]; metrics?: string[]; filter?: string[]; maxRows?: number; currency?: string }, cmd: Command) => {
+      .option("--sort <field[:asc|desc]>", "sort by a dimension or metric of the report (default: by time, else by earnings)")
+      .addOption(new Option("--compare <period>", "add each row's change against the equal-length period just before").choices([...COMPARISONS]))
+      .action(async (o: { from: string; to?: string; by?: string[]; metrics?: string[]; filter?: string[]; maxRows?: number; currency?: string; sort?: string; compare?: string }, cmd: Command) => {
         const s = svc(cmd);
         const q = {
           from: o.from,
@@ -451,6 +453,8 @@ export function buildProgram(io: CliIO): Command {
           filters: parseFilters(o.filter),
           maxRows: o.maxRows,
           currency: o.currency,
+          sort: o.sort,
+          compare: o.compare,
         };
         emit(cmd, reportView(kind === "network" ? await s.networkReport(q) : await s.mediationReport(q)));
       });

@@ -111,14 +111,18 @@ export interface ReportSpecInput {
   maxRows?: number;
   /** ISO 4217 code; the API converts earnings at the daily average rate. */
   currency?: string;
+  /** `<field>[:asc|desc]`, a dimension or metric of this report. Default: by time, else by earnings. */
+  sort?: string;
 }
+
+export type SortCondition = { dimension?: string; metric?: string; order: "ASCENDING" | "DESCENDING" };
 
 export interface ReportSpec {
   dateRange: DateRange;
   dimensions: string[];
   metrics: string[];
   dimensionFilters?: Array<{ dimension: string; matchesAny: { values: string[] } }>;
-  sortConditions?: Array<{ dimension?: string; metric?: string; order: "ASCENDING" | "DESCENDING" }>;
+  sortConditions?: SortCondition[];
   localizationSettings?: { currencyCode: string };
   maxReportRows?: number;
 }
@@ -126,7 +130,7 @@ export interface ReportSpec {
 /** The API's own maximum for maxReportRows. */
 export const API_MAX_ROWS = 100_000;
 
-const TIME_DIMENSIONS = ["DATE", "WEEK", "MONTH"];
+export const TIME_DIMENSIONS = ["DATE", "WEEK", "MONTH"];
 
 /** Combinations the API rejects (both the reference and the metrics guide agree). */
 const INCOMPATIBLE: Record<string, readonly string[]> = {
@@ -168,6 +172,32 @@ export function normalizeCurrency(code: string): string {
   return c;
 }
 
+/**
+ * `--sort <field>[:asc|desc]`. The field is one of the report's own (API-named) dimensions or metrics;
+ * dimensions ascend and metrics descend unless an order is given.
+ */
+export function parseSort(input: string, kind: ReportKind, dimensions: string[], metrics: string[]): SortCondition {
+  const [field = "", dir, ...rest] = input.split(":").map((p) => p.trim());
+  const order = dir?.toLowerCase();
+  if (rest.length || (order !== undefined && order !== "asc" && order !== "desc")) {
+    throw usageError(`--sort expects <field>[:asc|desc] with asc or desc, got "${input}"`);
+  }
+  const named = <T>(resolve: () => T): T | undefined => {
+    try {
+      return resolve();
+    } catch {
+      return undefined;
+    }
+  };
+  const dimension = named(() => normalizeDimension(field, kind));
+  if (dimension && dimensions.includes(dimension)) return { dimension, order: order === "desc" ? "DESCENDING" : "ASCENDING" };
+  const metric = named(() => normalizeMetric(field, kind));
+  if (metric && metrics.includes(metric)) return { metric, order: order === "asc" ? "ASCENDING" : "DESCENDING" };
+  throw usageError(
+    `Cannot sort by "${field}": it is not in this report. Sort by one of: ${[...dimensions.map(friendlyName), ...metrics.map(friendlyMetric)].join(", ")}`,
+  );
+}
+
 export function buildReportSpec(kind: ReportKind, input: ReportSpecInput): ReportSpec {
   const dimensions = input.dimensions.map((d) => normalizeDimension(d, kind));
   const metrics = input.metrics.map((m) => normalizeMetric(m, kind));
@@ -183,7 +213,8 @@ export function buildReportSpec(kind: ReportKind, input: ReportSpecInput): Repor
   }
 
   const timeDim = dimensions.find((d) => TIME_DIMENSIONS.includes(d));
-  if (timeDim) spec.sortConditions = [{ dimension: timeDim, order: "ASCENDING" }];
+  if (input.sort !== undefined) spec.sortConditions = [parseSort(input.sort, kind, dimensions, metrics)];
+  else if (timeDim) spec.sortConditions = [{ dimension: timeDim, order: "ASCENDING" }];
   else if (metrics.includes("ESTIMATED_EARNINGS")) {
     spec.sortConditions = [{ metric: "ESTIMATED_EARNINGS", order: "DESCENDING" }];
   }

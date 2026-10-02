@@ -4,7 +4,7 @@ import type { TokenProvider } from "./auth/types.js";
 import { mergeCampaignChunks, RATIO_BASES } from "./campaign.js";
 import { AdmobClient, type AdSource, type AdUnit, type PublisherAccount } from "./client.js";
 import { configDir, loadConfig, resolveProfile, type ResolvedProfile } from "./config.js";
-import { dateRangeFromArgs, formatDate, splitRange, todayIn, type DateRange } from "./dates.js";
+import { dateRangeFromArgs, formatDate, previousPeriod, splitRange, todayIn, type DateRange } from "./dates.js";
 import { AdmobctlError, usageError } from "./errors.js";
 import type { Exec } from "./exec.js";
 import { freshnessNotices } from "./freshness.js";
@@ -17,9 +17,13 @@ import {
   friendlyName,
   normalizeDimension,
   normalizeMetric,
+  MONEY_METRICS,
+  TIME_DIMENSIONS,
   type Report,
+  type ReportRow,
   type ReportKind,
 } from "./report.js";
+import { microsToAmount } from "./money.js";
 import { computeTotals, dimensionKey, metricKey, toViewRows, type ViewRow } from "./report-view.js";
 
 export interface ServiceOptions {
@@ -138,7 +142,15 @@ export interface ReportQuery {
   maxRows?: number;
   /** ISO 4217 code to convert earnings into (default: the account currency). */
   currency?: string;
+  /** `<field>[:asc|desc]`: a dimension or metric of the report. */
+  sort?: string;
+  /** Add each row's value in the equal-length period just before, and the change. */
+  compare?: string;
 }
+
+export const COMPARISONS = ["previous"] as const;
+
+type RawReport = { report: Report; dimensions: string[]; metrics: string[]; range: DateRange; notices: string[] };
 
 export interface ReportResult {
   kind: ReportKind;
@@ -155,6 +167,8 @@ export interface ReportResult {
   truncated: boolean;
   /** Total rows matching the query, when the API reports it. */
   matchingRowCount?: number;
+  /** With `compare`: the period compared against, and its totals (omitted when this report is truncated). */
+  previous?: { from: string; to: string; totals?: ViewRow };
   /** Warnings from the API (e.g. DATA_DELAYED). */
   warnings: string[];
   /** admobctl's own notes: partial recent data, default metrics left out. */
@@ -459,10 +473,7 @@ export class AdmobService {
   }
 
   /** Raw report access for finance/insights, which need exact micros per row. */
-  async rawReport(
-    kind: StreamedReportKind,
-    q: ReportQuery,
-  ): Promise<{ report: Report; dimensions: string[]; metrics: string[]; range: DateRange; notices: string[] }> {
+  async rawReport(kind: StreamedReportKind, q: ReportQuery): Promise<RawReport> {
     const range = q.dateRange ?? dateRangeFromArgs(q.from ?? "", q.to ?? q.from ?? "");
     const dimensions = q.by.map((d) => normalizeDimension(d, kind));
     const notices: string[] = [];
@@ -476,12 +487,29 @@ export class AdmobService {
       }
     }
     const filters = await this.resolveFilters(kind, q.filters ?? {});
-    const spec = buildReportSpec(kind, { dateRange: range, dimensions, metrics, filters, maxRows: q.maxRows, currency: q.currency });
+    const spec = buildReportSpec(kind, { dateRange: range, dimensions, metrics, filters, maxRows: q.maxRows, currency: q.currency, sort: q.sort });
     const acct = await this.account();
     const report =
       kind === "network" ? await this.client.networkReport(acct.name, spec) : await this.client.mediationReport(acct.name, spec);
     notices.push(...freshnessNotices(kind, range, todayIn(acct.reportingTimeZone, this.now())));
     return { report, dimensions, metrics, range, notices };
+  }
+
+  /**
+   * A report and the same report for the equal-length period just before it, fetched together.
+   * `previousQuery` overrides parts of the query for the earlier period (e.g. no row cap).
+   */
+  async rawReportWithPrevious(
+    kind: StreamedReportKind,
+    q: ReportQuery,
+    previousQuery: Partial<ReportQuery> = {},
+  ): Promise<{ current: RawReport; previous: RawReport }> {
+    const range = q.dateRange ?? dateRangeFromArgs(q.from ?? "", q.to ?? q.from ?? "");
+    const [current, previous] = await Promise.all([
+      this.rawReport(kind, { ...q, dateRange: range }),
+      this.rawReport(kind, { ...q, ...previousQuery, dateRange: previousPeriod(range) }),
+    ]);
+    return { current, previous };
   }
 
   private async resolveFilters(kind: ReportKind, filters: Record<string, string[]>): Promise<Record<string, string[]>> {
@@ -498,7 +526,16 @@ export class AdmobService {
     // The live API caps matchingRowCount at maxReportRows, so it cannot say whether rows were left out.
     // Ask for one row more than --max-rows instead: if it comes back, the report was cut short.
     const probe = cap < API_MAX_ROWS;
-    const { report, dimensions, metrics, range, notices } = await this.rawReport(kind, probe ? { ...q, maxRows: cap + 1 } : q);
+    if (q.compare !== undefined && !(COMPARISONS as readonly string[]).includes(q.compare)) {
+      throw usageError(`Unknown comparison "${q.compare}". Supported: ${COMPARISONS.join(", ")}`);
+    }
+    if (q.compare && q.by.some((d) => TIME_DIMENSIONS.includes(normalizeDimension(d, kind)))) {
+      throw usageError("--compare does not work with date, week or month: the rows of two periods never line up. Drop the time dimension.");
+    }
+    const currentQuery = probe ? { ...q, maxRows: cap + 1 } : q;
+    // The earlier period is fetched whole: a row cut off there would look new here.
+    const pair = q.compare ? await this.rawReportWithPrevious(kind, currentQuery, { maxRows: undefined }) : undefined;
+    const { report, dimensions, metrics, range, notices } = pair?.current ?? (await this.rawReport(kind, currentQuery));
     const needsApps = dimensions.includes("APP");
     const apps = needsApps ? await this.apps() : [];
     const fetched = report.rows.length;
@@ -527,6 +564,47 @@ export class AdmobService {
     };
     if (!truncated) result.totals = computeTotals(report, metrics);
     if (report.matchingRowCount !== undefined) result.matchingRowCount = report.matchingRowCount;
+    if (pair) addComparison(result, report, pair.previous, dimensions, metrics);
     return result;
+  }
+}
+
+const change = (cur: number, prev: number) => (prev > 0 ? (cur - prev) / prev : undefined);
+
+/** Join the previous period onto the rows (and totals) of `result`: `previous_<metric>` and `<metric>_change`. */
+function addComparison(result: ReportResult, report: Report, previous: RawReport, dimensions: string[], metrics: string[]): void {
+  const keyOf = (row: ReportRow) => dimensions.map((d) => row.dimensions[d]?.value ?? "").join("\u0000");
+  const before = new Map(previous.report.rows.map((row) => [keyOf(row), row]));
+  const seen = new Set<string>();
+  report.rows.forEach((row, i) => {
+    const key = keyOf(row);
+    const prev = before.get(key);
+    const out = result.rows[i];
+    if (!prev || !out) return;
+    seen.add(key);
+    for (const m of metrics) {
+      const k = metricKey(m);
+      const was = prev.metrics[m] ?? 0;
+      if (MONEY_METRICS.has(m)) {
+        out[`previous_${k}`] = microsToAmount(was);
+        out[`previous_${k}_micros`] = was;
+      } else out[`previous_${k}`] = was;
+      const c = change(row.metrics[m] ?? 0, was);
+      if (c !== undefined) out[`${k}_change`] = c;
+    }
+  });
+  result.previous = { from: formatDate(previous.range.startDate), to: formatDate(previous.range.endDate) };
+  if (result.totals) {
+    const totals = computeTotals(previous.report, metrics);
+    result.previous.totals = totals;
+    for (const k of Object.keys(result.totals).filter((k) => !k.endsWith("_micros"))) {
+      const exact = (t: ViewRow) => Number(t[`${k}_micros`] ?? t[k] ?? 0);
+      const c = change(exact(result.totals), exact(totals));
+      if (c !== undefined) result.totals[`${k}_change`] = c;
+    }
+    const gone = previous.report.rows.filter((row) => !seen.has(keyOf(row))).length;
+    if (gone) {
+      result.notices.push(`${gone} ${gone === 1 ? "row" : "rows"} existed only in the previous period (${result.previous.from} → ${result.previous.to}) and ${gone === 1 ? "is" : "are"} not listed.`);
+    }
   }
 }

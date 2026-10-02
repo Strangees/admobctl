@@ -9,7 +9,7 @@ import { exportJournal } from "../core/journal.js";
 import { INSIGHT_DIMENSIONS, insights } from "../core/insights.js";
 import { log } from "../core/log.js";
 import { shownRows } from "../core/report-view.js";
-import type { AdmobService, ReportResult, ServiceOptions } from "../core/service.js";
+import { COMPARISONS, type AdmobService, type ReportResult, type ServiceOptions } from "../core/service.js";
 import { renderTsv } from "../output/format.js";
 import { VERSION } from "../version.js";
 
@@ -122,6 +122,14 @@ const reportInput = {
     .optional()
     .describe('Dimension filters, e.g. {"country":["NO","SE"],"app":["my-game-ios"]}. App filters accept aliases.'),
   max_rows: z.number().int().positive().max(HARD_MAX_ROWS).optional().describe(`Row cap (default ${DEFAULT_MAX_ROWS}).`),
+  sort: z
+    .string()
+    .optional()
+    .describe('Sort by a dimension or metric of the report, e.g. "impressions", "match-rate:asc", "country". Default: by time, else by earnings.'),
+  compare: z
+    .enum(COMPARISONS)
+    .optional()
+    .describe("previous: add previous_<metric> and <metric>_change (a fraction) to each row and the totals, against the equal-length period just before. Not with date, week or month."),
   ...currencyArg,
   ...accountArg,
 };
@@ -134,6 +142,7 @@ const reportOutput = loose({
   rows: z.array(anyRecord),
   totals: anyRecord.optional(),
   truncated: z.boolean(),
+  previous: anyRecord.optional(),
   notice: z.string().optional(),
   notices: z.array(z.string()),
 });
@@ -231,7 +240,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
         outputSchema: reportOutput,
         annotations,
       },
-      wrap(async (a: { from: string; to?: string; by?: string[]; metrics?: string[]; filters?: Record<string, string[]>; max_rows?: number; currency?: string; account?: string }) => {
+      wrap(async (a: { from: string; to?: string; by?: string[]; metrics?: string[]; filters?: Record<string, string[]>; max_rows?: number; sort?: string; compare?: string; currency?: string; account?: string }) => {
         const s = svc(a);
         const q = {
           from: a.from,
@@ -241,6 +250,8 @@ export function createMcpServer(deps: McpDeps): McpServer {
           filters: a.filters,
           maxRows: a.max_rows ?? DEFAULT_MAX_ROWS,
           currency: a.currency,
+          sort: a.sort,
+          compare: a.compare,
         };
         return reportPayload(kind === "network" ? await s.networkReport(q) : await s.mediationReport(q));
       }),

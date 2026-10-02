@@ -112,6 +112,10 @@ export function formatPercent(fraction: number): string {
   return `${(fraction * 100).toFixed(1)}%`;
 }
 
+function signedPercent(fraction: number): string {
+  return `${fraction >= 0 ? "+" : ""}${formatPercent(fraction)}`;
+}
+
 function displayRow(row: ViewRow): Record<string, unknown> {
   const out: Record<string, unknown> = { ...row };
   for (const k of Object.keys(row)) {
@@ -123,20 +127,31 @@ function displayRow(row: ViewRow): Record<string, unknown> {
 
 export function reportView(r: ReportResult): Output {
   const columns: Column[] = r.dimensions.map((d) => ({ key: d, label: d === "app" ? "App" : titleCase(d) }));
+  // With --compare the table shows the change of the first metric; JSON carries every metric's.
+  const compared = r.previous ? r.metrics[0] : undefined;
   for (const key of r.metrics) {
     const label = METRIC_LABELS[key] ?? titleCase(key);
     columns.push({ key, label: MONEY_KEYS.has(key) && r.currency ? `${label} (${r.currency})` : label, align: "right" });
+    if (key === compared) columns.push({ key: "change", label: `Δ ${label}`, align: "right" });
   }
+  const withChange = (row: ViewRow, missing: string): Record<string, unknown> => {
+    const out = displayRow(row);
+    if (!compared) return out;
+    const c = row[`${compared}_change`];
+    out.change = typeof c === "number" ? signedPercent(c) : row[`previous_${compared}`] === undefined ? missing : "";
+    return out;
+  };
   const notes = [`${titleCase(r.kind)} report ${r.from} → ${r.to}, ${r.timeZone ?? ""}.${r.kind === "campaign" ? "" : ` ${ESTIMATE_NOTE}`}`];
+  if (r.previous) notes.push(`Compared with ${r.previous.from} → ${r.previous.to}. JSON output has the previous value and change of every metric.`);
   if (r.truncated) {
     notes.push(`Truncated: ${shownRows(r)}. Raise --max-rows or narrow the query.`);
   }
   for (const w of r.warnings) notes.push(`API warning: ${w}`);
   notes.push(...r.notices);
-  const footer = r.totals && r.rows.length > 1 ? [{ ...displayRow(r.totals), [columns[0]!.key]: "Total" }] : undefined;
+  const footer = r.totals && r.rows.length > 1 ? [{ ...withChange(r.totals, ""), [columns[0]!.key]: "Total" }] : undefined;
   return {
     data: r,
-    table: { columns, rows: r.rows.map(displayRow), footer },
+    table: { columns, rows: r.rows.map((row) => withChange(row, "new")), footer },
     notes,
   };
 }

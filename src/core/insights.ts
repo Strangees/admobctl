@@ -1,4 +1,4 @@
-import { dateRangeFromArgs, formatDate, lastNDays, previousPeriod, todayIn, type DateRange } from "./dates.js";
+import { dateRangeFromArgs, formatDate, lastNDays, todayIn, type DateRange } from "./dates.js";
 import { usageError } from "./errors.js";
 import { ESTIMATE_LABEL } from "./finance.js";
 import { formatMicros, microsToAmount, sumMicros } from "./money.js";
@@ -121,15 +121,14 @@ export async function insights(svc: AdmobService, opts: InsightsOptions): Promis
   }
   const acct = await svc.account();
   const range = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
-  const prevRange = previousPeriod(range);
   const metrics = ["earnings", "requests", "matched-requests", "impressions", "clicks"];
   const dim = DIM_API[opts.by];
-  const [cur, prev, apps, units] = await Promise.all([
-    svc.rawReport("network", { dateRange: range, by: [opts.by], metrics, currency: opts.currency }),
-    svc.rawReport("network", { dateRange: prevRange, by: [opts.by], metrics, currency: opts.currency }),
+  const [{ current: cur, previous: prev }, apps, units] = await Promise.all([
+    svc.rawReportWithPrevious("network", { dateRange: range, by: [opts.by], metrics, currency: opts.currency }),
     opts.by === "app" ? svc.apps() : [],
     opts.by === "ad-unit" ? svc.adUnits() : [],
   ]);
+  const prevRange = prev.range;
   // Ad unit names repeat across apps ("ad", "Banner"), so an ad unit is labelled "<app alias> / <name>".
   const labelOf = (id: string, name: string | undefined) => {
     if (opts.by === "app") return apps.find((a) => a.appId === id)?.alias;
