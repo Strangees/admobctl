@@ -14,6 +14,7 @@ import { EXPORT_FORMATS, exportJournal } from "../core/journal.js";
 import { analyzeGeo } from "../core/geo.js";
 import { INSIGHT_DIMENSIONS, insights, type InsightDimension } from "../core/insights.js";
 import { lint } from "../core/lint.js";
+import { exportMediationGroups } from "../core/mediation-export.js";
 import { log } from "../core/log.js";
 import {
   applyPlan,
@@ -373,6 +374,23 @@ export function buildProgram(io: CliIO): Command {
     .command("show <group>")
     .description("Show one mediation group's lines (name or ID)")
     .action(async (group: string, _o, cmd: Command) => emit(cmd, mediationGroupView(await svc(cmd).mediationGroup(group))));
+  groups
+    .command("export [group]")
+    .description("Print a group (or all groups) as the JSON that `mediation-groups create --file` takes, for backup or cloning")
+    .option("--name <name>", "display name for the exported copy (one group)")
+    .option("--with-admob-line", "keep the AdMob Network line (left out by default: a new group gets its own)")
+    .option("--out <file>", "write to this file (readable only by you) instead of stdout")
+    .action(async (group: string | undefined, o: { name?: string; withAdmobLine?: boolean; out?: string }, cmd: Command) => {
+      const r = await exportMediationGroups(svc(cmd), { group, name: o.name, admobLine: o.withAdmobLine });
+      // Always JSON, whatever -o says: the output is a file for `create --file`. One group is one object.
+      const content = `${JSON.stringify(group ? r.groups[0] : r.groups, null, 2)}\n`;
+      if (o.out) {
+        writeFileSync(o.out, content, { mode: 0o600 });
+        chmodSync(o.out, 0o600);
+        io.stderr(`Wrote ${o.out}\n`);
+      } else io.stdout(content);
+      for (const n of r.notes) io.stderr(`${n}\n`);
+    });
   groups
     .command("create")
     .description("Create a mediation group from a MediationGroup JSON file (v1beta write)")

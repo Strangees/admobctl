@@ -140,6 +140,7 @@ admobctl ad-sources list                             # ad networks available for
 admobctl ad-sources adapters "Example Bidder"         # adapters per platform/format and the settings a mapping needs
 admobctl mediation-groups list --format banner        # targeting, lines and A/B experiment state
 admobctl mediation-groups show "Banners"              # one group's lines: ad source, CPM mode, manual CPM (USD)
+admobctl mediation-groups export "Banners" --out banners.json   # the group as JSON for `mediation-groups create --file`
 admobctl ad-units mappings "Quiz banner"              # third-party mappings of an ad unit
 admobctl report campaign --from 2026-07 --to 2026-09 --by campaign   # app-promotion campaigns: installs, cost, CPI
 ```
@@ -148,6 +149,8 @@ These read-only commands use the AdMob API's v1beta surface with the same `admob
 v1beta methods (mediation groups and ad unit mappings in particular) to allowlisted accounts; when access is denied the
 error says so and points to your AdMob account manager, and `auth doctor` shows which v1beta reads your account can
 use. Campaign reports take at most 30 days per request, so longer ranges are fetched in 30-day chunks and added up.
+
+`mediation-groups export` is for backup and cloning: it prints a group (or, without a name, every group as an array) as the JSON `mediation-groups create --file` takes, without IDs and output-only fields. The AdMob Network line is left out because a new group gets its own (`--with-admob-line` keeps it), and so are the treatment lines of a running A/B experiment.
 
 ### Changing AdMob (write commands)
 
