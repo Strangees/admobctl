@@ -93,3 +93,10 @@ export function computeTotals(report: Report, metrics: string[]): ViewRow {
   }
   return t;
 }
+
+/** "showing N of M rows", or "showing N rows; more may exist" when the API gave no matching count. */
+export function shownRows(r: { rows: unknown[]; matchingRowCount?: number }): string {
+  return r.matchingRowCount !== undefined
+    ? `showing ${r.rows.length} of ${r.matchingRowCount} rows`
+    : `showing ${r.rows.length} rows; more may exist`;
+}

@@ -92,4 +92,43 @@ describe("AdmobService", () => {
     expect(r.rows).toHaveLength(2);
     expect(r.truncated).toBe(true);
   });
+
+  it("keeps a report complete when matchingRowCount equals the row cap", async () => {
+    const { svc } = service();
+    const r = await svc.networkReport({ from: "2026-09", to: "2026-09", by: ["app"], maxRows: 3 });
+    expect(r.rows).toHaveLength(3);
+    expect(r.truncated).toBe(false);
+    expect(r.matchingRowCount).toBe(3);
+    expect(r.totals).toMatchObject({ earnings_micros: 102_450_000 });
+  });
+
+  describe("when the API omits matchingRowCount", () => {
+    const noFooter = () =>
+      jsonResponse(fixture<Array<Record<string, unknown>>>("network-report-by-app.json").filter((e) => !("footer" in e)));
+    const routes = { "POST /networkReport:generate": noFooter } as unknown as Record<string, never>;
+
+    it("treats a report that fills maxRows exactly as possibly truncated", async () => {
+      const { svc } = service({ routes });
+      const r = await svc.networkReport({ from: "2026-09", to: "2026-09", by: ["app"], maxRows: 3 });
+      expect(r.rows).toHaveLength(3);
+      expect(r.truncated).toBe(true);
+      expect(r.totals).toBeUndefined();
+      expect(r.matchingRowCount).toBeUndefined();
+    });
+
+    it("treats a report with fewer rows than maxRows as complete", async () => {
+      const { svc } = service({ routes });
+      const r = await svc.networkReport({ from: "2026-09", to: "2026-09", by: ["app"], maxRows: 5 });
+      expect(r.rows).toHaveLength(3);
+      expect(r.truncated).toBe(false);
+      expect(r.totals).toMatchObject({ earnings_micros: 102_450_000 });
+    });
+
+    it("treats a report without a row cap as complete", async () => {
+      const { svc } = service({ routes });
+      const r = await svc.networkReport({ from: "2026-09", to: "2026-09", by: ["app"] });
+      expect(r.truncated).toBe(false);
+      expect(r.totals).toBeDefined();
+    });
+  });
 });

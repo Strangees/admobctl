@@ -4,7 +4,7 @@ import { JOURNAL_COLUMNS, type FinanceMonth, type FinanceRange, type JournalRow 
 import type { InsightsResult } from "../core/insights.js";
 import type { PublisherAccount } from "../core/client.js";
 import { formatMicros } from "../core/money.js";
-import type { ViewRow } from "../core/report-view.js";
+import { shownRows, type ViewRow } from "../core/report-view.js";
 import type { AdUnitView, ReportResult } from "../core/service.js";
 import type { Column, Output } from "../output/format.js";
 
@@ -110,7 +110,7 @@ export function reportView(r: ReportResult): Output {
   }
   const notes = [`${r.kind === "network" ? "Network" : "Mediation"} report ${r.from} → ${r.to}, ${r.timeZone ?? ""}. ${ESTIMATE_NOTE}`];
   if (r.truncated) {
-    notes.push(`Truncated: showing ${r.rows.length} of ${r.matchingRowCount} rows. Raise --max-rows or narrow the query.`);
+    notes.push(`Truncated: ${shownRows(r)}. Raise --max-rows or narrow the query.`);
   }
   for (const w of r.warnings) notes.push(`API warning: ${w}`);
   const footer = r.totals && r.rows.length > 1 ? [{ ...displayRow(r.totals), [columns[0]!.key]: "Total" }] : undefined;

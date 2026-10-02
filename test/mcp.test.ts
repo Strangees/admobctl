@@ -104,6 +104,24 @@ describe("mcp server", () => {
     expect(String(r.structuredContent!.notice)).toMatch(/200 of 5000/);
   });
 
+  it("says more rows may exist when the API omits matchingRowCount", async () => {
+    const { client } = await connect({
+      "POST /networkReport:generate": (c) => {
+        const spec = (c.body as { reportSpec: { maxReportRows?: number } }).reportSpec;
+        const all = bigReport(5000);
+        return jsonResponse([all[0], ...all.slice(1, 1 + (spec.maxReportRows ?? 5000))]);
+      },
+    });
+    const r = (await client.callTool({
+      name: "admobctl_network_report",
+      arguments: { from: "2026-09", by: ["country"] },
+    })) as ToolResult;
+    expect(r.structuredContent!.truncated).toBe(true);
+    expect(r.structuredContent!.totals).toBeUndefined();
+    expect(String(r.structuredContent!.notice)).toMatch(/showing 200 rows; more may exist/);
+    expect(String(r.structuredContent!.notice)).not.toMatch(/of \?/);
+  });
+
   it("trims rows further to stay within the context budget", async () => {
     const { client } = await connect();
     const r = (await client.callTool({

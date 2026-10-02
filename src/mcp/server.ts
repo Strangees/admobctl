@@ -5,6 +5,7 @@ import { AdmobctlError } from "../core/errors.js";
 import { financeMonth, financeRange, JOURNAL_COLUMNS, journalRows } from "../core/finance.js";
 import { INSIGHT_DIMENSIONS, insights } from "../core/insights.js";
 import { log } from "../core/log.js";
+import { shownRows } from "../core/report-view.js";
 import type { AdmobService, ReportResult, ServiceOptions } from "../core/service.js";
 import { renderTsv } from "../output/format.js";
 import { VERSION } from "../version.js";
@@ -76,7 +77,7 @@ export function fitRows<T extends { rows: unknown[] }>(result: T & { truncated?:
 function reportPayload(r: ReportResult): Record<string, unknown> {
   const payload: ReportResult & { notice?: string } = { ...r };
   if (r.truncated) {
-    payload.notice = `Truncated: showing ${r.rows.length} of ${r.matchingRowCount ?? "?"} rows. Raise max_rows (≤ ${HARD_MAX_ROWS}) or narrow the query.`;
+    payload.notice = `Truncated: ${shownRows(r)}. Raise max_rows (≤ ${HARD_MAX_ROWS}) or narrow the query.`;
   }
   return fitRows(payload) as unknown as Record<string, unknown>;
 }

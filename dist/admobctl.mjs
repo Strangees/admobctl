@@ -12147,6 +12147,9 @@ function computeTotals(report, metrics) {
   }
   return t;
 }
+function shownRows(r) {
+  return r.matchingRowCount !== void 0 ? `showing ${r.rows.length} of ${r.matchingRowCount} rows` : `showing ${r.rows.length} rows; more may exist`;
+}
 
 // src/core/service.ts
 var DEFAULT_METRICS = {
@@ -12274,7 +12277,7 @@ var AdmobService = class _AdmobService {
     const needsApps = dimensions.includes("APP");
     const apps = needsApps ? await this.apps() : [];
     if (q.maxRows !== void 0 && report.rows.length > q.maxRows) report.rows = report.rows.slice(0, q.maxRows);
-    const truncated = report.matchingRowCount !== void 0 && report.matchingRowCount > report.rows.length;
+    const truncated = report.matchingRowCount !== void 0 ? report.matchingRowCount > report.rows.length : q.maxRows !== void 0 && report.rows.length >= q.maxRows;
     const acct = await this.account();
     const result = {
       kind,
@@ -41698,7 +41701,7 @@ function fitRows(result) {
 function reportPayload(r) {
   const payload = { ...r };
   if (r.truncated) {
-    payload.notice = `Truncated: showing ${r.rows.length} of ${r.matchingRowCount ?? "?"} rows. Raise max_rows (\u2264 ${HARD_MAX_ROWS}) or narrow the query.`;
+    payload.notice = `Truncated: ${shownRows(r)}. Raise max_rows (\u2264 ${HARD_MAX_ROWS}) or narrow the query.`;
   }
   return fitRows(payload);
 }
@@ -41970,7 +41973,7 @@ function reportView(r) {
   }
   const notes = [`${r.kind === "network" ? "Network" : "Mediation"} report ${r.from} \u2192 ${r.to}, ${r.timeZone ?? ""}. ${ESTIMATE_NOTE}`];
   if (r.truncated) {
-    notes.push(`Truncated: showing ${r.rows.length} of ${r.matchingRowCount} rows. Raise --max-rows or narrow the query.`);
+    notes.push(`Truncated: ${shownRows(r)}. Raise --max-rows or narrow the query.`);
   }
   for (const w of r.warnings) notes.push(`API warning: ${w}`);
   const footer = r.totals && r.rows.length > 1 ? [{ ...displayRow(r.totals), [columns[0].key]: "Total" }] : void 0;

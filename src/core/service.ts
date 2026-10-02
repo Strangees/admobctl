@@ -65,6 +65,7 @@ export interface ReportResult {
   /** Omitted when the report is truncated (a partial sum would mislead). */
   totals?: ViewRow;
   truncated: boolean;
+  /** Total rows matching the query, when the API reports it. */
   matchingRowCount?: number;
   warnings: string[];
 }
@@ -195,7 +196,11 @@ export class AdmobService {
     const needsApps = dimensions.includes("APP");
     const apps = needsApps ? await this.apps() : [];
     if (q.maxRows !== undefined && report.rows.length > q.maxRows) report.rows = report.rows.slice(0, q.maxRows);
-    const truncated = report.matchingRowCount !== undefined && report.matchingRowCount > report.rows.length;
+    // Without a matchingRowCount, a report that fills the row cap may have been cut short.
+    const truncated =
+      report.matchingRowCount !== undefined
+        ? report.matchingRowCount > report.rows.length
+        : q.maxRows !== undefined && report.rows.length >= q.maxRows;
     const acct = await this.account();
     const result: ReportResult = {
       kind,

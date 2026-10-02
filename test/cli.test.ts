@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { run } from "../src/cli/program.js";
+import { reportView } from "../src/cli/views.js";
+import type { ReportResult } from "../src/core/service.js";
 import type { TokenProvider } from "../src/core/auth/types.js";
 import { fakeFetch, fixture, jsonResponse, noSleep } from "./helpers.js";
 
@@ -153,5 +155,22 @@ describe("cli", () => {
     const r = await cli(["--version"]);
     expect(r.stdout).toMatch(/\d+\.\d+\.\d+/);
     expect(r.code).toBe(0);
+  });
+
+  it("notes a possibly truncated report when the matching row count is unknown", () => {
+    const r: ReportResult = {
+      kind: "network",
+      account: "pub-0000000000000001",
+      from: "2026-09-01",
+      to: "2026-09-30",
+      dimensions: ["country"],
+      metrics: ["estimated_earnings"],
+      rows: [{ country: "C0" }, { country: "C1" }],
+      truncated: true,
+      warnings: [],
+    };
+    const notes = reportView(r).notes ?? [];
+    expect(notes.join("\n")).toContain("Truncated: showing 2 rows; more may exist.");
+    expect(notes.join("\n")).not.toContain("undefined");
   });
 });
