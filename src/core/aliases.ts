@@ -24,6 +24,22 @@ export function slugify(input: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
+const APPROVAL_LABELS: Record<string, string> = {
+  APPROVED: "approved",
+  IN_REVIEW: "in review",
+  ACTION_REQUIRED: "action required",
+};
+
+/** App.appApprovalState in plain words; empty when unknown. */
+export function approvalLabel(state: string | undefined): string {
+  return state ? (APPROVAL_LABELS[state] ?? "") : "";
+}
+
+/** Apps whose AdMob review needs the publisher to act (ads may be limited until it is fixed). */
+export function appsNeedingAction(apps: AppRef[]): AppRef[] {
+  return apps.filter((a) => a.approval === "ACTION_REQUIRED");
+}
+
 export function appDisplayName(app: App): string {
   return app.manualAppInfo?.displayName || app.linkedAppInfo?.displayName || app.appId;
 }

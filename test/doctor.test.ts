@@ -11,6 +11,9 @@ const okDeps = (): DoctorDeps => ({
   quotaProject: "qp",
   listAccounts: async () => fixture<{ account: never[] }>("accounts.json").account,
   account: async () => fixture<{ account: Array<{ publisherId: string }> }>("accounts.json").account[0]! as never,
+  listApps: async () => [
+    { alias: "quiz-ios", appId: "a~1", name: "Quiz", platform: "IOS", resource: "accounts/p/apps/1", approval: "APPROVED" },
+  ],
 });
 
 const byId = (checks: Awaited<ReturnType<typeof runDoctor>>) => Object.fromEntries(checks.map((c) => [c.id, c]));
@@ -25,6 +28,7 @@ describe("runDoctor", () => {
       ["quota-project", "ok"],
       ["api", "ok"],
       ["account", "ok"],
+      ["apps", "ok"],
     ]);
   });
 
@@ -66,5 +70,22 @@ describe("runDoctor", () => {
     expect(checks.api!.status).toBe("fail");
     expect(checks.api!.fix).toBe("gcloud services enable admob.googleapis.com --project qp");
     expect(checks.account!.status).toBe("skip");
+  });
+
+  it("warns about apps that need action in AdMob", async () => {
+    const checks = byId(
+      await runDoctor({
+        ...okDeps(),
+        listApps: async () => [
+          { alias: "quiz-ios", appId: "a~1", name: "Quiz", platform: "IOS", resource: "r1", approval: "APPROVED" },
+          { alias: "timer-android", appId: "a~2", name: "Timer", platform: "ANDROID", resource: "r2", approval: "ACTION_REQUIRED" },
+          { alias: "draw-ios", appId: "a~3", name: "Draw", platform: "IOS", resource: "r3", approval: "IN_REVIEW" },
+        ],
+      }),
+    );
+    expect(checks.apps!.status).toBe("warn");
+    expect(checks.apps!.summary).toMatch(/timer-android/);
+    expect(checks.apps!.summary).toMatch(/1 in review/);
+    expect(checks.apps!.fix).toMatch(/AdMob/);
   });
 });

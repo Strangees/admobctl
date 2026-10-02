@@ -16,6 +16,8 @@ export interface InsightsOptions {
   by: InsightDimension;
   /** Relative change that counts as a swing (default 0.3 = 30%). */
   swingThreshold?: number;
+  /** ISO 4217 code to convert earnings into (default: the account currency). */
+  currency?: string;
 }
 
 export interface InsightRow {
@@ -99,12 +101,14 @@ function aggregate(report: Report, dim: string, aliasOf: (id: string) => string 
   return out;
 }
 
-const ratio = (a: number, b: number) => (b > 0 ? a / b : 0);
-const perMille = (micros: number, n: number) => microsToAmount(Math.round(ratio(micros, n) * 1000));
-const pct = (f: number) => `${(f * 100).toFixed(1)}%`;
-const signedPct = (f: number) => `${f >= 0 ? "+" : ""}${(f * 100).toFixed(1)}%`;
+export const ratio = (a: number, b: number) => (b > 0 ? a / b : 0);
+/** Money per 1000 (eCPM, request RPM) as a rounded amount. */
+export const perMille = (micros: number, n: number) => microsToAmount(Math.round(ratio(micros, n) * 1000));
+export const pct = (f: number) => `${(f * 100).toFixed(1)}%`;
+export const signedPct = (f: number) => `${f >= 0 ? "+" : ""}${(f * 100).toFixed(1)}%`;
 
-export function resolveInsightRange(opts: InsightsOptions, today: ReturnType<typeof todayIn>): DateRange {
+/** --last N days (ending yesterday) or --from/--to. */
+export function resolveInsightRange(opts: Pick<InsightsOptions, "last" | "from" | "to">, today: ReturnType<typeof todayIn>): DateRange {
   if (opts.from || opts.to) return dateRangeFromArgs(opts.from ?? opts.to!, opts.to ?? opts.from!);
   const days = opts.last ?? 30;
   if (!Number.isInteger(days) || days < 1 || days > 366) throw usageError("--last must be between 1d and 366d");
@@ -121,8 +125,8 @@ export async function insights(svc: AdmobService, opts: InsightsOptions): Promis
   const metrics = ["earnings", "requests", "matched-requests", "impressions", "clicks"];
   const dim = DIM_API[opts.by];
   const [cur, prev, apps] = await Promise.all([
-    svc.rawReport("network", { dateRange: range, by: [opts.by], metrics }),
-    svc.rawReport("network", { dateRange: prevRange, by: [opts.by], metrics }),
+    svc.rawReport("network", { dateRange: range, by: [opts.by], metrics, currency: opts.currency }),
+    svc.rawReport("network", { dateRange: prevRange, by: [opts.by], metrics, currency: opts.currency }),
     opts.by === "app" ? svc.apps() : [],
   ]);
   const aliasOf = (id: string) => apps.find((a) => a.appId === id)?.alias;

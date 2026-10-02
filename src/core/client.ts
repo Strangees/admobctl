@@ -1,4 +1,5 @@
 import { requestJson, type HttpOptions } from "./http.js";
+import { processLimiters, type Limiters, type QuotaCategory } from "./ratelimit.js";
 import { parseReport, type Report, type ReportSpec } from "./report.js";
 
 export const API_BASE = "https://admob.googleapis.com/v1";
@@ -32,6 +33,8 @@ export interface AdmobClientOptions extends HttpOptions {
   getToken: () => Promise<string>;
   quotaProject?: string;
   baseUrl?: string;
+  /** Client-side quota limiters. Default: shared by the whole process. */
+  limiters?: Limiters;
 }
 
 /** "pub-123" or "accounts/pub-123" → "accounts/pub-123" */
@@ -43,7 +46,8 @@ export function accountName(account: string): string {
 export class AdmobClient {
   constructor(private readonly opts: AdmobClientOptions) {}
 
-  private async request<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+  private async request<T>(quota: QuotaCategory, method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+    await (this.opts.limiters ?? processLimiters)[quota].take(this.opts.sleep);
     const headers: Record<string, string> = {
       authorization: `Bearer ${await this.opts.getToken()}`,
       accept: "application/json",
@@ -54,13 +58,13 @@ export class AdmobClient {
     return requestJson<T>(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) }, this.opts);
   }
 
-  private async paginate<T>(path: string, key: string): Promise<T[]> {
+  private async paginate<T>(quota: QuotaCategory, path: string, key: string): Promise<T[]> {
     const out: T[] = [];
     let pageToken: string | undefined;
     do {
       const qs = new URLSearchParams({ pageSize: "1000" });
       if (pageToken) qs.set("pageToken", pageToken);
-      const page = await this.request<Record<string, unknown> & { nextPageToken?: string }>("GET", `${path}?${qs}`);
+      const page = await this.request<Record<string, unknown> & { nextPageToken?: string }>(quota, "GET", `${path}?${qs}`);
       out.push(...((page?.[key] as T[] | undefined) ?? []));
       pageToken = page?.nextPageToken || undefined;
     } while (pageToken);
@@ -68,24 +72,24 @@ export class AdmobClient {
   }
 
   listAccounts(): Promise<PublisherAccount[]> {
-    return this.paginate<PublisherAccount>("accounts", "account");
+    return this.paginate<PublisherAccount>("account", "accounts", "account");
   }
 
   listApps(account: string): Promise<App[]> {
-    return this.paginate<App>(`${accountName(account)}/apps`, "apps");
+    return this.paginate<App>("inventory", `${accountName(account)}/apps`, "apps");
   }
 
   listAdUnits(account: string): Promise<AdUnit[]> {
-    return this.paginate<AdUnit>(`${accountName(account)}/adUnits`, "adUnits");
+    return this.paginate<AdUnit>("inventory", `${accountName(account)}/adUnits`, "adUnits");
   }
 
   async networkReport(account: string, spec: ReportSpec | Record<string, unknown>): Promise<Report> {
-    const raw = await this.request<unknown>("POST", `${accountName(account)}/networkReport:generate`, { reportSpec: spec });
+    const raw = await this.request<unknown>("reporting", "POST", `${accountName(account)}/networkReport:generate`, { reportSpec: spec });
     return parseReport(raw);
   }
 
   async mediationReport(account: string, spec: ReportSpec | Record<string, unknown>): Promise<Report> {
-    const raw = await this.request<unknown>("POST", `${accountName(account)}/mediationReport:generate`, { reportSpec: spec });
+    const raw = await this.request<unknown>("reporting", "POST", `${accountName(account)}/mediationReport:generate`, { reportSpec: spec });
     return parseReport(raw);
   }
 }

@@ -1,0 +1,168 @@
+[
+  {
+    "header": {
+      "dateRange": {
+        "startDate": {
+          "year": 2026,
+          "month": 9,
+          "day": 2
+        },
+        "endDate": {
+          "year": 2026,
+          "month": 10,
+          "day": 1
+        }
+      },
+      "localizationSettings": {
+        "currencyCode": "NOK",
+        "languageCode": "en-US"
+      },
+      "reportingTimeZone": "Europe/Oslo"
+    }
+  },
+  {
+    "row": {
+      "dimensionValues": {
+        "MEDIATION_GROUP": {
+          "value": "1000000001",
+          "displayLabel": "Banners"
+        },
+        "AD_SOURCE": {
+          "value": "1000000000000000000",
+          "displayLabel": "AdMob Network"
+        },
+        "AD_SOURCE_INSTANCE": {
+          "value": "0000000000000000001",
+          "displayLabel": "AdMob (default)"
+        }
+      },
+      "metricValues": {
+        "ESTIMATED_EARNINGS": {
+          "microsValue": "50000000"
+        },
+        "AD_REQUESTS": {
+          "integerValue": "100000"
+        },
+        "MATCHED_REQUESTS": {
+          "integerValue": "90000"
+        },
+        "IMPRESSIONS": {
+          "integerValue": "80000"
+        },
+        "OBSERVED_ECPM": {
+          "microsValue": "625000"
+        }
+      }
+    }
+  },
+  {
+    "row": {
+      "dimensionValues": {
+        "MEDIATION_GROUP": {
+          "value": "1000000001",
+          "displayLabel": "Banners"
+        },
+        "AD_SOURCE": {
+          "value": "1000000000000000001",
+          "displayLabel": "Example Bidder"
+        },
+        "AD_SOURCE_INSTANCE": {
+          "value": "0000000000000000002",
+          "displayLabel": "Bidder floor 1"
+        }
+      },
+      "metricValues": {
+        "ESTIMATED_EARNINGS": {
+          "microsValue": "30000000"
+        },
+        "AD_REQUESTS": {
+          "integerValue": "100000"
+        },
+        "MATCHED_REQUESTS": {
+          "integerValue": "20000"
+        },
+        "IMPRESSIONS": {
+          "integerValue": "15000"
+        },
+        "OBSERVED_ECPM": {
+          "microsValue": "2000000"
+        }
+      }
+    }
+  },
+  {
+    "row": {
+      "dimensionValues": {
+        "MEDIATION_GROUP": {
+          "value": "1000000001",
+          "displayLabel": "Banners"
+        },
+        "AD_SOURCE": {
+          "value": "1000000000000000002",
+          "displayLabel": "Example Waterfall"
+        },
+        "AD_SOURCE_INSTANCE": {
+          "value": "0000000000000000003",
+          "displayLabel": "Waterfall 3.00"
+        }
+      },
+      "metricValues": {
+        "ESTIMATED_EARNINGS": {
+          "microsValue": "0"
+        },
+        "AD_REQUESTS": {
+          "integerValue": "40000"
+        },
+        "MATCHED_REQUESTS": {
+          "integerValue": "0"
+        },
+        "IMPRESSIONS": {
+          "integerValue": "0"
+        },
+        "OBSERVED_ECPM": {
+          "microsValue": "0"
+        }
+      }
+    }
+  },
+  {
+    "row": {
+      "dimensionValues": {
+        "MEDIATION_GROUP": {
+          "value": "1000000002",
+          "displayLabel": "Interstitials"
+        },
+        "AD_SOURCE": {
+          "value": "1000000000000000000",
+          "displayLabel": "AdMob Network"
+        },
+        "AD_SOURCE_INSTANCE": {
+          "value": "0000000000000000004",
+          "displayLabel": "AdMob (default)"
+        }
+      },
+      "metricValues": {
+        "ESTIMATED_EARNINGS": {
+          "microsValue": "90000000"
+        },
+        "AD_REQUESTS": {
+          "integerValue": "10000"
+        },
+        "MATCHED_REQUESTS": {
+          "integerValue": "9000"
+        },
+        "IMPRESSIONS": {
+          "integerValue": "8000"
+        },
+        "OBSERVED_ECPM": {
+          "microsValue": "11250000"
+        }
+      }
+    }
+  },
+  {
+    "footer": {
+      "matchingRowCount": "4"
+    }
+  }
+]

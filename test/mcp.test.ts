@@ -66,6 +66,9 @@ describe("mcp server", () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
       [
+        "admobctl_analyze_consent",
+        "admobctl_analyze_versions",
+        "admobctl_analyze_waterfall",
         "admobctl_finance_month",
         "admobctl_finance_range",
         "admobctl_insights",
@@ -227,5 +230,34 @@ describe("mcp server", () => {
     const r = (await client.callTool({ name: "admobctl_finance_month", arguments: { month: "Sept" } })) as ToolResult;
     expect(r.isError).toBe(true);
     expect(r.content[0]!.text).toMatch(/YYYY-MM/);
+  });
+
+  it("passes currency through to the report and returns admobctl notices", async () => {
+    const { client, calls } = await connect();
+    const r = (await client.callTool({
+      name: "admobctl_network_report",
+      arguments: { from: "2026-10-01", to: "2026-10-02", currency: "USD" },
+    })) as ToolResult;
+    expect(r.isError, r.content[0]!.text).toBeFalsy();
+    const sent = calls.find((c) => c.url.includes("networkReport"))!.body as { reportSpec: { localizationSettings: unknown } };
+    expect(sent.reportSpec.localizationSettings).toEqual({ currencyCode: "USD" });
+    expect(String(r.structuredContent!.notices)).toMatch(/Includes today/);
+  });
+
+  it("serves the curated analyses", async () => {
+    const { client } = await connect({
+      "POST /networkReport:generate": (c) => {
+        const dims = (c.body as { reportSpec: { dimensions: string[] } }).reportSpec.dimensions;
+        return jsonResponse(fixture(dims.includes("SERVING_RESTRICTION") ? "network-report-by-serving-restriction.json" : "network-report-by-sdk-version.json"));
+      },
+      "POST /mediationReport:generate": () => jsonResponse(fixture("mediation-report-waterfall.json")),
+    });
+    const versions = (await client.callTool({ name: "admobctl_analyze_versions", arguments: { by: "sdk" } })) as ToolResult;
+    expect(versions.isError, versions.content[0]!.text).toBeFalsy();
+    expect((versions.structuredContent!.highlights as Array<{ kind: string }>)[0]!.kind).toBe("low-show-rate");
+    const consent = (await client.callTool({ name: "admobctl_analyze_consent", arguments: { last_days: 30 } })) as ToolResult;
+    expect(consent.structuredContent!.estimate).toBe(true);
+    const wf = (await client.callTool({ name: "admobctl_analyze_waterfall", arguments: { group: "Interstitials" } })) as ToolResult;
+    expect((wf.structuredContent!.rows as unknown[]).length).toBe(1);
   });
 });

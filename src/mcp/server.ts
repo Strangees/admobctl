@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { analyzeConsent, analyzeVersions, analyzeWaterfall, VERSION_KINDS } from "../core/analyze.js";
 import { AdmobctlError } from "../core/errors.js";
 import { financeMonth, financeRange, JOURNAL_COLUMNS, journalRows } from "../core/finance.js";
 import { INSIGHT_DIMENSIONS, insights } from "../core/insights.js";
@@ -30,11 +31,19 @@ const INSTRUCTIONS = `Read-only access to the user's Google AdMob account via ad
 - Apps are referred to by alias (e.g. "my-game-ios"); call admobctl_list_apps to see them.
 - All earnings are ESTIMATES. When reporting money, say so and that they should be reconciled against AdMob Payments (finalized).
 - For "what did I earn in <month>" use admobctl_finance_month; for trends and recommendations use admobctl_insights.
+- For SDK/app-version problems, consent impact or mediation waterfalls use the admobctl_analyze_* tools.
 - Errors include a "Fix:" line with the exact command the user should run.`;
 
 const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } as const;
 
 const accountArg = { account: z.string().optional().describe("Publisher ID (pub-…). Defaults to the configured or only account.") };
+const currencyArg = {
+  currency: z
+    .string()
+    .regex(/^[A-Za-z]{3}$/, "an ISO 4217 code like USD")
+    .optional()
+    .describe("ISO 4217 code to convert earnings into, e.g. USD. Default: the account currency."),
+};
 const anyRecord = z.record(z.string(), z.unknown());
 const loose = (shape: z.ZodRawShape) => z.looseObject(shape);
 
@@ -102,6 +111,7 @@ const reportInput = {
     .optional()
     .describe('Dimension filters, e.g. {"country":["NO","SE"],"app":["my-game-ios"]}. App filters accept aliases.'),
   max_rows: z.number().int().positive().max(HARD_MAX_ROWS).optional().describe(`Row cap (default ${DEFAULT_MAX_ROWS}).`),
+  ...currencyArg,
   ...accountArg,
 };
 
@@ -114,6 +124,7 @@ const reportOutput = loose({
   totals: anyRecord.optional(),
   truncated: z.boolean(),
   notice: z.string().optional(),
+  notices: z.array(z.string()),
 });
 
 export function createMcpServer(deps: McpDeps): McpServer {
@@ -156,7 +167,8 @@ export function createMcpServer(deps: McpDeps): McpServer {
     "admobctl_list_apps",
     {
       title: "List AdMob apps",
-      description: "List apps in the AdMob account with their aliases (use the alias in other tools), platform, app ID and store ID.",
+      description:
+        "List apps in the AdMob account with their aliases (use the alias in other tools), platform, app ID, store ID and approval state (ACTION_REQUIRED means the app needs the publisher's attention in AdMob review; ad serving may be limited).",
       inputSchema: { ...accountArg },
       outputSchema: loose({ apps: z.array(anyRecord) }),
       annotations,
@@ -189,7 +201,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
         outputSchema: reportOutput,
         annotations,
       },
-      wrap(async (a: { from: string; to?: string; by?: string[]; metrics?: string[]; filters?: Record<string, string[]>; max_rows?: number; account?: string }) => {
+      wrap(async (a: { from: string; to?: string; by?: string[]; metrics?: string[]; filters?: Record<string, string[]>; max_rows?: number; currency?: string; account?: string }) => {
         const s = svc(a);
         const q = {
           from: a.from,
@@ -198,6 +210,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
           metrics: a.metrics,
           filters: a.filters,
           maxRows: a.max_rows ?? DEFAULT_MAX_ROWS,
+          currency: a.currency,
         };
         return reportPayload(kind === "network" ? await s.networkReport(q) : await s.mediationReport(q));
       }),
@@ -269,6 +282,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
         from: z.string().optional().describe("Start, YYYY-MM or YYYY-MM-DD (instead of last_days)"),
         to: z.string().optional().describe("End, YYYY-MM or YYYY-MM-DD"),
         by: z.enum(INSIGHT_DIMENSIONS).optional().describe("Group by (default ad-unit)"),
+        ...currencyArg,
         ...accountArg,
       },
       outputSchema: loose({
@@ -283,10 +297,72 @@ export function createMcpServer(deps: McpDeps): McpServer {
       }),
       annotations,
     },
-    wrap(async (a: { last_days?: number; from?: string; to?: string; by?: (typeof INSIGHT_DIMENSIONS)[number]; account?: string }) => {
-      const r = await insights(svc(a), { last: a.last_days, from: a.from, to: a.to, by: a.by ?? "ad-unit" });
+    wrap(async (a: { last_days?: number; from?: string; to?: string; by?: (typeof INSIGHT_DIMENSIONS)[number]; currency?: string; account?: string }) => {
+      const r = await insights(svc(a), { last: a.last_days, from: a.from, to: a.to, by: a.by ?? "ad-unit", currency: a.currency });
       return fitRows({ ...r }) as unknown as Record<string, unknown>;
     }),
+  );
+
+  const rangeInput = {
+    last_days: z.number().int().min(1).max(366).optional().describe("The last N complete days (default 30)"),
+    from: z.string().optional().describe("Start, YYYY-MM or YYYY-MM-DD (instead of last_days)"),
+    to: z.string().optional().describe("End, YYYY-MM or YYYY-MM-DD"),
+  };
+  type RangeArgs = { last_days?: number; from?: string; to?: string; account?: string };
+  const range = (a: RangeArgs) => ({ last: a.last_days, from: a.from, to: a.to });
+  const analysisOutput = (shape: z.ZodRawShape) =>
+    loose({ from: z.string(), to: z.string(), rows: z.array(anyRecord), highlights: z.array(anyRecord), summary: z.array(z.string()), notices: z.array(z.string()), ...shape });
+  const appArg = { app: z.string().optional().describe("Only this app (alias, app ID or name)") };
+
+  server.registerTool(
+    "admobctl_analyze_versions",
+    {
+      title: "AdMob version health",
+      description:
+        "Match rate, show rate and CTR per Google Mobile Ads SDK version (by platform), app version (by app) or OS version, comparing each version with the rest of its group. Highlights versions that fill or show worse, e.g. after an SDK upgrade or app release. Traffic metrics only: the AdMob API does not split earnings by version.",
+      inputSchema: { by: z.enum(VERSION_KINDS).optional().describe("sdk (default), app or os"), ...appArg, ...rangeInput, ...accountArg },
+      outputSchema: analysisOutput({ by: z.string(), group_by: z.string() }),
+      annotations,
+    },
+    wrap(async (a: RangeArgs & { by?: (typeof VERSION_KINDS)[number]; app?: string }) =>
+      fitRows({ ...(await analyzeVersions(svc(a), { ...range(a), by: a.by ?? "sdk", app: a.app })) }) as unknown as Record<string, unknown>,
+    ),
+  );
+
+  server.registerTool(
+    "admobctl_analyze_consent",
+    {
+      title: "AdMob consent impact",
+      description:
+        "Ad requests, earnings and eCPM by serving restriction (no restriction, non-personalized, limited ads, RDP…), with each restricted mode's eCPM relative to unrestricted traffic and the share of traffic served under a restriction. Earnings are estimates. Data starts 2021-03-13.",
+      inputSchema: { ...appArg, ...rangeInput, ...currencyArg, ...accountArg },
+      outputSchema: analysisOutput({ currency: z.string(), estimate: z.literal(true), restricted_request_share: z.number().optional() }),
+      annotations,
+    },
+    wrap(async (a: RangeArgs & { app?: string; currency?: string }) =>
+      fitRows({ ...(await analyzeConsent(svc(a), { ...range(a), app: a.app, currency: a.currency })) }) as unknown as Record<string, unknown>,
+    ),
+  );
+
+  server.registerTool(
+    "admobctl_analyze_waterfall",
+    {
+      title: "AdMob mediation waterfall",
+      description:
+        "Mediation lines (ad source instances) per mediation group, sorted by observed eCPM, with each line's share of the group's earnings, requests and match rate. Highlights the top line per group, idle lines (requests but no impressions) and lines that rarely fill. Earnings are estimates.",
+      inputSchema: {
+        ...appArg,
+        group: z.string().optional().describe("Only this mediation group (name or ID)"),
+        ...rangeInput,
+        ...currencyArg,
+        ...accountArg,
+      },
+      outputSchema: analysisOutput({ currency: z.string(), estimate: z.literal(true), groups: z.array(anyRecord) }),
+      annotations,
+    },
+    wrap(async (a: RangeArgs & { app?: string; group?: string; currency?: string }) =>
+      fitRows({ ...(await analyzeWaterfall(svc(a), { ...range(a), app: a.app, group: a.group, currency: a.currency })) }) as unknown as Record<string, unknown>,
+    ),
   );
 
   return server;

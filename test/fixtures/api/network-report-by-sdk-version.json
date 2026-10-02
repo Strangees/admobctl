@@ -1,0 +1,136 @@
+[
+  {
+    "header": {
+      "dateRange": {
+        "startDate": {
+          "year": 2026,
+          "month": 9,
+          "day": 2
+        },
+        "endDate": {
+          "year": 2026,
+          "month": 10,
+          "day": 1
+        }
+      },
+      "localizationSettings": {
+        "currencyCode": "NOK",
+        "languageCode": "en-US"
+      },
+      "reportingTimeZone": "Europe/Oslo"
+    }
+  },
+  {
+    "row": {
+      "dimensionValues": {
+        "PLATFORM": {
+          "value": "IOS",
+          "displayLabel": "iOS"
+        },
+        "GMA_SDK_VERSION": {
+          "value": "ios-11.10.0"
+        }
+      },
+      "metricValues": {
+        "AD_REQUESTS": {
+          "integerValue": "80000"
+        },
+        "MATCHED_REQUESTS": {
+          "integerValue": "72000"
+        },
+        "IMPRESSIONS": {
+          "integerValue": "60000"
+        },
+        "CLICKS": {
+          "integerValue": "600"
+        }
+      }
+    }
+  },
+  {
+    "row": {
+      "dimensionValues": {
+        "PLATFORM": {
+          "value": "IOS",
+          "displayLabel": "iOS"
+        },
+        "GMA_SDK_VERSION": {
+          "value": "ios-11.12.0"
+        }
+      },
+      "metricValues": {
+        "AD_REQUESTS": {
+          "integerValue": "20000"
+        },
+        "MATCHED_REQUESTS": {
+          "integerValue": "18000"
+        },
+        "IMPRESSIONS": {
+          "integerValue": "7000"
+        },
+        "CLICKS": {
+          "integerValue": "70"
+        }
+      }
+    }
+  },
+  {
+    "row": {
+      "dimensionValues": {
+        "PLATFORM": {
+          "value": "ANDROID",
+          "displayLabel": "Android"
+        },
+        "GMA_SDK_VERSION": {
+          "value": "afma-sdk-a-v24"
+        }
+      },
+      "metricValues": {
+        "AD_REQUESTS": {
+          "integerValue": "50000"
+        },
+        "MATCHED_REQUESTS": {
+          "integerValue": "45000"
+        },
+        "IMPRESSIONS": {
+          "integerValue": "40000"
+        },
+        "CLICKS": {
+          "integerValue": "400"
+        }
+      }
+    }
+  },
+  {
+    "row": {
+      "dimensionValues": {
+        "PLATFORM": {
+          "value": "ANDROID",
+          "displayLabel": "Android"
+        },
+        "GMA_SDK_VERSION": {
+          "value": "afma-sdk-a-v23"
+        }
+      },
+      "metricValues": {
+        "AD_REQUESTS": {
+          "integerValue": "500"
+        },
+        "MATCHED_REQUESTS": {
+          "integerValue": "100"
+        },
+        "IMPRESSIONS": {
+          "integerValue": "50"
+        },
+        "CLICKS": {
+          "integerValue": "1"
+        }
+      }
+    }
+  },
+  {
+    "footer": {
+      "matchingRowCount": "4"
+    }
+  }
+]

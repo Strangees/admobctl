@@ -7,7 +7,7 @@ Global flags (any command): `-o json|table|csv|markdown` (default: table on a TT
 
 | Command | Purpose |
 |---|---|
-| `admobctl auth doctor` | Checks credentials → token → scope → quota project → API → account; prints `fix:` for each failure. Exit 1 if any check fails. |
+| `admobctl auth doctor` | Checks credentials → token → scope → quota project → API → account → apps (warns about apps marked action required); prints `fix:` for each failure. Exit 1 if any check fails. |
 | `admobctl auth status` | Active mode (adc/oauth), quota project, scopes, account |
 | `admobctl auth login --client-id <id> --client-secret <s>` | Own Desktop OAuth client; refresh token goes to the macOS Keychain. Switches the profile to `oauth`. |
 | `admobctl auth logout` | Revoke and forget the OAuth login; back to gcloud ADC |
@@ -27,7 +27,7 @@ Service accounts are not supported by the AdMob API.
 | Command | Output |
 |---|---|
 | `admobctl accounts list` | publisherId, currencyCode, reportingTimeZone |
-| `admobctl apps list` | alias, name, platform, appId, storeId |
+| `admobctl apps list` | alias, name, platform, appId, storeId, approval (JSON: APPROVED, IN_REVIEW, ACTION_REQUIRED) |
 | `admobctl ad-units list [--app <alias>]` | app alias, name, format, adUnitId |
 
 Apps take an alias (`<name>-<platform>`, e.g. `my-game-ios`), app ID, numeric ID or exact name.
@@ -50,6 +50,12 @@ admobctl report mediation --from … [--to …] --by ad-source,app
 - JSON `dimensions` and `metrics` list the row keys (e.g. `["app"]`, `["earnings","requests",…,"rpm"]`).
 - JSON rows carry money as a rounded amount (`earnings`) plus exact `earnings_micros`. Rates are fractions (0.75 = 75%).
 - `totals` is omitted when the report is truncated (`truncated: true`).
+- `--currency USD` converts earnings (Google's daily average rate); the API then adds a warning that converted
+  earnings may not match the payment.
+- Only one of date/week/month per report; `ad-type` cannot be combined with requests, match-rate or rpm. Default
+  metrics that do not fit the dimensions are left out and listed in `notices`.
+- `notices` also flags data still arriving: today (AdMob, ~4h delay) and, for mediation, the last day (third-party
+  sources lag 8-24h). `warnings` are the API's own (e.g. DATA_DELAYED).
 
 ## Finance
 
@@ -75,10 +81,28 @@ admobctl insights [--last 30d | --from … --to …] [--by ad-unit|app|country|f
 Returns rows (earnings, share, change vs the previous equal-length period, eCPM, request RPM, match rate, show rate, CTR),
 highlights (top, bottom, low-fill, low-show-rate, swing-up, swing-down, new, gone) and a plain-language summary.
 
+## Analyze
+
+```bash
+admobctl analyze versions  [--by sdk|app|os] [--app <alias>] [--last 30d | --from … --to …]
+admobctl analyze consent   [--app <alias>] [--currency X] [--last 30d | --from … --to …]
+admobctl analyze waterfall [--app <alias>] [--group <name|id>] [--currency X] [--last 30d | --from … --to …]
+```
+
+- `versions`: requests, share of the group (platform, or app for app versions), match rate, show rate, CTR per
+  version. Highlights `low-match-rate` / `low-show-rate` when a version with ≥5% of its group's traffic does ≥20%
+  worse than the group's other versions. No earnings (the API does not split earnings by version).
+- `consent`: per serving restriction: requests and share, earnings, eCPM, `ecpm_vs_unrestricted`, match and show
+  rate; `restricted_request_share` overall. Data from 2021-03-13.
+- `waterfall`: `groups` (earnings per mediation group) and `rows` (one per ad source instance: observed `ecpm`,
+  earnings and `earnings_share` of the group, requests, match rate, impressions), sorted by group earnings then eCPM.
+  Highlights `top` (per group), `idle` (requests but no impressions), `low-fill` (<2% match rate on ≥5% of the group's requests).
+
 ## MCP tools (`admobctl mcp`)
 
 admobctl_list_accounts, admobctl_list_apps, admobctl_list_ad_units, admobctl_network_report,
-admobctl_mediation_report, admobctl_finance_month, admobctl_finance_range, admobctl_insights.
+admobctl_mediation_report, admobctl_finance_month, admobctl_finance_range, admobctl_insights,
+admobctl_analyze_versions, admobctl_analyze_consent, admobctl_analyze_waterfall.
 They take the same arguments as the CLI, in snake_case: `max_rows`, `include_journal`, `last_days`.
 Reports default to 200 rows.
 
