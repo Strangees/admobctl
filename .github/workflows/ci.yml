@@ -5,15 +5,28 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Never cancel a run on main: it may be creating a release.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
+      fail-fast: false
       matrix:
+        # 20 is past end-of-life but still the bundle's target; it only has to run the bundle.
         node: [20, 22, 24]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -27,3 +40,36 @@ jobs:
         run: node dist/admobctl.mjs --version
       - run: npm test
         if: matrix.node != 20
+      # `npm run eval` itself needs Claude credentials and is run by hand.
+      - name: Committed eval mocks are up to date
+        if: matrix.node == 22
+        run: npm run eval:mocks && git diff --exit-code evals/mocks
+
+  # Plugins install straight from main, and `claude plugin update` only sees a change when the version changes.
+  # So a release is: bump the version, merge to main. This tags it and publishes a GitHub release.
+  release:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Release the version on main unless it is already tagged
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(jq -r .version .claude-plugin/plugin.json)"
+          tag="v$version"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "$tag is already released; nothing to do."
+            exit 0
+          fi
+          sha256sum dist/admobctl.mjs > admobctl.mjs.sha256
+          gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --generate-notes \
+            dist/admobctl.mjs admobctl.mjs.sha256
+      # Later: npm publish and the Homebrew formula hang off `on: release: types: [published]`
+      # in their own workflow, once the repository is public.

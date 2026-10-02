@@ -223,6 +223,24 @@ npm run record-fixtures -- --month 2026-09 --expect <booked total> --range 2026-
 
 See [.claude/CLAUDE.md](.claude/CLAUDE.md) for code conventions.
 
+### CI and releases
+
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on every pull request and push to `main`: typecheck,
+tests, and checks that the committed bundle and eval mocks match the source. The tests also guard that the version is
+the same everywhere and that no real publisher IDs or email addresses are committed.
+
+Plugins install straight from `main`, and `claude plugin update` only notices a new version number. To release, bump
+the version and merge to `main`:
+
+```bash
+npm version <patch|minor|major> --no-git-tag-version   # package.json + lockfile
+# set the same version in .claude-plugin/plugin.json and .codex-plugin/plugin.json
+npm run check                                          # rebuilds the bundle with the new version
+```
+
+When CI passes on `main`, it tags `v<version>` and publishes a GitHub release with the bundle and its checksum.
+A push that does not change the version releases nothing.
+
 ## License
 
 MIT

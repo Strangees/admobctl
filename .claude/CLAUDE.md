@@ -9,3 +9,5 @@
   (synthetic, placeholder IDs only). Real recorded responses go in `test/fixtures/private/` (gitignored).
 - Open-source hygiene: no real publisher IDs, app names, earnings or emails in committed files.
 - `npm run check` = typecheck + tests + bundle (`dist/admobctl.mjs`, single file, no runtime deps).
+- Release = bump the version in `package.json`, the lockfile and both `plugin.json` files, then merge to `main`; CI tags
+  and publishes it (README, "CI and releases"). Anything users should get (`dist/`, `skills/`, manifests) needs a bump.
