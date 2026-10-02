@@ -174,6 +174,8 @@ export class AdmobService {
     readonly tokenProvider: TokenProvider,
     private readonly accountOverride: string | undefined,
     readonly now: () => Date,
+    /** Where config.json (and the write audit log) live. */
+    readonly configDir: string,
   ) {}
 
   static create(opts: ServiceOptions = {}, deps: ServiceDeps = {}): AdmobService {
@@ -186,7 +188,7 @@ export class AdmobService {
       fetch: deps.fetch,
       sleep: deps.sleep,
     });
-    return new AdmobService(profile, client, tokenProvider, opts.account ?? profile.account, deps.now ?? (() => new Date()));
+    return new AdmobService(profile, client, tokenProvider, opts.account ?? profile.account, deps.now ?? (() => new Date()), dir);
   }
 
   /** The account that will be used (--account, then profile), without calling the API. Undefined means auto-detect. */
@@ -382,6 +384,15 @@ export class AdmobService {
       if (t.idfaTargeting && t.idfaTargeting !== "IDFA_TARGETING_UNSPECIFIED") view.idfa = t.idfaTargeting;
       return view;
     });
+  }
+
+  /** One mediation group by ID or name (case-insensitive). */
+  async mediationGroup(input: string): Promise<MediationGroupView> {
+    const groups = await this.mediationGroups();
+    const q = input.trim().toLowerCase();
+    const hit = groups.find((g) => g.id === input.trim() || g.name.toLowerCase() === q);
+    if (hit) return hit;
+    throw usageError(`Unknown mediation group "${input}". Groups: ${groups.map((g) => g.name).join(", ") || "(none)"}`);
   }
 
   async adUnitMappings(adUnit: string): Promise<AdUnitMappingView[]> {

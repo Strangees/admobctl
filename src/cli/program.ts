@@ -8,7 +8,7 @@ import { AdmobctlError } from "../core/errors.js";
 import { financeMonth, financeRange, journalRows } from "../core/finance.js";
 import { INSIGHT_DIMENSIONS, insights, type InsightDimension } from "../core/insights.js";
 import { log } from "../core/log.js";
-import { AdmobService, type MediationGroupView, type ServiceDeps, type ServiceOptions } from "../core/service.js";
+import { AdmobService, type ServiceDeps, type ServiceOptions } from "../core/service.js";
 import { defaultFormat, OUTPUT_FORMATS, render, renderTsv, type Output, type OutputFormat } from "../output/format.js";
 import { VERSION } from "../version.js";
 import {
@@ -74,13 +74,6 @@ function positiveInt(v: string): number {
   const n = Number(v);
   if (!Number.isInteger(n) || n <= 0) throw new AdmobctlError("USAGE", `Expected a positive integer, got "${v}"`);
   return n;
-}
-
-function findGroup(groups: MediationGroupView[], input: string): MediationGroupView {
-  const q = input.trim().toLowerCase();
-  const hit = groups.find((g) => g.id === input.trim() || g.name.toLowerCase() === q);
-  if (hit) return hit;
-  throw new AdmobctlError("USAGE", `Unknown mediation group "${input}". Groups: ${groups.map((g) => g.name).join(", ") || "(none)"}`);
 }
 
 export function buildProgram(io: CliIO): Command {
@@ -234,7 +227,7 @@ export function buildProgram(io: CliIO): Command {
   groups
     .command("show <group>")
     .description("Show one mediation group's lines (name or ID)")
-    .action(async (group: string, _o, cmd: Command) => emit(cmd, mediationGroupView(findGroup(await svc(cmd).mediationGroups(), group))));
+    .action(async (group: string, _o, cmd: Command) => emit(cmd, mediationGroupView(await svc(cmd).mediationGroup(group))));
 
   // ── report ────────────────────────────────────────────────────────
   const report = program.command("report").description("Network and mediation reports");
