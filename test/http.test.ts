@@ -32,6 +32,29 @@ function hangingFetch() {
   return { fetch, signals, count: () => signals.length };
 }
 
+/**
+ * A fetch that resolves with headers at once, then stalls mid-body: the body stream enqueues part of
+ * a JSON payload and never closes. Like real fetch, aborting the request signal errors the body
+ * stream with the signal's reason.
+ */
+function stallingBodyFetch(status = 200) {
+  const signals: AbortSignal[] = [];
+  const fetch = (async (_url: string, init: RequestInit = {}) => {
+    const signal = init.signal;
+    if (signal) signals.push(signal);
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"partial": '));
+        if (!signal) return; // no signal: stalls forever
+        if (signal.aborted) return controller.error(signal.reason);
+        signal.addEventListener("abort", () => controller.error(signal.reason), { once: true });
+      },
+    });
+    return new Response(body, { status, headers: { "content-type": "application/json" } });
+  }) as unknown as typeof globalThis.fetch;
+  return { fetch, signals, count: () => signals.length };
+}
+
 describe("requestJson", () => {
   it("returns parsed JSON on success", async () => {
     const s = sequence([jsonResponse({ ok: true })]);
@@ -121,6 +144,42 @@ describe("requestJson", () => {
     expect(err.message).toMatch(/timed out after 5ms/);
     expect(err.message).toContain("admob.googleapis.com");
     expect(err.fix).toMatch(/connection/i);
+  });
+
+  it("times out a body that stalls after headers arrive, retries it, then raises a readable error", { timeout: 2000 }, async () => {
+    const s = stallingBodyFetch();
+    const delays: number[] = [];
+    const sleep = async (ms: number) => {
+      delays.push(ms);
+    };
+    const err = (await requestJson("https://admob.googleapis.com/v1/x", {}, {
+      fetch: s.fetch,
+      sleep,
+      retries: 2,
+      timeoutMs: 5,
+    }).catch((e) => e)) as AdmobctlError;
+    expect(s.count()).toBe(3);
+    expect(delays).toHaveLength(2);
+    expect(err).toBeInstanceOf(AdmobctlError);
+    expect(err.code).toBe("API_ERROR");
+    expect(err.message).toMatch(/timed out after 5ms/);
+    expect(err.message).toContain("admob.googleapis.com");
+    expect(err.fix).toBe("Check your connection and retry.");
+  });
+
+  it("times out an error body that stalls on the final attempt instead of hanging", { timeout: 2000 }, async () => {
+    const s = stallingBodyFetch(400);
+    const err = (await requestJson("https://admob.googleapis.com/v1/x", {}, {
+      fetch: s.fetch,
+      sleep: async () => {},
+      retries: 0,
+      timeoutMs: 5,
+    }).catch((e) => e)) as AdmobctlError;
+    expect(s.count()).toBe(1);
+    expect(err).toBeInstanceOf(AdmobctlError);
+    expect(err.code).toBe("API_ERROR");
+    expect(err.message).toMatch(/timed out after 5ms \(1 attempts\)/);
+    expect(err.fix).toBe("Check your connection and retry.");
   });
 
   it("does not retry when the caller's own signal aborts", async () => {

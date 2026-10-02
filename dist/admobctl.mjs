@@ -11805,6 +11805,21 @@ async function readBody(res) {
     return text;
   }
 }
+async function attemptOnce(doFetch, url2, init, canRetry, backoff, maxRetryAfterMs) {
+  const res = await doFetch(url2, init);
+  if (res.ok) return { kind: "ok", body: await readBody(res) };
+  if (isRetryableStatus(res.status) && canRetry) {
+    const retryAfter = retryAfterMs(res);
+    if (retryAfter !== void 0 && retryAfter > maxRetryAfterMs) {
+      log.debug(`HTTP ${res.status}; Retry-After ${retryAfter}ms exceeds cap ${maxRetryAfterMs}ms; not retrying`);
+      return { kind: "fail", status: res.status, body: await readBody(res) };
+    }
+    await res.body?.cancel().catch(() => {
+    });
+    return { kind: "retry", status: res.status, wait: retryAfter ?? backoff };
+  }
+  return { kind: "fail", status: res.status, body: await readBody(res) };
+}
 async function requestJson(url2, init, opts = {}) {
   const doFetch = opts.fetch ?? fetch;
   const sleep = opts.sleep ?? defaultSleep;
@@ -11819,9 +11834,10 @@ async function requestJson(url2, init, opts = {}) {
       () => timer.abort(new Error(`Request timed out after ${timeoutMs}ms`)),
       timeoutMs
     );
-    let res;
+    let outcome;
     try {
-      res = await doFetch(url2, { ...init, signal: combineSignals(timer.signal, init.signal) });
+      const signal = combineSignals(timer.signal, init.signal);
+      outcome = await attemptOnce(doFetch, url2, { ...init, signal }, attempt < retries, backoff, maxRetryAfterMs);
     } catch (err) {
       if (init.signal?.aborted) throw err;
       const timedOut = timer.signal.aborted;
@@ -11845,21 +11861,10 @@ async function requestJson(url2, init, opts = {}) {
     } finally {
       clearTimeout(timeoutId);
     }
-    if (res.ok) return await readBody(res);
-    if (isRetryableStatus(res.status) && attempt < retries) {
-      const retryAfter = retryAfterMs(res);
-      if (retryAfter !== void 0 && retryAfter > maxRetryAfterMs) {
-        log.debug(`HTTP ${res.status}; Retry-After ${retryAfter}ms exceeds cap ${maxRetryAfterMs}ms; not retrying`);
-        throw diagnoseApiError(res.status, await readBody(res));
-      }
-      const wait = retryAfter ?? backoff;
-      log.debug(`HTTP ${res.status}; retrying in ${wait}ms`);
-      await res.body?.cancel().catch(() => {
-      });
-      await sleep(wait);
-      continue;
-    }
-    throw diagnoseApiError(res.status, await readBody(res));
+    if (outcome.kind === "ok") return outcome.body;
+    if (outcome.kind === "fail") throw diagnoseApiError(outcome.status, outcome.body);
+    log.debug(`HTTP ${outcome.status}; retrying in ${outcome.wait}ms`);
+    await sleep(outcome.wait);
   }
 }
 
