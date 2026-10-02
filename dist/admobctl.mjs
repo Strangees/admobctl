@@ -10816,8 +10816,9 @@ async function fetchTokenInfo(token, doFetch = fetch) {
 }
 async function runDoctor(d) {
   const checks = [];
+  const optional2 = [...d.listApps ? ["apps"] : [], ...d.betaProbes ? ["beta"] : []];
   const skipRest = (ids, why) => {
-    for (const id of ids) checks.push({ id, status: "skip", summary: why });
+    for (const id of [...ids, ...optional2]) checks.push({ id, status: "skip", summary: why });
   };
   try {
     await d.checkCredentials();
@@ -10883,7 +10884,7 @@ async function runDoctor(d) {
     checks.push({ id: "account", status: "ok", summary: `Using ${a.publisherId} (${a.currencyCode}, ${a.reportingTimeZone})` });
   } catch (err) {
     checks.push(failed("account", err));
-    if (d.listApps) skipRest(["apps"], "skipped: no account");
+    skipRest([], "skipped: no account");
     return checks;
   }
   if (d.listApps) {
@@ -11846,12 +11847,20 @@ async function analyzeVersions(svc, opts) {
   rows.sort((a, b) => (groupRequests.get(b.group) ?? 0) - (groupRequests.get(a.group) ?? 0) || a.group.localeCompare(b.group) || b.requests - a.requests);
   const highlights = [];
   const noun = VERSION_NOUN[opts.by];
+  const totals = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const t = totals.get(row.group) ?? { requests: 0, matched: 0, impressions: 0 };
+    t.requests += row.requests;
+    t.matched += row.matched_requests;
+    t.impressions += row.impressions;
+    totals.set(row.group, t);
+  }
   for (const row of rows) {
     if (row.requests < MIN_REQUESTS || row.request_share < MIN_SHARE) continue;
-    const rest = rows.filter((o) => o.group === row.group && o !== row);
-    const restRequests = rest.reduce((s, o) => s + o.requests, 0);
-    const restMatched = rest.reduce((s, o) => s + o.matched_requests, 0);
-    const restImpressions = rest.reduce((s, o) => s + o.impressions, 0);
+    const t = totals.get(row.group);
+    const restRequests = t.requests - row.requests;
+    const restMatched = t.matched - row.matched_requests;
+    const restImpressions = t.impressions - row.impressions;
     if (restRequests < MIN_REQUESTS) continue;
     const key = `${row.group} ${row.version}`;
     const traffic = `${row.requests} requests, ${pct(row.request_share)} of ${row.group}`;
@@ -11929,8 +11938,9 @@ async function analyzeConsent(svc, opts) {
   const highlights = [];
   if (open2) {
     const openEcpm = perMille(open2.earnings_micros, open2.impressions);
+    const openPerImpression = ratio(open2.earnings_micros, open2.impressions);
     for (const x of restricted) {
-      if (openEcpm > 0) x.ecpm_vs_unrestricted = ratio(x.ecpm, openEcpm);
+      if (openPerImpression > 0) x.ecpm_vs_unrestricted = ratio(ratio(x.earnings_micros, x.impressions), openPerImpression);
       if (x.request_share < MIN_SHARE || x.ecpm_vs_unrestricted === void 0) continue;
       const diff = Math.round((x.ecpm_vs_unrestricted - 1) * 100);
       highlights.push({
@@ -12011,7 +12021,9 @@ async function analyzeWaterfall(svc, opts) {
     };
   });
   const gEarn = (row) => groupEarnings.get(row.group_id) ?? 0;
-  rows.sort((a, b) => gEarn(b) - gEarn(a) || a.group.localeCompare(b.group) || b.ecpm_micros - a.ecpm_micros || b.earnings_micros - a.earnings_micros);
+  rows.sort(
+    (a, b) => gEarn(b) - gEarn(a) || a.group.localeCompare(b.group) || a.group_id.localeCompare(b.group_id) || b.ecpm_micros - a.ecpm_micros || b.earnings_micros - a.earnings_micros
+  );
   const groups = [];
   for (const row of rows) {
     const last = groups[groups.length - 1];
@@ -12358,14 +12370,22 @@ async function applyPlan(svc, plan) {
     ...plan.query ? { query: plan.query } : {},
     body: plan.body
   };
+  let result;
   try {
-    const result = await svc.client.write(plan.method, plan.path, plan.body, plan.query);
-    const name = result?.name;
-    appendAudit(svc.configDir, { ...entry, ok: true, ...typeof name === "string" ? { result: name } : {} });
-    return result;
+    result = await svc.client.write(plan.method, plan.path, plan.body, plan.query);
   } catch (err) {
-    appendAudit(svc.configDir, { ...entry, ok: false, error: err instanceof AdmobctlError ? err.code : String(err) });
+    audit(svc, { ...entry, ok: false, error: err instanceof AdmobctlError ? err.code : String(err) });
     throw err;
+  }
+  const name = result?.name;
+  audit(svc, { ...entry, ok: true, ...typeof name === "string" ? { result: name } : {} });
+  return result;
+}
+function audit(svc, e) {
+  try {
+    appendAudit(svc.configDir, e);
+  } catch (err) {
+    log.warn(`Could not write the audit log in ${svc.configDir}: ${err.message}`);
   }
 }
 
@@ -12554,6 +12574,7 @@ async function requestJson(url2, init, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxRetryAfterMs = opts.maxRetryAfterMs ?? DEFAULT_MAX_RETRY_AFTER_MS;
   for (let attempt = 0; ; attempt++) {
+    await opts.beforeAttempt?.();
     const backoff = base * 2 ** attempt + Math.floor(Math.random() * base * 0.25);
     const timer = new AbortController();
     const timeoutId = setTimeout(
@@ -12850,8 +12871,8 @@ var AdmobClient = class {
     this.opts = opts;
   }
   opts;
-  async request(quota, method, path, body, version2 = "v1") {
-    await (this.opts.limiters ?? processLimiters)[quota].take(this.opts.sleep);
+  async request(quota, method, path, body, version2 = "v1", http = {}) {
+    const limiter = (this.opts.limiters ?? processLimiters)[quota];
     const headers = {
       authorization: `Bearer ${await this.opts.getToken()}`,
       accept: "application/json"
@@ -12860,7 +12881,12 @@ var AdmobClient = class {
     if (body !== void 0) headers["content-type"] = "application/json";
     const base = version2 === "v1" ? this.opts.baseUrl ?? API_BASE : this.opts.betaBaseUrl ?? API_BASE_BETA;
     try {
-      return await requestJson(`${base}/${path}`, { method, headers, body: body === void 0 ? void 0 : JSON.stringify(body) }, this.opts);
+      return await requestJson(
+        `${base}/${path}`,
+        { method, headers, body: body === void 0 ? void 0 : JSON.stringify(body) },
+        // Every attempt, retries included, takes a rate-limiter slot.
+        { ...this.opts, ...http, beforeAttempt: () => limiter.take(this.opts.sleep) }
+      );
     } catch (err) {
       throw version2 === "v1beta" ? betaError(err, path, method) : err;
     }
@@ -12917,8 +12943,15 @@ var AdmobClient = class {
   async write(method, path, body, query) {
     const qs = query && Object.keys(query).length ? `?${new URLSearchParams(query)}` : "";
     try {
-      return await this.request("inventory", method, `${path}${qs}`, body, "v1beta");
+      return await this.request("inventory", method, `${path}${qs}`, body, "v1beta", { retries: 0 });
     } catch (err) {
+      if (err instanceof AdmobctlError && (err.status === void 0 || err.status >= 500)) {
+        throw new AdmobctlError(err.code, `${err.message} The change may have been applied anyway.`, {
+          status: err.status,
+          cause: err,
+          fix: "Check with admobctl (e.g. apps list, ad-units list, mediation-groups show) before retrying, so it is not applied twice."
+        });
+      }
       if (err instanceof AdmobctlError && err.code === "AUTH_SCOPE_MISSING") {
         throw new AdmobctlError("AUTH_SCOPE_MISSING", "Write commands need the admob.monetization scope, which your credentials do not include.", {
           status: err.status,
@@ -13108,10 +13141,8 @@ var AdmobService = class _AdmobService {
   accountOverride;
   now;
   configDir;
-  accountPromise;
-  appsPromise;
-  adUnitsPromise;
-  adSourcesPromise;
+  /** In-flight or settled lookups (account, apps, ad units, ad sources), shared by every caller. */
+  cache = /* @__PURE__ */ new Map();
   static create(opts = {}, deps = {}) {
     const dir = deps.configDir ?? configDir();
     const profile = resolveProfile(loadConfig(dir), opts.profile);
@@ -13131,10 +13162,23 @@ var AdmobService = class _AdmobService {
   listAccounts() {
     return this.client.listAccounts();
   }
+  /**
+   * Memoize a lookup for the life of the service. A failure is forgotten, so the next call retries
+   * (the service may be long-lived in the MCP server).
+   */
+  memo(key, load) {
+    const hit = this.cache.get(key);
+    if (hit) return hit;
+    const p = load();
+    this.cache.set(key, p);
+    p.catch(() => {
+      if (this.cache.get(key) === p) this.cache.delete(key);
+    });
+    return p;
+  }
   /** The active publisher account: --account, then profile, then the only accessible one. */
   account() {
-    if (this.accountPromise) return this.accountPromise;
-    const p = (async () => {
+    return this.memo("account", async () => {
       const accounts = await this.client.listAccounts();
       const ids = accounts.map((a) => a.publisherId).join(", ") || "(none)";
       const wanted = this.accountOverride?.replace(/^accounts\//, "");
@@ -13152,36 +13196,16 @@ var AdmobService = class _AdmobService {
       throw new AdmobctlError("USAGE", `Several AdMob accounts are accessible (${ids}). Pick one.`, {
         fix: "admobctl config set account <pub-\u2026>  (or pass --account)"
       });
-    })();
-    this.accountPromise = p;
-    p.catch(() => {
-      if (this.accountPromise === p) this.accountPromise = void 0;
     });
-    return p;
   }
   apps() {
-    if (this.appsPromise) return this.appsPromise;
-    const p = (async () => {
-      const acct = await this.account();
-      return buildAppIndex(await this.client.listApps(acct.name), this.profile.aliases);
-    })();
-    this.appsPromise = p;
-    p.catch(() => {
-      if (this.appsPromise === p) this.appsPromise = void 0;
-    });
-    return p;
+    return this.memo("apps", async () => buildAppIndex(await this.client.listApps((await this.account()).name), this.profile.aliases));
   }
   async resolveApp(input2) {
     return resolveApp(input2, await this.apps());
   }
   rawAdUnits() {
-    if (this.adUnitsPromise) return this.adUnitsPromise;
-    const p = (async () => this.client.listAdUnits((await this.account()).name))();
-    this.adUnitsPromise = p;
-    p.catch(() => {
-      if (this.adUnitsPromise === p) this.adUnitsPromise = void 0;
-    });
-    return p;
+    return this.memo("adUnits", async () => this.client.listAdUnits((await this.account()).name));
   }
   async adUnits(opts = {}) {
     const [apps, units] = await Promise.all([this.apps(), this.rawAdUnits()]);
@@ -13209,13 +13233,7 @@ var AdmobService = class _AdmobService {
   }
   // ── v1beta reads ──────────────────────────────────────────────────
   adSources() {
-    if (this.adSourcesPromise) return this.adSourcesPromise;
-    const p = (async () => this.client.listAdSources((await this.account()).name))();
-    this.adSourcesPromise = p;
-    p.catch(() => {
-      if (this.adSourcesPromise === p) this.adSourcesPromise = void 0;
-    });
-    return p;
+    return this.memo("adSources", async () => this.client.listAdSources((await this.account()).name));
   }
   /** Resolve an ad source by ID or title (case-insensitive). */
   async resolveAdSource(input2) {
@@ -13246,7 +13264,7 @@ var AdmobService = class _AdmobService {
     const parts = [];
     if (f.app) parts.push(`CONTAINS_ANY(APP_IDS, ${filterValue((await this.resolveApp(f.app)).appId)})`);
     if (f.adSource) parts.push(`CONTAINS_ANY(AD_SOURCE_IDS, ${filterValue((await this.resolveAdSource(f.adSource)).adSourceId)})`);
-    if (f.format) parts.push(`IN(FORMAT, ${filterValue(f.format.toUpperCase())})`);
+    if (f.format) parts.push(`IN(FORMAT, ${filterValue(f.format.trim().toUpperCase().replace(/-/g, "_"))})`);
     if (f.platform) parts.push(`IN(PLATFORM, ${filterValue(f.platform.toUpperCase())})`);
     if (f.state) parts.push(`IN(STATE, ${filterValue(f.state.toUpperCase())})`);
     const acct = await this.account();
@@ -13384,7 +13402,6 @@ var AdmobService = class _AdmobService {
     const filters = await this.resolveFilters(kind, q.filters ?? {});
     const spec = buildReportSpec(kind, { dateRange: range, dimensions, metrics, filters, maxRows: q.maxRows, currency: q.currency });
     const acct = await this.account();
-    if (kind === "campaign") throw usageError("Use campaignReport() for campaign reports.");
     const report = kind === "network" ? await this.client.networkReport(acct.name, spec) : await this.client.mediationReport(acct.name, spec);
     notices.push(...freshnessNotices(kind, range, todayIn(acct.reportingTimeZone, this.now())));
     return { report, dimensions, metrics, range, notices };

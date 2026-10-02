@@ -4,8 +4,8 @@ import { usageError } from "./errors.js";
 import { ESTIMATE_LABEL } from "./finance.js";
 import { pct, perMille, ratio, resolveInsightRange } from "./insights.js";
 import { formatMicros, microsToAmount, sumMicros } from "./money.js";
-import type { DimensionValue, Report, ReportKind } from "./report.js";
-import type { AdmobService } from "./service.js";
+import type { DimensionValue, Report } from "./report.js";
+import type { AdmobService, StreamedReportKind } from "./service.js";
 
 /** Curated analyses on report dimensions the plain reports leave to the user. */
 
@@ -39,7 +39,7 @@ const MIN_SHARE = 0.05;
 
 async function fetchReport(
   svc: AdmobService,
-  kind: ReportKind,
+  kind: StreamedReportKind,
   opts: AnalyzeRange & { by: string[]; metrics: string[]; filters?: Record<string, string[]>; currency?: string },
 ) {
   const acct = await svc.account();
@@ -147,12 +147,21 @@ export async function analyzeVersions(svc: AdmobService, opts: VersionsOptions):
   // Compare each version with the rest of its group, so one bad version cannot hide in its own baseline.
   const highlights: Finding[] = [];
   const noun = VERSION_NOUN[opts.by];
+  // Group totals once; "the rest of the group" is the total minus the row itself.
+  const totals = new Map<string, { requests: number; matched: number; impressions: number }>();
+  for (const row of rows) {
+    const t = totals.get(row.group) ?? { requests: 0, matched: 0, impressions: 0 };
+    t.requests += row.requests;
+    t.matched += row.matched_requests;
+    t.impressions += row.impressions;
+    totals.set(row.group, t);
+  }
   for (const row of rows) {
     if (row.requests < MIN_REQUESTS || row.request_share < MIN_SHARE) continue;
-    const rest = rows.filter((o) => o.group === row.group && o !== row);
-    const restRequests = rest.reduce((s, o) => s + o.requests, 0);
-    const restMatched = rest.reduce((s, o) => s + o.matched_requests, 0);
-    const restImpressions = rest.reduce((s, o) => s + o.impressions, 0);
+    const t = totals.get(row.group)!;
+    const restRequests = t.requests - row.requests;
+    const restMatched = t.matched - row.matched_requests;
+    const restImpressions = t.impressions - row.impressions;
     if (restRequests < MIN_REQUESTS) continue;
     const key = `${row.group} ${row.version}`;
     const traffic = `${row.requests} requests, ${pct(row.request_share)} of ${row.group}`;
@@ -269,8 +278,10 @@ export async function analyzeConsent(svc: AdmobService, opts: ConsentOptions): P
   const highlights: Finding[] = [];
   if (open) {
     const openEcpm = perMille(open.earnings_micros, open.impressions);
+    // Compare earnings per impression from micros; the rounded eCPMs are for display only.
+    const openPerImpression = ratio(open.earnings_micros, open.impressions);
     for (const x of restricted) {
-      if (openEcpm > 0) x.ecpm_vs_unrestricted = ratio(x.ecpm, openEcpm);
+      if (openPerImpression > 0) x.ecpm_vs_unrestricted = ratio(ratio(x.earnings_micros, x.impressions), openPerImpression);
       if (x.request_share < MIN_SHARE || x.ecpm_vs_unrestricted === undefined) continue;
       const diff = Math.round((x.ecpm_vs_unrestricted - 1) * 100);
       highlights.push({
@@ -398,7 +409,15 @@ export async function analyzeWaterfall(svc: AdmobService, opts: WaterfallOptions
     };
   });
   const gEarn = (row: WaterfallRow) => groupEarnings.get(row.group_id) ?? 0;
-  rows.sort((a, b) => gEarn(b) - gEarn(a) || a.group.localeCompare(b.group) || b.ecpm_micros - a.ecpm_micros || b.earnings_micros - a.earnings_micros);
+  // Group ID breaks ties so groups that share a name and earnings never interleave.
+  rows.sort(
+    (a, b) =>
+      gEarn(b) - gEarn(a) ||
+      a.group.localeCompare(b.group) ||
+      a.group_id.localeCompare(b.group_id) ||
+      b.ecpm_micros - a.ecpm_micros ||
+      b.earnings_micros - a.earnings_micros,
+  );
 
   const groups: WaterfallGroup[] = [];
   for (const row of rows) {

@@ -57,8 +57,10 @@ export async function fetchTokenInfo(token: string, doFetch: typeof fetch = fetc
 /** Run the auth checks in order. Later checks are skipped when an earlier one makes them meaningless. */
 export async function runDoctor(d: DoctorDeps): Promise<Check[]> {
   const checks: Check[] = [];
+  // The optional checks run last, so any early stop skips them too and the check list stays stable.
+  const optional: Check["id"][] = [...(d.listApps ? (["apps"] as const) : []), ...(d.betaProbes ? (["beta"] as const) : [])];
   const skipRest = (ids: Check["id"][], why: string) => {
-    for (const id of ids) checks.push({ id, status: "skip", summary: why });
+    for (const id of [...ids, ...optional]) checks.push({ id, status: "skip", summary: why });
   };
 
   try {
@@ -136,7 +138,7 @@ export async function runDoctor(d: DoctorDeps): Promise<Check[]> {
     checks.push({ id: "account", status: "ok", summary: `Using ${a.publisherId} (${a.currencyCode}, ${a.reportingTimeZone})` });
   } catch (err) {
     checks.push(failed("account", err));
-    if (d.listApps) skipRest(["apps"], "skipped: no account");
+    skipRest([], "skipped: no account");
     return checks;
   }
 

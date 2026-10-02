@@ -5,31 +5,12 @@ import { describe, expect, it } from "vitest";
 import { analyzeConsent, analyzeVersions, analyzeWaterfall } from "../src/core/analyze.js";
 import { AdmobService } from "../src/core/service.js";
 import type { TokenProvider } from "../src/core/auth/types.js";
-import { fakeFetch, fixture, jsonResponse, noSleep, type RecordedCall } from "./helpers.js";
+import { fakeFetch, fixture, jsonResponse, noSleep, synthReport, type RecordedCall } from "./helpers.js";
 
 const token: TokenProvider = { mode: "adc", getToken: async () => "t", quotaProject: () => "qp" };
 
 type Dims = Record<string, [value: string, label?: string]>;
 type Metrics = Record<string, number>;
-const MONEY = new Set(["ESTIMATED_EARNINGS", "OBSERVED_ECPM"]);
-
-/** A synthetic streamed report: header, rows, footer. */
-export function synthReport(rows: Array<[Dims, Metrics]>, currency = "NOK") {
-  return [
-    { header: { localizationSettings: { currencyCode: currency }, reportingTimeZone: "Europe/Oslo" } },
-    ...rows.map(([dims, metrics]) => ({
-      row: {
-        dimensionValues: Object.fromEntries(
-          Object.entries(dims).map(([k, [value, displayLabel]]) => [k, displayLabel === undefined ? { value } : { value, displayLabel }]),
-        ),
-        metricValues: Object.fromEntries(
-          Object.entries(metrics).map(([k, v]) => [k, MONEY.has(k) ? { microsValue: String(v) } : { integerValue: String(v) }]),
-        ),
-      },
-    })),
-    { footer: { matchingRowCount: String(rows.length) } },
-  ];
-}
 
 function service(routes: Parameters<typeof fakeFetch>[0]) {
   const dir = mkdtempSync(join(tmpdir(), "admobctl-analyze-"));
