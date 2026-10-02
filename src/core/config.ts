@@ -20,6 +20,18 @@ export interface FinanceConfig {
   decimalSeparator?: "." | ",";
 }
 
+/** Defaults for `admobctl check`, stored as the strings `config set` writes. */
+export interface CheckConfig {
+  /** Complete days to judge (default 1). */
+  window?: string;
+  /** Days before the window to compare with (default 7). */
+  baseline?: string;
+  /** Percent drop that counts as a breach (default 30). */
+  drop?: string;
+  /** Baseline requests an app needs before it is judged (default 1000). */
+  minRequests?: string;
+}
+
 /** Everything in here is non-secret. Refresh tokens live in the OS keychain. */
 export interface ProfileConfig {
   account?: string;
@@ -27,6 +39,7 @@ export interface ProfileConfig {
   authMode?: AuthMode;
   oauthClientId?: string;
   finance?: FinanceConfig;
+  check?: CheckConfig;
   /** alias → app ID (ca-app-pub-…~…) */
   aliases?: Record<string, string>;
   /** Developer website for the app-ads.txt check, used where the store listing cannot be read (Android). */
@@ -107,7 +120,8 @@ export function resolveProfile(config: ConfigFile, name?: string): ResolvedProfi
 }
 
 const SCALAR_KEYS = new Set(["account", "quotaProject", "authMode", "oauthClientId", "website"]);
-const MAP_KEYS = new Set(Object.keys(DEFAULT_FINANCE).map((k) => `finance.${k}`));
+const CHECK_KEYS = ["check.window", "check.baseline", "check.drop", "check.minRequests"];
+const MAP_KEYS = new Set([...Object.keys(DEFAULT_FINANCE).map((k) => `finance.${k}`), ...CHECK_KEYS]);
 const AUTH_MODES: AuthMode[] = ["auto", "adc", "oauth"];
 
 export const SETTABLE_KEYS = [...SCALAR_KEYS, ...MAP_KEYS, "aliases.<alias>", "websites.<alias>"];
@@ -125,6 +139,9 @@ export function setProfileValue(config: ConfigFile, profile: string, key: string
   }
   if (key === "finance.decimalSeparator" && value !== undefined && value !== "." && value !== ",") {
     throw usageError('finance.decimalSeparator must be "." or ","');
+  }
+  if (CHECK_KEYS.includes(key) && value !== undefined && !/^[1-9]\d*$/.test(value)) {
+    throw usageError(`${key} must be a positive whole number, got "${value}"`);
   }
   const [head, sub, ...rest] = key.split(".");
   if (rest.length === 0 && sub && (MAP_KEYS.has(key) || head === "aliases" || head === "websites")) {

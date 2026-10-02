@@ -120,6 +120,22 @@ admobctl insights [--last 30d | --from … --to …] [--by ad-unit|app|country|f
 Returns rows (earnings, share, change vs the previous equal-length period, eCPM, request RPM, match rate, show rate, CTR),
 highlights (top, bottom, low-fill, low-show-rate, swing-up, swing-down, new, gone) and a plain-language summary.
 
+## Check
+
+```bash
+admobctl check [--window 1d] [--baseline 7d] [--drop 30] [--min-requests 1000] [--app <alias>]
+```
+
+A health check for cron or a scheduled agent. Compares the window (complete days ending yesterday) with the baseline
+(the days just before it), per app and for all apps together: daily earnings, match rate and show rate.
+
+- A drop of `--drop` percent or more is a breach: listed in `findings` (app, metric, change, message), counted in
+  `breaches`, and the command **exits 1**. No breach: exit 0.
+- Row `status`: `ok`, `breach`, or `thin` (fewer than `--min-requests` baseline requests: not judged). Rates also need
+  a tenth of that many requests in the window.
+- An app with a baseline but no requests in the window is a breach ("sent no ad requests").
+- Defaults can be saved: `admobctl config set check.<key> <n>` with key window, baseline, drop or minRequests.
+
 ## Analyze
 
 ```bash
@@ -141,11 +157,12 @@ admobctl analyze waterfall [--app <alias>] [--group <name|id>] [--currency X] [-
 
 admobctl_list_accounts, admobctl_list_apps, admobctl_list_ad_units, admobctl_network_report,
 admobctl_mediation_report, admobctl_finance_month, admobctl_finance_range, admobctl_finance_export, admobctl_finance_forecast,
-admobctl_insights,
+admobctl_insights, admobctl_check,
 admobctl_analyze_versions, admobctl_analyze_consent, admobctl_analyze_waterfall, admobctl_campaign_report,
 admobctl_list_ad_sources, admobctl_list_adapters (`ad_source`), admobctl_list_mediation_groups,
 admobctl_list_ad_unit_mappings (`ad_unit`), admobctl_check_app_ads.
 They take the same arguments as the CLI, in snake_case: `max_rows`, `sort`, `compare`, `include_journal`, `last_days`.
+`admobctl_check` takes `window_days`, `baseline_days`, `drop_percent`, `min_requests`, `app`.
 `admobctl_finance_export` takes `month` or `from`+`to`, `as` (`json` or `csv`), `integer_amounts`, `scale`, and returns
 the file as `content`.
 Reports default to 200 rows.

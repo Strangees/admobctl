@@ -497,7 +497,7 @@ export class AdmobService {
 
   /**
    * A report and the same report for the equal-length period just before it, fetched together.
-   * `previousQuery` overrides parts of the query for the earlier period (e.g. no row cap).
+   * `previousQuery` overrides parts of the query for the earlier period (e.g. no row cap, or another range).
    */
   async rawReportWithPrevious(
     kind: StreamedReportKind,
@@ -507,7 +507,7 @@ export class AdmobService {
     const range = q.dateRange ?? dateRangeFromArgs(q.from ?? "", q.to ?? q.from ?? "");
     const [current, previous] = await Promise.all([
       this.rawReport(kind, { ...q, dateRange: range }),
-      this.rawReport(kind, { ...q, ...previousQuery, dateRange: previousPeriod(range) }),
+      this.rawReport(kind, { ...q, dateRange: previousPeriod(range), ...previousQuery }),
     ]);
     return { current, previous };
   }

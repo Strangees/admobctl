@@ -11,6 +11,10 @@ Call `admobctl_insights` (CLI: `admobctl insights`). The default is ad units ove
 compared with the 30 days before. Use `by: "app" | "country" | "format" | "platform"` or `from`/`to` when the
 question asks for it. Drill down with `admobctl_network_report` only when the insights output cannot answer the question.
 
+For "is everything OK?", "did something break?" or a daily check, call `admobctl_check` first: it compares the last
+complete day with the week before and returns `findings` only for real drops. No findings means nothing dropped by the
+threshold; say so plainly and do not go looking for problems in `thin` rows.
+
 For narrower questions use the curated analyses, which follow the same highlights/summary shape:
 `admobctl_analyze_versions` (did an SDK upgrade or app release hurt match or show rate),
 `admobctl_analyze_consent` (how much traffic runs under consent/RDP/limited-ads restrictions and at what eCPM, per app

@@ -964,6 +964,147 @@
       }
     },
     {
+      "name": "admobctl_check",
+      "title": "AdMob health check",
+      "description": "Did anything break? Compares the last complete day(s) with the days just before, per app and in total, and reports `findings` where daily earnings, match rate or show rate dropped by the threshold or more (`breaches` is their count; 0 means nothing dropped). Rows with status `thin` had too little baseline traffic to judge: do not report them as problems. Use for \"is everything OK\", \"did revenue drop\" or a daily check; use admobctl_insights for a fuller analysis. Earnings are estimates.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "window_days": {
+            "description": "Complete days to judge, ending yesterday (default 1)",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 90
+          },
+          "baseline_days": {
+            "description": "Days just before the window to compare with (default 7)",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 366
+          },
+          "drop_percent": {
+            "description": "A drop of this percent or more is a breach (default 30)",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 99
+          },
+          "min_requests": {
+            "description": "Baseline requests an app needs before it is judged (default 1000)",
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "app": {
+            "description": "Only this app (alias, app ID or name)",
+            "type": "string"
+          },
+          "account": {
+            "description": "Publisher ID (pub-…). Defaults to the configured or only account.",
+            "type": "string"
+          }
+        },
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "window": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "baseline": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "thresholds": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "currency": {
+            "type": "string"
+          },
+          "estimate": {
+            "type": "boolean",
+            "const": true
+          },
+          "breaches": {
+            "type": "number"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "total": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "summary": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "notices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "window",
+          "baseline",
+          "thresholds",
+          "currency",
+          "estimate",
+          "breaches",
+          "rows",
+          "findings",
+          "summary",
+          "notices"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
       "name": "admobctl_campaign_report",
       "title": "AdMob campaign report",
       "description": "Report on the user's AdMob app-promotion campaigns (the user as advertiser): impressions, clicks, CTR, installs, estimated cost and average CPI by campaign, ad, placement, country, format or date. AdMob API v1beta; ranges over 30 days are fetched in chunks. Cost is in the campaigns' reporting currency.",

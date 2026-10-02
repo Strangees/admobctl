@@ -70,6 +70,7 @@ describe("mcp server", () => {
         "admobctl_analyze_versions",
         "admobctl_analyze_waterfall",
         "admobctl_campaign_report",
+        "admobctl_check",
         "admobctl_check_app_ads",
         "admobctl_list_ad_sources",
         "admobctl_list_ad_unit_mappings",
