@@ -34,6 +34,8 @@ const INSTRUCTIONS = `Read-only access to the user's Google AdMob account via ad
 - For SDK/app-version problems, consent impact or mediation waterfalls use the admobctl_analyze_* tools.
 - Ad sources, adapters, mediation groups, ad unit mappings and campaign reports use AdMob API v1beta. Google limits some of
   these to allowlisted accounts; a "v1beta" permission error is not a setup mistake, so pass its Fix line on and move on.
+- These tools never change anything. Changes (creating apps, ad units or mappings; editing mediation groups; A/B
+  experiments) exist only as admobctl CLI commands, which print a plan and send nothing unless the user adds --yes.
 - Errors include a "Fix:" line with the exact command the user should run.`;
 
 const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } as const;

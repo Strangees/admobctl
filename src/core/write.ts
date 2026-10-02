@@ -160,6 +160,26 @@ export async function planCreateMapping(svc: AdmobService, o: CreateMappingInput
   return { action: "Create ad unit mapping", method: "POST", path: `${r.parent}/adUnitMappings`, body: r.body, summary: [r.summary] };
 }
 
+/** Check a mappings file: an array of {adUnit, adSource, adapter, name?, settings}. */
+export function parseMappingEntries(raw: unknown): CreateMappingInput[] {
+  if (!Array.isArray(raw)) throw usageError("The mappings file must hold a JSON array of {adUnit, adSource, adapter, name?, settings}.");
+  return raw.map((e, i) => {
+    const where = `Mappings file entry ${i + 1}`;
+    if (typeof e !== "object" || e === null) throw usageError(`${where} is not an object.`);
+    const o = e as Record<string, unknown>;
+    for (const k of ["adUnit", "adSource", "adapter"]) {
+      if (typeof o[k] !== "string" || !o[k]) throw usageError(`${where} needs a string "${k}" (fields: adUnit, adSource, adapter, name?, settings).`);
+    }
+    const settings = o.settings ?? {};
+    if (typeof settings !== "object" || settings === null || Array.isArray(settings) || Object.values(settings).some((v) => typeof v !== "string")) {
+      throw usageError(`${where}: "settings" must map setting labels or IDs to string values.`);
+    }
+    const out: CreateMappingInput = { adUnit: o.adUnit as string, adSource: o.adSource as string, adapter: o.adapter as string, settings: settings as Record<string, string> };
+    if (typeof o.name === "string") out.name = o.name;
+    return out;
+  });
+}
+
 /** One batchCreate plan per 100 mappings: the API rejects a whole batch if any mapping in it fails. */
 export async function planCreateMappings(svc: AdmobService, entries: CreateMappingInput[]): Promise<WritePlan[]> {
   if (!entries.length) throw usageError("The mappings file is empty.");

@@ -121,6 +121,40 @@ v1beta methods (mediation groups and ad unit mappings in particular) to allowlis
 error says so and points to your AdMob account manager, and `auth doctor` shows which v1beta reads your account can
 use. Campaign reports take at most 30 days per request, so longer ranges are fetched in 30-day chunks and added up.
 
+### Changing AdMob (write commands)
+
+admobctl can also create apps, ad units and ad unit mappings, and change mediation groups and A/B experiments. These
+calls use the AdMob API's v1beta write methods, which need two things beyond the read-only setup:
+
+1. **The `admob.monetization` scope.** Sign in again with it:
+   `gcloud auth application-default login --scopes=https://www.googleapis.com/auth/admob.readonly,https://www.googleapis.com/auth/admob.monetization,https://www.googleapis.com/auth/cloud-platform`
+   (or `admobctl auth login --write`). `auth doctor` says when write commands are enabled.
+2. **Allowlisting by Google.** Google marks these methods as limited access. Without it they return 403, and
+   admobctl tells you to contact your AdMob account manager.
+
+Every write command is a **dry run unless you add `--yes`**: it prints the exact request (method, URL, update mask and
+JSON body) and a plain-words summary, then exits without sending anything. Input is checked first: formats and ad
+types, adapter platform and format, required adapter settings, CPMs, experiment state. Applied writes, including
+failed ones, are appended to `~/.admobctl/audit.log`.
+
+```bash
+admobctl apps create --platform android --store-id com.example.game
+admobctl ad-units create --app my-game-android --name "Level end" --format rewarded --reward 10:coins
+admobctl ad-units map "Level end" --ad-source "Example Bidder" --adapter "Example Bidder (Android)" --set "Placement ID=abc"
+admobctl ad-units map-batch --file mappings.json        # [{adUnit, adSource, adapter, name?, settings}], 100 per request
+admobctl mediation-groups create --file group.json       # MediationGroup JSON, new lines keyed "-1", "-2"…
+admobctl mediation-groups set-line "Banners" "Waterfall 3.00" --cpm 2.50          # manual CPMs are USD
+admobctl mediation-groups set-line "Banners" "Waterfall 3.00" --state disabled
+admobctl mediation-groups add-line "Banners" --ad-source "Example Waterfall" --name "Waterfall 5.00" --cpm 5 \
+  --mapping "Quiz banner=accounts/pub-…/adUnits/…/adUnitMappings/…"
+admobctl mediation-groups set-ad-units "Banners" "Quiz banner" "Quiz banner (Android)"
+admobctl mediation-groups experiment start "Banners" --name "Floor test" --percent 50 --lines treatment.json
+admobctl mediation-groups experiment stop "Banners" --keep B
+# …then repeat the command with --yes to apply it.
+```
+
+The MCP server stays read-only: no write is exposed as an MCP tool.
+
 ## MCP server
 
 `admobctl mcp` serves sixteen read-only tools over stdio: `admobctl_list_accounts`, `admobctl_list_apps`, `admobctl_list_ad_units`, `admobctl_network_report`, `admobctl_mediation_report`, `admobctl_finance_month`, `admobctl_finance_range`, `admobctl_insights`, `admobctl_analyze_versions`, `admobctl_analyze_consent`, `admobctl_analyze_waterfall`, `admobctl_campaign_report`, `admobctl_list_ad_sources`, `admobctl_list_adapters`, `admobctl_list_mediation_groups` and `admobctl_list_ad_unit_mappings`. Reports default to 200 rows and are trimmed with a notice to stay within roughly 25k tokens.

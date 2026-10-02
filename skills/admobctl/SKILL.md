@@ -36,6 +36,13 @@ If the MCP tools are not available, run the CLI with `-o json` and read the JSON
 - All earnings are estimates. Say so whenever you report money.
 - One good call usually answers the question. If results look inconsistent, report what you saw instead of investigating at length.
 
+## Changes (CLI only)
+
+The MCP tools only read. admobctl's write commands (`apps create`, `ad-units create|map|map-batch`,
+`mediation-groups create|set-line|add-line|set-ad-units|experiment start|stop`) print a plan and send nothing unless
+`--yes` is given. Run one without `--yes`, show the user the plan, and add `--yes` only after the user explicitly
+confirms that exact change. They need the admob.monetization scope and Google allowlisting; see `references/commands.md`.
+
 ## Errors and setup
 
 Every error ends with `Fix: <command>`. Show the user that exact command; do not paraphrase it or invent another.

@@ -14,6 +14,8 @@ export interface LoginOptions {
   openBrowser?: (url: string) => Promise<void>;
   /** Where to print instructions (stderr). */
   print: (s: string) => void;
+  /** Also ask for admob.monetization, for the write commands. */
+  write?: boolean;
 }
 
 export function systemBrowser(exec: Exec = defaultExec) {
@@ -34,7 +36,7 @@ export async function login(o: LoginOptions): Promise<{ profile: string; scope?:
   const state = randomBytes(16).toString("hex");
   const wait = waitForLoopbackCode({ state });
   const { redirectUri } = await wait.ready;
-  const url = buildAuthUrl({ clientId: o.clientId, redirectUri, pkce, state });
+  const url = buildAuthUrl({ clientId: o.clientId, redirectUri, pkce, state, write: o.write });
   o.print(`Opening your browser to sign in to Google. If it does not open, visit:\n\n  ${url}\n\n`);
   await (o.openBrowser ?? systemBrowser())(url);
   const code = await wait.code;
