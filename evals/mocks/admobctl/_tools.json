@@ -1,0 +1,661 @@
+{
+  "tools": [
+    {
+      "name": "admobctl_list_accounts",
+      "title": "List AdMob accounts",
+      "description": "List the AdMob publisher accounts the signed-in user can access (publisher ID, currency, reporting time zone).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "accounts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          }
+        },
+        "required": [
+          "accounts"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "admobctl_list_apps",
+      "title": "List AdMob apps",
+      "description": "List apps in the AdMob account with their aliases (use the alias in other tools), platform, app ID and store ID.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "description": "Publisher ID (pub-…). Defaults to the configured or only account.",
+            "type": "string"
+          }
+        },
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "apps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          }
+        },
+        "required": [
+          "apps"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "admobctl_list_ad_units",
+      "title": "List AdMob ad units",
+      "description": "List ad units (name, format, ad unit ID) for all apps or one app.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "description": "App alias, app ID or name",
+            "type": "string"
+          },
+          "account": {
+            "description": "Publisher ID (pub-…). Defaults to the configured or only account.",
+            "type": "string"
+          }
+        },
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "adUnits": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          }
+        },
+        "required": [
+          "adUnits"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "admobctl_network_report",
+      "title": "AdMob network report",
+      "description": "AdMob Network report: estimated earnings, requests, match rate, impressions, show rate, CTR and RPM by any dimension (app, ad-unit, country, format, platform, date, month…).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "Start date, YYYY-MM (whole month) or YYYY-MM-DD"
+          },
+          "to": {
+            "description": "End date, YYYY-MM or YYYY-MM-DD. Defaults to `from`.",
+            "type": "string"
+          },
+          "by": {
+            "description": "Dimensions, e.g. [\"app\"], [\"ad-unit\",\"country\"], [\"date\"]. Default [\"app\"].",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "metrics": {
+            "description": "Metrics, e.g. [\"earnings\",\"impressions\",\"match-rate\",\"show-rate\",\"rpm\"]. Default: all common metrics.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "filters": {
+            "description": "Dimension filters, e.g. {\"country\":[\"NO\",\"SE\"],\"app\":[\"my-game-ios\"]}. App filters accept aliases.",
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "max_rows": {
+            "description": "Row cap (default 200).",
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 5000
+          },
+          "account": {
+            "description": "Publisher ID (pub-…). Defaults to the configured or only account.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "totals": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "notice": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "from",
+          "to",
+          "rows",
+          "truncated"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "admobctl_mediation_report",
+      "title": "AdMob mediation report",
+      "description": "Mediation report across ad sources: earnings, requests, match rate, impressions, observed eCPM by ad-source, app, ad-unit, country…",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "Start date, YYYY-MM (whole month) or YYYY-MM-DD"
+          },
+          "to": {
+            "description": "End date, YYYY-MM or YYYY-MM-DD. Defaults to `from`.",
+            "type": "string"
+          },
+          "by": {
+            "description": "Dimensions, e.g. [\"app\"], [\"ad-unit\",\"country\"], [\"date\"]. Default [\"app\"].",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "metrics": {
+            "description": "Metrics, e.g. [\"earnings\",\"impressions\",\"match-rate\",\"show-rate\",\"rpm\"]. Default: all common metrics.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "filters": {
+            "description": "Dimension filters, e.g. {\"country\":[\"NO\",\"SE\"],\"app\":[\"my-game-ios\"]}. App filters accept aliases.",
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "max_rows": {
+            "description": "Row cap (default 200).",
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 5000
+          },
+          "account": {
+            "description": "Publisher ID (pub-…). Defaults to the configured or only account.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "totals": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "notice": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "from",
+          "to",
+          "rows",
+          "truncated"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "admobctl_finance_month",
+      "title": "AdMob earnings for a month",
+      "description": "Estimated AdMob earnings for one calendar month, per app and in total, for bookkeeping. With include_journal, also returns Bilagsjournal rows (debit receivable, credit revenue per app, dated at month-end) and journal_tsv, a paste-ready tab-separated block to show verbatim. Figures are estimates, not finalized payments.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "month": {
+            "type": "string",
+            "description": "YYYY-MM"
+          },
+          "include_journal": {
+            "description": "Also return journal rows",
+            "type": "boolean"
+          },
+          "account": {
+            "description": "Publisher ID (pub-…). Defaults to the configured or only account.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "month"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "month": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "estimate": {
+            "type": "boolean",
+            "const": true
+          },
+          "total": {
+            "type": "number"
+          },
+          "apps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "journal": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "journal_tsv": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "month",
+          "currency",
+          "complete",
+          "estimate",
+          "total",
+          "apps",
+          "notes"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "admobctl_finance_range",
+      "title": "AdMob earnings per month over a range",
+      "description": "Estimated AdMob earnings per month (and per app within each month) for a range of months, with a grand total. Estimates, not finalized payments.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "First month, YYYY-MM"
+          },
+          "to": {
+            "type": "string",
+            "description": "Last month, YYYY-MM"
+          },
+          "account": {
+            "description": "Publisher ID (pub-…). Defaults to the configured or only account.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "estimate": {
+            "type": "boolean",
+            "const": true
+          },
+          "total": {
+            "type": "number"
+          },
+          "months": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "currency",
+          "estimate",
+          "total",
+          "months",
+          "notes"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "admobctl_insights",
+      "title": "AdMob monetization insights",
+      "description": "Analyze monetization: earnings, eCPM, request RPM, match (fill) rate, show rate and CTR per app/ad-unit/country/format/platform, compared with the previous period. Returns highlights (top and bottom earners, low fill, low show rate, big swings) and a plain-language summary with the numbers behind each claim.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "last_days": {
+            "description": "The last N complete days (default 30)",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 366
+          },
+          "from": {
+            "description": "Start, YYYY-MM or YYYY-MM-DD (instead of last_days)",
+            "type": "string"
+          },
+          "to": {
+            "description": "End, YYYY-MM or YYYY-MM-DD",
+            "type": "string"
+          },
+          "by": {
+            "description": "Group by (default ad-unit)",
+            "type": "string",
+            "enum": [
+              "app",
+              "ad-unit",
+              "country",
+              "format",
+              "platform"
+            ]
+          },
+          "account": {
+            "description": "Publisher ID (pub-…). Defaults to the configured or only account.",
+            "type": "string"
+          }
+        },
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "estimate": {
+            "type": "boolean",
+            "const": true
+          },
+          "totals": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "highlights": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "summary": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "currency",
+          "estimate",
+          "totals",
+          "rows",
+          "highlights",
+          "summary"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+node_modules/
+# The bundle is committed: Claude/Codex install plugins straight from git.
+dist/*
+!dist/admobctl.mjs
+evals/results/
+coverage/
+*.log
+.DS_Store
+.env
+.env.*
+# Real API responses recorded from a live account — never commit.
+test/fixtures/private/*
+!test/fixtures/private/.gitkeep
+
+# Product requirements contain private business figures; kept local only.
+PRD.md
+docs/PRD.md

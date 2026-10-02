@@ -1,0 +1,190 @@
+[
+  {
+    "header": {
+      "dateRange": {
+        "startDate": {
+          "year": 2026,
+          "month": 7,
+          "day": 1
+        },
+        "endDate": {
+          "year": 2026,
+          "month": 9,
+          "day": 30
+        }
+      },
+      "localizationSettings": {
+        "currencyCode": "NOK",
+        "languageCode": "en-US"
+      },
+      "reportingTimeZone": "Europe/Oslo"
+    }
+  },
+  {
+    "row": {
+      "dimensionValues": {
+        "MONTH": {
+          "value": "202607"
+        },
+        "APP": {
+          "value": "ca-app-pub-0000000000000001~1111111111",
+          "displayLabel": "Example Quiz"
+        }
+      },
+      "metricValues": {
+        "ESTIMATED_EARNINGS": {
+          "microsValue": "40000000"
+        }
+      }
+    }
+  },
+  {
+    "row": {
+      "dimensionValues": {
+        "MONTH": {
+          "value": "202607"
+        },
+        "APP": {
+          "value": "ca-app-pub-0000000000000001~2222222222",
+          "displayLabel": "Example Quiz"
+        }
+      },
+      "metricValues": {
+        "ESTIMATED_EARNINGS": {
+          "microsValue": "20000000"
+        }
+      }
+    }
+  },
+  {
+    "row": {
+      "dimensionValues": {
+        "MONTH": {
+          "value": "202607"
+        },
+        "APP": {
+          "value": "ca-app-pub-0000000000000001~3333333333",
+          "displayLabel": "Sample Timer: Focus & Breaks"
+        }
+      },
+      "metricValues": {
+        "ESTIMATED_EARNINGS": {
+          "microsValue": "5000000"
+        }
+      }
+    }
+  },
+  {
+    "row": {
+      "dimensionValues": {
+        "MONTH": {
+          "value": "202608"
+        },
+        "APP": {
+          "value": "ca-app-pub-0000000000000001~1111111111",
+          "displayLabel": "Example Quiz"
+        }
+      },
+      "metricValues": {
+        "ESTIMATED_EARNINGS": {
+          "microsValue": "45500000"
+        }
+      }
+    }
+  },
+  {
+    "row": {
+      "dimensionValues": {
+        "MONTH": {
+          "value": "202608"
+        },
+        "APP": {
+          "value": "ca-app-pub-0000000000000001~2222222222",
+          "displayLabel": "Example Quiz"
+        }
+      },
+      "metricValues": {
+        "ESTIMATED_EARNINGS": {
+          "microsValue": "25250000"
+        }
+      }
+    }
+  },
+  {
+    "row": {
+      "dimensionValues": {
+        "MONTH": {
+          "value": "202608"
+        },
+        "APP": {
+          "value": "ca-app-pub-0000000000000001~3333333333",
+          "displayLabel": "Sample Timer: Focus & Breaks"
+        }
+      },
+      "metricValues": {
+        "ESTIMATED_EARNINGS": {
+          "microsValue": "7333333"
+        }
+      }
+    }
+  },
+  {
+    "row": {
+      "dimensionValues": {
+        "MONTH": {
+          "value": "202609"
+        },
+        "APP": {
+          "value": "ca-app-pub-0000000000000001~1111111111",
+          "displayLabel": "Example Quiz"
+        }
+      },
+      "metricValues": {
+        "ESTIMATED_EARNINGS": {
+          "microsValue": "60125000"
+        }
+      }
+    }
+  },
+  {
+    "row": {
+      "dimensionValues": {
+        "MONTH": {
+          "value": "202609"
+        },
+        "APP": {
+          "value": "ca-app-pub-0000000000000001~2222222222",
+          "displayLabel": "Example Quiz"
+        }
+      },
+      "metricValues": {
+        "ESTIMATED_EARNINGS": {
+          "microsValue": "30004999"
+        }
+      }
+    }
+  },
+  {
+    "row": {
+      "dimensionValues": {
+        "MONTH": {
+          "value": "202609"
+        },
+        "APP": {
+          "value": "ca-app-pub-0000000000000001~3333333333",
+          "displayLabel": "Sample Timer: Focus & Breaks"
+        }
+      },
+      "metricValues": {
+        "ESTIMATED_EARNINGS": {
+          "microsValue": "12320001"
+        }
+      }
+    }
+  },
+  {
+    "footer": {
+      "matchingRowCount": "9"
+    }
+  }
+]

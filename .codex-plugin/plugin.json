@@ -1,0 +1,30 @@
+{
+  "name": "admobctl",
+  "version": "0.1.0",
+  "description": "Query Google AdMob from Codex: apps, ad units, network/mediation reports, monthly finance (estimates) and monetization insights. Unofficial, not affiliated with Google.",
+  "author": { "name": "Stian Strange" },
+  "homepage": "https://github.com/Strangees/admobctl",
+  "repository": "https://github.com/Strangees/admobctl",
+  "license": "MIT",
+  "keywords": ["admob", "ads", "monetization", "mcp", "finance", "reports"],
+  "skills": "./skills/",
+  "mcpServers": {
+    "admobctl": {
+      "command": "node",
+      "args": ["./dist/admobctl.mjs", "mcp"],
+      "cwd": "."
+    }
+  },
+  "interface": {
+    "displayName": "AdMob (admobctl)",
+    "shortDescription": "AdMob earnings, reports and monetization insights",
+    "developerName": "Stian Strange",
+    "category": "Data & Analytics",
+    "capabilities": ["Read"],
+    "defaultPrompt": [
+      "What did my AdMob apps earn last month, per app?",
+      "Which of my ad units are underperforming, and why?",
+      "Give me journal rows for last month's AdMob revenue"
+    ]
+  }
+}

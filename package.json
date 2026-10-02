@@ -1,0 +1,51 @@
+{
+  "name": "admobctl",
+  "version": "0.1.0",
+  "description": "Fast command-line tool and agent plugin for the Google AdMob API. Unofficial, not affiliated with Google.",
+  "type": "module",
+  "bin": {
+    "admobctl": "dist/admobctl.mjs"
+  },
+  "files": [
+    "dist/admobctl.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "record-fixtures": "esbuild scripts/record-fixtures.ts --bundle --platform=node --format=esm --outfile=dist/record-fixtures.mjs --log-level=warning && node dist/record-fixtures.mjs",
+    "check": "npm run typecheck && npm run build && npm test",
+    "eval:mocks": "npm run build && GEN_MOCKS=1 vitest run test/gen-eval-mocks.test.ts && node scripts/dump-tools.mjs",
+    "eval": "claude plugin eval . --ablation none --no-publish"
+  },
+  "keywords": [
+    "admob",
+    "cli",
+    "mcp",
+    "claude-code",
+    "codex",
+    "ads",
+    "monetization"
+  ],
+  "license": "MIT",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Strangees/admobctl.git"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "@types/node": "^22.20.5",
+    "commander": "^14.0.3",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3",
+    "zod": "^4.6.5"
+  }
+}

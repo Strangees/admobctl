@@ -1,0 +1,20 @@
+{
+  "apps": [
+    {
+      "name": "accounts/pub-0000000000000001/apps/1111111111",
+      "appId": "ca-app-pub-0000000000000001~1111111111",
+      "platform": "IOS",
+      "linkedAppInfo": { "appStoreId": "100000001", "displayName": "Example Quiz" },
+      "manualAppInfo": { "displayName": "Example Quiz" },
+      "appApprovalState": "APPROVED"
+    },
+    {
+      "name": "accounts/pub-0000000000000001/apps/2222222222",
+      "appId": "ca-app-pub-0000000000000001~2222222222",
+      "platform": "ANDROID",
+      "linkedAppInfo": { "appStoreId": "com.example.quiz", "displayName": "Example Quiz" },
+      "appApprovalState": "APPROVED"
+    }
+  ],
+  "nextPageToken": "page2"
+}

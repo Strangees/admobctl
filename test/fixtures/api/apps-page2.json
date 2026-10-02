@@ -1,0 +1,11 @@
+{
+  "apps": [
+    {
+      "name": "accounts/pub-0000000000000001/apps/3333333333",
+      "appId": "ca-app-pub-0000000000000001~3333333333",
+      "platform": "IOS",
+      "manualAppInfo": { "displayName": "Sample Timer: Focus & Breaks" },
+      "appApprovalState": "APPROVED"
+    }
+  ]
+}

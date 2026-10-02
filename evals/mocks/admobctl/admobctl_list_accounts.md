@@ -1,0 +1,1 @@
+{"accounts":[{"name":"accounts/pub-0000000000000001","publisherId":"pub-0000000000000001","reportingTimeZone":"Europe/Oslo","currencyCode":"NOK"}]}

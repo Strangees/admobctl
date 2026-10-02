@@ -1,0 +1,11 @@
+interface:
+  display_name: "AdMob"
+  short_description: "Query AdMob apps, ad units and reports"
+  default_prompt: "Use $admobctl to show my AdMob earnings by app for last month."
+policy:
+  allow_implicit_invocation: true
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "admobctl"
+      description: "admobctl MCP server (bundled with this plugin)"

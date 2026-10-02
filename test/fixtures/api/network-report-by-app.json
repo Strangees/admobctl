@@ -1,0 +1,67 @@
+[
+  {
+    "header": {
+      "dateRange": {
+        "startDate": { "year": 2026, "month": 9, "day": 1 },
+        "endDate": { "year": 2026, "month": 9, "day": 30 }
+      },
+      "localizationSettings": { "currencyCode": "NOK", "languageCode": "en-US" },
+      "reportingTimeZone": "Europe/Oslo"
+    }
+  },
+  {
+    "row": {
+      "dimensionValues": {
+        "APP": { "value": "ca-app-pub-0000000000000001~1111111111", "displayLabel": "Example Quiz" }
+      },
+      "metricValues": {
+        "ESTIMATED_EARNINGS": { "microsValue": "60125000" },
+        "IMPRESSIONS": { "integerValue": "12000" },
+        "AD_REQUESTS": { "integerValue": "20000" },
+        "MATCHED_REQUESTS": { "integerValue": "15000" },
+        "MATCH_RATE": { "doubleValue": 0.75 },
+        "SHOW_RATE": { "doubleValue": 0.8 },
+        "CLICKS": { "integerValue": "120" },
+        "IMPRESSION_CTR": { "doubleValue": 0.01 },
+        "IMPRESSION_RPM": { "microsValue": "5010416" }
+      }
+    }
+  },
+  {
+    "row": {
+      "dimensionValues": {
+        "APP": { "value": "ca-app-pub-0000000000000001~2222222222", "displayLabel": "Example Quiz" }
+      },
+      "metricValues": {
+        "ESTIMATED_EARNINGS": { "microsValue": "30004999" },
+        "IMPRESSIONS": { "integerValue": "8000" },
+        "AD_REQUESTS": { "integerValue": "40000" },
+        "MATCHED_REQUESTS": { "integerValue": "10000" },
+        "MATCH_RATE": { "doubleValue": 0.25 },
+        "SHOW_RATE": { "doubleValue": 0.8 },
+        "CLICKS": { "integerValue": "40" },
+        "IMPRESSION_CTR": { "doubleValue": 0.005 },
+        "IMPRESSION_RPM": { "microsValue": "3750624" }
+      }
+    }
+  },
+  {
+    "row": {
+      "dimensionValues": {
+        "APP": { "value": "ca-app-pub-0000000000000001~3333333333", "displayLabel": "Sample Timer: Focus & Breaks" }
+      },
+      "metricValues": {
+        "ESTIMATED_EARNINGS": { "microsValue": "12320001" },
+        "IMPRESSIONS": { "integerValue": "3000" },
+        "AD_REQUESTS": { "integerValue": "3500" },
+        "MATCHED_REQUESTS": { "integerValue": "3400" },
+        "MATCH_RATE": { "doubleValue": 0.9714 },
+        "SHOW_RATE": { "doubleValue": 0.8824 },
+        "CLICKS": { "integerValue": "45" },
+        "IMPRESSION_CTR": { "doubleValue": 0.015 },
+        "IMPRESSION_RPM": { "microsValue": "4206667" }
+      }
+    }
+  },
+  { "footer": { "matchingRowCount": "3" } }
+]

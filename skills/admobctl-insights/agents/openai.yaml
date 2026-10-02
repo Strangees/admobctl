@@ -1,0 +1,11 @@
+interface:
+  display_name: "AdMob insights"
+  short_description: "Find underperforming ad units and fixes"
+  default_prompt: "Use $admobctl-insights to find my weakest ad units over the last 30 days."
+policy:
+  allow_implicit_invocation: true
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "admobctl"
+      description: "admobctl MCP server (bundled with this plugin)"

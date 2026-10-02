@@ -1,0 +1,90 @@
+/**
+ * Regenerates evals/mocks/admobctl/*.md (canned MCP tool results for `claude plugin eval`)
+ * by running the real tools against synthetic fixtures. Skipped unless GEN_MOCKS=1:
+ *   npm run eval:mocks
+ */
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { it } from "vitest";
+import { AdmobService } from "../src/core/service.js";
+import { createMcpServer } from "../src/mcp/server.js";
+import { fakeFetch, fixture, jsonResponse, noSleep, type RecordedCall } from "./helpers.js";
+
+type Unit = [id: string, label: string, earnings: number, requests: number, matched: number, impressions: number, clicks: number];
+const unitId = (n: number) => `ca-app-pub-0000000000000001/900000000${n}`;
+// Ad units match test/fixtures/api/ad-units.json so the mocked world is consistent.
+const current: Unit[] = [
+  [unitId(1), "Quiz banner", 60e6, 20000, 19000, 15000, 150],
+  [unitId(3), "Quiz banner (Android)", 30e6, 40000, 8000, 6000, 60], // low fill
+  [unitId(4), "Timer banner", 10e6, 5000, 4900, 1500, 5], // low show rate
+];
+const previous: Unit[] = [
+  [unitId(1), "Quiz banner", 30e6, 18000, 17000, 14000, 120],
+  [unitId(3), "Quiz banner (Android)", 31e6, 39000, 8100, 6100, 61],
+  [unitId(4), "Timer banner", 10.5e6, 5100, 5000, 1600, 6],
+];
+
+function adUnitReport(units: Unit[]) {
+  return [
+    { header: { localizationSettings: { currencyCode: "NOK" }, reportingTimeZone: "Europe/Oslo" } },
+    ...units.map(([value, displayLabel, e, r, m, i, c]) => ({
+      row: {
+        dimensionValues: { AD_UNIT: { value, displayLabel } },
+        metricValues: {
+          ESTIMATED_EARNINGS: { microsValue: String(e) },
+          AD_REQUESTS: { integerValue: String(r) },
+          MATCHED_REQUESTS: { integerValue: String(m) },
+          IMPRESSIONS: { integerValue: String(i) },
+          CLICKS: { integerValue: String(c) },
+        },
+      },
+    })),
+    { footer: { matchingRowCount: String(units.length) } },
+  ];
+}
+
+it.skipIf(!process.env.GEN_MOCKS)("generate eval mocks", async () => {
+  const f = fakeFetch({
+    "GET /v1/accounts?": () => jsonResponse(fixture("accounts.json")),
+    "GET /apps": (c) => jsonResponse(fixture(c.url.includes("pageToken=page2") ? "apps-page2.json" : "apps-page1.json")),
+    "GET /adUnits": () => jsonResponse(fixture("ad-units.json")),
+    "POST /networkReport:generate": (c: RecordedCall) => {
+      const spec = (c.body as { reportSpec: { dimensions: string[]; dateRange: { startDate: { month: number } } } }).reportSpec;
+      if (spec.dimensions.includes("AD_UNIT")) return jsonResponse(adUnitReport(spec.dateRange.startDate.month === 9 ? current : previous));
+      return jsonResponse(fixture(spec.dimensions.includes("MONTH") ? "network-report-by-month-app.json" : "network-report-by-app.json"));
+    },
+    "POST /mediationReport:generate": () => jsonResponse(fixture("network-report-by-app.json")),
+  });
+  const dir = mkdtempSync(join(tmpdir(), "admobctl-mocks-"));
+  const server = createMcpServer({
+    service: (o) =>
+      AdmobService.create(o, {
+        configDir: dir,
+        fetch: f.fetch,
+        sleep: noSleep,
+        tokenProvider: { mode: "adc", getToken: async () => "t", quotaProject: () => "q" },
+        now: () => new Date("2026-10-02T08:00:00Z"),
+      }),
+  });
+  const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverT);
+  const client = new Client({ name: "gen-eval-mocks", version: "0" });
+  await client.connect(clientT);
+  const calls: Record<string, Record<string, unknown>> = {
+    admobctl_list_accounts: {},
+    admobctl_list_apps: {},
+    admobctl_list_ad_units: {},
+    admobctl_network_report: { from: "2026-09", by: ["app"] },
+    admobctl_mediation_report: { from: "2026-09", by: ["app"] },
+    admobctl_finance_month: { month: "2026-09", include_journal: true },
+    admobctl_finance_range: { from: "2026-07", to: "2026-09" },
+    admobctl_insights: { last_days: 30, by: "ad-unit" },
+  };
+  for (const [name, args] of Object.entries(calls)) {
+    const r = (await client.callTool({ name, arguments: args })) as { content: Array<{ text: string }> };
+    writeFileSync(new URL(`../evals/mocks/admobctl/${name}.md`, import.meta.url), `${r.content[0]!.text}\n`);
+  }
+});

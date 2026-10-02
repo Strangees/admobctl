@@ -1,0 +1,38 @@
+---
+name: admobctl
+description: Use when the user asks about their Google AdMob account - apps, ad units, earnings, revenue, impressions, eCPM, fill or match rate, mediation or ad sources - or when an admobctl command or admobctl MCP tool fails with an auth or setup error.
+---
+
+# admobctl
+
+Read-only access to the user's AdMob account through the `admobctl` MCP tools (preferred) or the `admobctl` CLI.
+
+## Pick the tool
+
+| User asks | MCP tool | CLI |
+|---|---|---|
+| Earnings for a month, per app, for bookkeeping | `admobctl_finance_month` (then follow admobctl-finance) | `admobctl finance month YYYY-MM` |
+| Earnings over several months / year to date | `admobctl_finance_range` | `admobctl finance range --from … --to …` |
+| How is monetization doing, what underperforms, why did revenue change | `admobctl_insights` (then follow admobctl-insights) | `admobctl insights --last 30d` |
+| A specific breakdown (by country, format, date, ad unit…) | `admobctl_network_report` | `admobctl report network --from … --by …` |
+| Ad sources / mediation | `admobctl_mediation_report` | `admobctl report mediation --from … --by ad-source` |
+| Which apps / ad units exist | `admobctl_list_apps`, `admobctl_list_ad_units` | `admobctl apps list` |
+
+Refer to apps by their alias (e.g. `my-game-ios`) from `admobctl_list_apps`. Dates are `YYYY-MM` or `YYYY-MM-DD`;
+"last month" means the previous calendar month.
+
+If the MCP tools are not available, run the CLI with `-o json` and read the JSON.
+
+## Answering
+
+- Use the numbers the tools return. Do not invent figures, and say so when the data cannot answer the question.
+- All earnings are estimates. Say so whenever you report money.
+- One good call usually answers the question. If results look inconsistent, report what you saw instead of investigating at length.
+
+## Errors and setup
+
+Every error ends with `Fix: <command>`. Show the user that exact command; do not paraphrase it or invent another.
+For anything auth-related, suggest `admobctl auth doctor`, which checks credentials, scope, quota project, API access
+and account, and prints a fix for each failure. Service accounts are not supported by the AdMob API.
+
+Full command and flag reference: `references/commands.md`.

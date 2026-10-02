@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+        if: matrix.node != 20
+      - run: npm run build
+      - name: Committed bundle is up to date
+        run: git diff --exit-code dist/admobctl.mjs
+      - name: Bundle runs on this Node version
+        run: node dist/admobctl.mjs --version
+      - run: npm test
+        if: matrix.node != 20

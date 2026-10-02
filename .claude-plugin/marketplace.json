@@ -1,0 +1,12 @@
+{
+  "name": "admobctl",
+  "owner": { "name": "Stian Strange" },
+  "metadata": { "description": "admobctl: AdMob CLI, MCP server and skills for Claude Code" },
+  "plugins": [
+    {
+      "name": "admobctl",
+      "source": "./",
+      "description": "AdMob reports, monthly finance (estimates) and monetization insights via the admobctl CLI and MCP server."
+    }
+  ]
+}

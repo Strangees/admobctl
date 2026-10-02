@@ -1,0 +1,11 @@
+interface:
+  display_name: "AdMob bookkeeping"
+  short_description: "Monthly AdMob earnings and journal rows"
+  default_prompt: "Use $admobctl-finance to give me journal rows for last month's AdMob revenue."
+policy:
+  allow_implicit_invocation: true
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "admobctl"
+      description: "admobctl MCP server (bundled with this plugin)"

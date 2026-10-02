@@ -1,0 +1,114 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { insights } from "../src/core/insights.js";
+import { AdmobService } from "../src/core/service.js";
+import type { TokenProvider } from "../src/core/auth/types.js";
+import { fakeFetch, fixture, jsonResponse, noSleep, type RecordedCall } from "./helpers.js";
+
+const token: TokenProvider = { mode: "adc", getToken: async () => "t", quotaProject: () => "qp" };
+
+type Unit = { id: string; label: string; earn: number; req: number; matched: number; imp: number; clicks: number };
+
+function report(units: Unit[]) {
+  return [
+    { header: { localizationSettings: { currencyCode: "NOK" }, reportingTimeZone: "Europe/Oslo" } },
+    ...units.map((u) => ({
+      row: {
+        dimensionValues: { AD_UNIT: { value: u.id, displayLabel: u.label } },
+        metricValues: {
+          ESTIMATED_EARNINGS: { microsValue: String(u.earn) },
+          AD_REQUESTS: { integerValue: String(u.req) },
+          MATCHED_REQUESTS: { integerValue: String(u.matched) },
+          IMPRESSIONS: { integerValue: String(u.imp) },
+          CLICKS: { integerValue: String(u.clicks) },
+        },
+      },
+    })),
+    { footer: { matchingRowCount: String(units.length) } },
+  ];
+}
+
+// Current period (2026-09-02 → 2026-10-01).
+const current: Unit[] = [
+  { id: "u/1", label: "Quiz banner", earn: 60_000_000, req: 20_000, matched: 19_000, imp: 15_000, clicks: 150 },
+  { id: "u/2", label: "Quiz interstitial", earn: 30_000_000, req: 40_000, matched: 8_000, imp: 6_000, clicks: 60 }, // low fill
+  { id: "u/3", label: "Timer banner", earn: 10_000_000, req: 5_000, matched: 4_900, imp: 1_500, clicks: 5 }, // low show rate
+];
+// Previous period (2026-08-03 → 2026-09-01).
+const previous: Unit[] = [
+  { id: "u/1", label: "Quiz banner", earn: 30_000_000, req: 18_000, matched: 17_000, imp: 14_000, clicks: 120 }, // doubled since
+  { id: "u/2", label: "Quiz interstitial", earn: 31_000_000, req: 39_000, matched: 8_100, imp: 6_100, clicks: 61 },
+  { id: "u/3", label: "Timer banner", earn: 10_500_000, req: 5_100, matched: 5_000, imp: 1_600, clicks: 6 },
+];
+
+function service() {
+  const dir = mkdtempSync(join(tmpdir(), "admobctl-ins-"));
+  const f = fakeFetch({
+    "GET /v1/accounts?": () => jsonResponse(fixture("accounts.json")),
+    "GET /apps": (c) => jsonResponse(fixture(c.url.includes("pageToken=page2") ? "apps-page2.json" : "apps-page1.json")),
+    "POST /networkReport:generate": (c: RecordedCall) => {
+      const spec = (c.body as { reportSpec: { dateRange: { startDate: { month: number } } } }).reportSpec;
+      return jsonResponse(report(spec.dateRange.startDate.month === 9 ? current : previous));
+    },
+  });
+  const svc = AdmobService.create(
+    {},
+    { configDir: dir, tokenProvider: token, fetch: f.fetch, sleep: noSleep, now: () => new Date("2026-10-02T08:00:00Z") },
+  );
+  return { svc, calls: f.calls };
+}
+
+describe("insights", () => {
+  it("compares the last 30 days with the 30 days before", async () => {
+    const { svc, calls } = service();
+    const r = await insights(svc, { last: 30, by: "ad-unit" });
+    const ranges = calls
+      .filter((c) => c.url.includes("networkReport"))
+      .map((c) => (c.body as { reportSpec: { dateRange: unknown } }).reportSpec.dateRange);
+    expect(ranges).toEqual([
+      { startDate: { year: 2026, month: 9, day: 2 }, endDate: { year: 2026, month: 10, day: 1 } },
+      { startDate: { year: 2026, month: 8, day: 3 }, endDate: { year: 2026, month: 9, day: 1 } },
+    ]);
+    expect(r.from).toBe("2026-09-02");
+    expect(r.previous.from).toBe("2026-08-03");
+    expect(r.totals.earnings).toBe(100);
+    expect(r.previous.earnings).toBe(71.5);
+    expect(r.totals.change).toBeCloseTo(0.3986, 3);
+  });
+
+  it("computes per-row ratios from counts", async () => {
+    const { svc } = service();
+    const r = await insights(svc, { last: 30, by: "ad-unit" });
+    const banner = r.rows.find((x) => x.label === "Quiz banner")!;
+    expect(banner.ecpm).toBe(4); // 60 / 15000 * 1000
+    expect(banner.request_rpm).toBe(3); // 60 / 20000 * 1000
+    expect(banner.match_rate).toBeCloseTo(0.95);
+    expect(banner.show_rate).toBeCloseTo(15_000 / 19_000);
+    expect(banner.share).toBeCloseTo(0.6);
+    expect(banner.change).toBeCloseTo(1.0);
+  });
+
+  it("highlights top/bottom earners, low fill, low show rate and swings", async () => {
+    const { svc } = service();
+    const r = await insights(svc, { last: 30, by: "ad-unit" });
+    const kinds = (k: string) => r.highlights.filter((h) => h.kind === k).map((h) => h.label);
+    expect(kinds("top")[0]).toBe("Quiz banner");
+    expect(kinds("bottom")).toContain("Timer banner");
+    expect(kinds("low-fill")).toEqual(["Quiz interstitial"]);
+    expect(kinds("low-show-rate")).toEqual(["Timer banner"]);
+    expect(kinds("swing-up")).toEqual(["Quiz banner"]);
+    expect(kinds("swing-down")).toEqual([]);
+  });
+
+  it("writes a plain-language summary with the numbers behind each claim", async () => {
+    const { svc } = service();
+    const r = await insights(svc, { last: 30, by: "ad-unit" });
+    const text = r.summary.join("\n");
+    expect(text).toMatch(/100\.00 NOK/);
+    expect(text).toMatch(/\+39\.9%/);
+    expect(text).toMatch(/Quiz interstitial.*20\.0% match rate.*40000 requests/);
+    expect(text).toMatch(/estimated/i);
+  });
+});

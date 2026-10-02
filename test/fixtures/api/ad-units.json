@@ -1,0 +1,47 @@
+{
+  "adUnits": [
+    {
+      "name": "accounts/pub-0000000000000001/adUnits/9000000001",
+      "adUnitId": "ca-app-pub-0000000000000001/9000000001",
+      "appId": "ca-app-pub-0000000000000001~1111111111",
+      "displayName": "Quiz banner",
+      "adFormat": "BANNER",
+      "adTypes": [
+        "RICH_MEDIA",
+        "VIDEO"
+      ]
+    },
+    {
+      "name": "accounts/pub-0000000000000001/adUnits/9000000002",
+      "adUnitId": "ca-app-pub-0000000000000001/9000000002",
+      "appId": "ca-app-pub-0000000000000001~1111111111",
+      "displayName": "Quiz interstitial",
+      "adFormat": "INTERSTITIAL",
+      "adTypes": [
+        "RICH_MEDIA",
+        "VIDEO"
+      ]
+    },
+    {
+      "name": "accounts/pub-0000000000000001/adUnits/9000000003",
+      "adUnitId": "ca-app-pub-0000000000000001/9000000003",
+      "appId": "ca-app-pub-0000000000000001~2222222222",
+      "displayName": "Quiz banner (Android)",
+      "adFormat": "BANNER",
+      "adTypes": [
+        "RICH_MEDIA"
+      ]
+    },
+    {
+      "name": "accounts/pub-0000000000000001/adUnits/9000000004",
+      "adUnitId": "ca-app-pub-0000000000000001/9000000004",
+      "appId": "ca-app-pub-0000000000000001~3333333333",
+      "displayName": "Timer banner",
+      "adFormat": "BANNER",
+      "adTypes": [
+        "RICH_MEDIA",
+        "VIDEO"
+      ]
+    }
+  ]
+}
