@@ -63,7 +63,7 @@ async function readBody(res: Response): Promise<unknown> {
 /** What one attempt produced, once its response (including the body) has been fully read. */
 type AttemptOutcome =
   | { kind: "ok"; body: unknown }
-  | { kind: "fail"; status: number; body: unknown }
+  | { kind: "fail"; status: number; body: unknown; retryAfterMs?: number }
   | { kind: "retry"; status: number; wait: number };
 
 /**
@@ -82,16 +82,17 @@ async function attemptOnce(
   const res = await doFetch(url, init);
   if (res.ok) return { kind: "ok", body: await readBody(res) };
 
-  if (isRetryableStatus(res.status) && canRetry) {
-    const retryAfter = retryAfterMs(res);
-    if (retryAfter !== undefined && retryAfter > maxRetryAfterMs) {
-      log.debug(`HTTP ${res.status}; Retry-After ${retryAfter}ms exceeds cap ${maxRetryAfterMs}ms; not retrying`);
-      return { kind: "fail", status: res.status, body: await readBody(res) };
-    }
-    await res.body?.cancel().catch(() => {});
-    return { kind: "retry", status: res.status, wait: retryAfter ?? backoff };
+  if (!isRetryableStatus(res.status)) return { kind: "fail", status: res.status, body: await readBody(res) };
+
+  // Parsed even on the last attempt, so the diagnosed error can say how long the server asked us to wait.
+  const retryAfter = retryAfterMs(res);
+  if (!canRetry) return { kind: "fail", status: res.status, body: await readBody(res), retryAfterMs: retryAfter };
+  if (retryAfter !== undefined && retryAfter > maxRetryAfterMs) {
+    log.debug(`HTTP ${res.status}; Retry-After ${retryAfter}ms exceeds cap ${maxRetryAfterMs}ms; not retrying`);
+    return { kind: "fail", status: res.status, body: await readBody(res), retryAfterMs: retryAfter };
   }
-  return { kind: "fail", status: res.status, body: await readBody(res) };
+  await res.body?.cancel().catch(() => {});
+  return { kind: "retry", status: res.status, wait: retryAfter ?? backoff };
 }
 
 /** fetch + JSON with exponential backoff on 429/5xx and transient network errors. */
@@ -141,7 +142,9 @@ export async function requestJson<T = unknown>(url: string, init: RequestInit, o
     }
 
     if (outcome.kind === "ok") return outcome.body as T;
-    if (outcome.kind === "fail") throw diagnoseApiError(outcome.status, outcome.body);
+    if (outcome.kind === "fail") {
+      throw diagnoseApiError(outcome.status, outcome.body, { retryAfterMs: outcome.retryAfterMs });
+    }
     log.debug(`HTTP ${outcome.status}; retrying in ${outcome.wait}ms`);
     await sleep(outcome.wait);
   }

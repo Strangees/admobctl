@@ -10676,7 +10676,17 @@ function usageError(message) {
 function errorInfo(body) {
   return body.error?.details?.find((d) => d["@type"]?.endsWith("google.rpc.ErrorInfo"));
 }
-function diagnoseApiError(status, body) {
+function plural(n, unit) {
+  return `${n} ${unit}${n === 1 ? "" : "s"}`;
+}
+function formatDuration(ms) {
+  const secs = Math.max(1, Math.round(ms / 1e3));
+  if (secs < 120) return plural(secs, "second");
+  const mins = Math.round(ms / 6e4);
+  if (mins < 120) return mins % 60 === 0 ? plural(mins / 60, "hour") : plural(mins, "minute");
+  return plural(Math.round(ms / 36e5), "hour");
+}
+function diagnoseApiError(status, body, hints = {}) {
   const parsed = typeof body === "object" && body !== null ? body : {};
   const message = parsed.error?.message ?? (typeof body === "string" ? body : JSON.stringify(body));
   const info = errorInfo(parsed);
@@ -10717,7 +10727,7 @@ function diagnoseApiError(status, body) {
   if (status === 429) {
     return new AdmobctlError("RATE_LIMITED", `Rate limited by the AdMob API: ${message}`, {
       ...opts,
-      fix: "Wait a minute and retry, or narrow the report."
+      fix: hints.retryAfterMs === void 0 ? "Wait a minute and retry, or narrow the report." : `The API asked to wait: retry in about ${formatDuration(hints.retryAfterMs)}, or narrow the report.`
     });
   }
   return new AdmobctlError("API_ERROR", `AdMob API error ${status}: ${message}`, opts);
@@ -11808,17 +11818,16 @@ async function readBody(res) {
 async function attemptOnce(doFetch, url2, init, canRetry, backoff, maxRetryAfterMs) {
   const res = await doFetch(url2, init);
   if (res.ok) return { kind: "ok", body: await readBody(res) };
-  if (isRetryableStatus(res.status) && canRetry) {
-    const retryAfter = retryAfterMs(res);
-    if (retryAfter !== void 0 && retryAfter > maxRetryAfterMs) {
-      log.debug(`HTTP ${res.status}; Retry-After ${retryAfter}ms exceeds cap ${maxRetryAfterMs}ms; not retrying`);
-      return { kind: "fail", status: res.status, body: await readBody(res) };
-    }
-    await res.body?.cancel().catch(() => {
-    });
-    return { kind: "retry", status: res.status, wait: retryAfter ?? backoff };
+  if (!isRetryableStatus(res.status)) return { kind: "fail", status: res.status, body: await readBody(res) };
+  const retryAfter = retryAfterMs(res);
+  if (!canRetry) return { kind: "fail", status: res.status, body: await readBody(res), retryAfterMs: retryAfter };
+  if (retryAfter !== void 0 && retryAfter > maxRetryAfterMs) {
+    log.debug(`HTTP ${res.status}; Retry-After ${retryAfter}ms exceeds cap ${maxRetryAfterMs}ms; not retrying`);
+    return { kind: "fail", status: res.status, body: await readBody(res), retryAfterMs: retryAfter };
   }
-  return { kind: "fail", status: res.status, body: await readBody(res) };
+  await res.body?.cancel().catch(() => {
+  });
+  return { kind: "retry", status: res.status, wait: retryAfter ?? backoff };
 }
 async function requestJson(url2, init, opts = {}) {
   const doFetch = opts.fetch ?? fetch;
@@ -11862,7 +11871,9 @@ async function requestJson(url2, init, opts = {}) {
       clearTimeout(timeoutId);
     }
     if (outcome.kind === "ok") return outcome.body;
-    if (outcome.kind === "fail") throw diagnoseApiError(outcome.status, outcome.body);
+    if (outcome.kind === "fail") {
+      throw diagnoseApiError(outcome.status, outcome.body, { retryAfterMs: outcome.retryAfterMs });
+    }
     log.debug(`HTTP ${outcome.status}; retrying in ${outcome.wait}ms`);
     await sleep(outcome.wait);
   }
@@ -27103,8 +27114,8 @@ var error43 = () => {
       case "not_multiple_of":
         return `N\xFAmero inv\xE1lido: deve ser m\xFAltiplo de ${issue2.divisor}`;
       case "unrecognized_keys": {
-        const plural2 = issue2.keys.length > 1 ? "s" : "";
-        return `Chave${plural2} inv\xE1lida${plural2}: ${joinValues(issue2.keys, ", ")}`;
+        const plural3 = issue2.keys.length > 1 ? "s" : "";
+        return `Chave${plural3} inv\xE1lida${plural3}: ${joinValues(issue2.keys, ", ")}`;
       }
       case "invalid_key":
         return `Entrada inv\xE1lida n${translateOriginWithArticle(issue2.origin, "definite")}`;
@@ -27248,8 +27259,8 @@ var error44 = () => {
       case "not_multiple_of":
         return `N\xFAmero inv\xE1lido: deve ser m\xFAltiplo de ${issue2.divisor}`;
       case "unrecognized_keys": {
-        const plural2 = issue2.keys.length > 1 ? "s" : "";
-        return `Chave${plural2} inv\xE1lida${plural2}: ${joinValues(issue2.keys, ", ")}`;
+        const plural3 = issue2.keys.length > 1 ? "s" : "";
+        return `Chave${plural3} inv\xE1lida${plural3}: ${joinValues(issue2.keys, ", ")}`;
       }
       case "invalid_key":
         return `Entrada inv\xE1lida n${translateOriginWithArticle(issue2.origin, "definite")}`;
@@ -36030,7 +36041,7 @@ function containsRef(value) {
     return Object.values(sub).some(containsRef);
   });
 }
-function plural(n) {
+function plural2(n) {
   return n === 1 ? "element" : "elements";
 }
 function checkArrayGuards(arraySchema, guards) {
@@ -36069,7 +36080,7 @@ function checkArrayGuards(arraySchema, guards) {
       if (matches < minContains) {
         payload.issues.push({
           code: "custom",
-          message: `Array must contain at least ${minContains} matching ${plural(minContains)}; found ${matches}`,
+          message: `Array must contain at least ${minContains} matching ${plural2(minContains)}; found ${matches}`,
           input: items,
           continue: true
         });
@@ -36077,7 +36088,7 @@ function checkArrayGuards(arraySchema, guards) {
       if (guards.maxContains !== void 0 && matches > guards.maxContains) {
         payload.issues.push({
           code: "custom",
-          message: `Array must contain at most ${guards.maxContains} matching ${plural(guards.maxContains)}`,
+          message: `Array must contain at most ${guards.maxContains} matching ${plural2(guards.maxContains)}`,
           input: items,
           continue: true
         });

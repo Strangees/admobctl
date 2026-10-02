@@ -99,6 +99,34 @@ describe("diagnoseApiError", () => {
     expect(e.message).toContain("Account not found");
   });
 
+  it("keeps the generic rate-limit fix when no Retry-After hint is given", () => {
+    const e = diagnoseApiError(429, { error: { code: 429, message: "Quota exceeded", status: "RESOURCE_EXHAUSTED" } });
+    expect(e.code).toBe("RATE_LIMITED");
+    expect(e.message).toContain("Quota exceeded");
+    expect(e.fix).toBe("Wait a minute and retry, or narrow the report.");
+  });
+
+  it("tells the user how long to wait when the 429 carried a Retry-After", () => {
+    const body = { error: { code: 429, message: "Quota exceeded", status: "RESOURCE_EXHAUSTED" } };
+    const e = diagnoseApiError(429, body, { retryAfterMs: 3_600_000 });
+    expect(e.code).toBe("RATE_LIMITED");
+    expect(e.message).toBe("Rate limited by the AdMob API: Quota exceeded");
+    expect(e.fix).toMatch(/about 1 hour\b/);
+    expect(e.fix).not.toMatch(/a minute/);
+  });
+
+  it("formats the Retry-After wait in human-friendly units", () => {
+    const fix = (ms: number) => diagnoseApiError(429, {}, { retryAfterMs: ms }).fix;
+    expect(fix(7_000)).toMatch(/about 7 seconds\b/);
+    expect(fix(90_000)).toMatch(/about 90 seconds\b/);
+    expect(fix(0)).toMatch(/about 1 second\b/);
+    expect(fix(300_000)).toMatch(/about 5 minutes\b/);
+    expect(fix(3_599_400)).toMatch(/about 1 hour\b/); // rounds up to a whole hour
+    expect(fix(5_400_000)).toMatch(/about 90 minutes\b/);
+    expect(fix(7_200_000)).toMatch(/about 2 hours\b/);
+    expect(fix(86_400_000)).toMatch(/about 24 hours\b/);
+  });
+
   it("falls back to a generic error for unknown bodies", () => {
     const e = diagnoseApiError(500, "upstream exploded");
     expect(e).toBeInstanceOf(AdmobctlError);

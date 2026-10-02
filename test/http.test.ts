@@ -81,6 +81,7 @@ describe("requestJson", () => {
     expect(err).toBeInstanceOf(AdmobctlError);
     expect(err.code).toBe("RATE_LIMITED");
     expect(err.message).toContain("slow down");
+    expect(err.fix).toMatch(/1 hour/);
     expect(s.count()).toBe(1);
     expect(s.delays).toEqual([]);
   });
@@ -91,6 +92,7 @@ describe("requestJson", () => {
     const err = (await requestJson("https://x/y", {}, s).catch((e) => e)) as AdmobctlError;
     expect(err).toBeInstanceOf(AdmobctlError);
     expect(err.code).toBe("RATE_LIMITED");
+    expect(err.fix).toMatch(/1 hour/);
     expect(s.count()).toBe(1);
     expect(s.delays).toEqual([]);
   });
@@ -115,6 +117,17 @@ describe("requestJson", () => {
     expect(err).toBeInstanceOf(AdmobctlError);
     expect(err.code).toBe("RATE_LIMITED");
     expect(s.count()).toBe(3);
+  });
+
+  it("reflects the last Retry-After in the fix when retries run out on a 429", async () => {
+    const s = sequence(Array.from({ length: 10 }, () => jsonResponse({ error: { message: "slow down" } }, 429, { "retry-after": "30" })));
+    const err = (await requestJson("https://x/y", {}, { ...s, retries: 2 }).catch((e) => e)) as AdmobctlError;
+    expect(err).toBeInstanceOf(AdmobctlError);
+    expect(err.code).toBe("RATE_LIMITED");
+    expect(err.message).toContain("slow down");
+    expect(err.fix).toMatch(/30 seconds/);
+    expect(s.count()).toBe(3);
+    expect(s.delays).toEqual([30_000, 30_000]);
   });
 
   it("does not retry 4xx client errors", async () => {
