@@ -23,7 +23,7 @@ export interface Finding {
   message: string;
 }
 
-interface Base {
+export interface Base {
   from: string;
   to: string;
   timeZone: string;
@@ -42,7 +42,7 @@ function thinDataNotice(thin: number, total: number, what: string, also = ""): s
   return thin ? [`${thin} of ${total} ${what} had fewer than ${MIN_REQUESTS} requests${also}; treat their rates as noise, not findings.`] : [];
 }
 
-async function fetchReport(
+export async function fetchReport(
   svc: AdmobService,
   kind: StreamedReportKind,
   opts: AnalyzeRange & { by: string[]; metrics: string[]; filters?: Record<string, string[]>; currency?: string },

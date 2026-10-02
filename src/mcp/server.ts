@@ -12,6 +12,7 @@ import { log } from "../core/log.js";
 import { shownRows } from "../core/report-view.js";
 import { COMPARISONS, type AdmobService, type ReportResult, type ServiceOptions } from "../core/service.js";
 import { renderTsv } from "../output/format.js";
+import { analyzeTrend, TREND_SPLITS } from "../core/trend.js";
 import { VERSION } from "../version.js";
 
 /** ~25k tokens of JSON. Results above this are trimmed with a notice. */
@@ -578,6 +579,34 @@ export function createMcpServer(deps: McpDeps): McpServer {
     wrap(async (a: RangeArgs & { app?: string; group?: string; currency?: string }) =>
       fitRows({ ...(await analyzeWaterfall(svc(a), { ...range(a), app: a.app, group: a.group, currency: a.currency })) }) as unknown as Record<string, unknown>,
     ),
+  );
+
+  server.registerTool(
+    "admobctl_analyze_trend",
+    {
+      title: "AdMob daily trend",
+      description:
+        "Daily earnings as a series, to answer \"when did it change?\": per series the day earnings moved to a new level (`shift`: date, before and after per day, change), the average per weekday, and the first day with traffic. One series for the whole account or one app, or split by app, format, country or platform (the ten biggest). Days without traffic before a series starts are left out of the averages. Set include_days for the day-by-day rows. Earnings are estimates.",
+      inputSchema: {
+        by: z.enum(TREND_SPLITS).optional().describe("One series per app, format, country or platform. Default: total (one series)."),
+        ...appArg,
+        include_days: z.boolean().optional().describe("Also return each series' daily rows (default false)"),
+        ...rangeInput,
+        ...currencyArg,
+        ...accountArg,
+      },
+      outputSchema: analysisOutput({ by: z.string(), currency: z.string(), estimate: z.literal(true) }),
+      annotations,
+    },
+    wrap(async (a: RangeArgs & { by?: (typeof TREND_SPLITS)[number]; app?: string; include_days?: boolean; currency?: string }) => {
+      const r = await analyzeTrend(svc(a), { ...range(a), by: a.by, app: a.app, currency: a.currency, days: a.include_days === true });
+      // Daily rows sit inside each series, where fitRows cannot trim them: drop them if they do not fit.
+      if (textOf(r).length > MAX_TEXT_CHARS) {
+        for (const s of r.rows) delete s.days;
+        r.notices.push("The daily rows did not fit the context limit and were left out. Ask for a shorter range, one app, or no split.");
+      }
+      return fitRows({ ...r }) as unknown as Record<string, unknown>;
+    }),
   );
 
   return server;

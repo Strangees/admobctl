@@ -67,6 +67,7 @@ describe("mcp server", () => {
     expect(tools.map((t) => t.name).sort()).toEqual(
       [
         "admobctl_analyze_consent",
+        "admobctl_analyze_trend",
         "admobctl_analyze_versions",
         "admobctl_analyze_waterfall",
         "admobctl_campaign_report",
@@ -319,6 +320,22 @@ describe("mcp server", () => {
     expect((consent.structuredContent!.apps as Array<{ app: string }>)[0]!.app).toBe("example-quiz-ios");
     const wf = (await client.callTool({ name: "admobctl_analyze_waterfall", arguments: { group: "Interstitials" } })) as ToolResult;
     expect((wf.structuredContent!.rows as unknown[]).length).toBe(1);
+  });
+
+  it("serves the daily trend without the day rows unless asked", async () => {
+    const day = (n: number) => ({
+      row: { dimensionValues: { DATE: { value: `202609${String(n).padStart(2, "0")}` } }, metricValues: { ESTIMATED_EARNINGS: { microsValue: "1000000" }, AD_REQUESTS: { integerValue: "10" } } },
+    });
+    const { client } = await connect({
+      "POST /networkReport:generate": () => jsonResponse([{ header: { localizationSettings: { currencyCode: "NOK" } } }, day(28), day(29), day(30)]),
+    });
+    const plain = (await client.callTool({ name: "admobctl_analyze_trend", arguments: { last_days: 7 } })) as ToolResult;
+    expect(plain.isError, plain.content[0]!.text).toBeFalsy();
+    const series = (plain.structuredContent!.rows as Array<Record<string, unknown>>)[0]!;
+    expect(series).toMatchObject({ label: "All apps", earnings: 3, first_active: "2026-09-28" });
+    expect(series.days).toBeUndefined();
+    const withDays = (await client.callTool({ name: "admobctl_analyze_trend", arguments: { last_days: 7, include_days: true } })) as ToolResult;
+    expect(((withDays.structuredContent!.rows as Array<{ days: unknown[] }>)[0]!.days).length).toBe(4);
   });
 
   it("serves the v1beta reads and reports allowlisting problems as tool errors", async () => {

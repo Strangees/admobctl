@@ -11,6 +11,7 @@ import { formatMicros } from "../core/money.js";
 import { shownRows, type ViewRow } from "../core/report-view.js";
 import type { AdapterView, AdUnitMappingView, AdUnitView, MediationGroupView, ReportResult } from "../core/service.js";
 import { API_BASE_BETA, type AdSource } from "../core/client.js";
+import type { TrendResult } from "../core/trend.js";
 import type { WritePlan } from "../core/write.js";
 import type { Column, Output } from "../output/format.js";
 
@@ -541,5 +542,56 @@ export function checkView(r: CheckResult): Output {
       footer: r.total ? [{ ...row(r.total), app: "All apps" }] : undefined,
     },
     notes: [...r.summary, ...r.notices],
+  };
+}
+
+export function trendView(r: TrendResult): Output {
+  const notes = [...r.summary, ...r.notices];
+  const only = r.rows.length === 1 ? r.rows[0] : undefined;
+  // One series: its days. Several: one line per series.
+  if (only?.days) {
+    return {
+      data: r,
+      table: {
+        columns: [
+          { key: "date", label: "Date" },
+          { key: "weekday", label: "Day" },
+          { key: "earnings", label: `Earnings (${r.currency})`, align: "right" },
+          { key: "requests", label: "Requests", align: "right" },
+          { key: "match_rate", label: "Match", align: "right" },
+          { key: "show_rate", label: "Show", align: "right" },
+          { key: "ecpm", label: "eCPM", align: "right" },
+        ],
+        rows: only.days.map((d) => ({
+          ...d,
+          earnings: formatMicros(d.earnings_micros),
+          match_rate: formatPercent(d.match_rate),
+          show_rate: formatPercent(d.show_rate),
+          ecpm: d.ecpm.toFixed(2),
+        })),
+        footer: [{ date: "Total", earnings: formatMicros(only.earnings_micros) }],
+      },
+      notes,
+    };
+  }
+  return {
+    data: r,
+    table: {
+      columns: [
+        { key: "label", label: titleCase(r.by) },
+        { key: "earnings", label: `Earnings (${r.currency})`, align: "right" },
+        { key: "average_per_day", label: "Per day", align: "right" },
+        { key: "first_active", label: "First traffic" },
+        { key: "shift", label: "Level change" },
+      ],
+      rows: r.rows.map((s) => ({
+        label: s.label,
+        earnings: formatMicros(s.earnings_micros),
+        average_per_day: s.average_per_day.toFixed(2),
+        first_active: s.first_active ?? "",
+        shift: s.shift ? `${signedPercent(s.shift.change)} around ${s.shift.date}` : "",
+      })),
+    },
+    notes,
   };
 }
