@@ -136,6 +136,27 @@ A health check for cron or a scheduled agent. Compares the window (complete days
 - An app with a baseline but no requests in the window is a breach ("sent no ad requests").
 - Defaults can be saved: `admobctl config set check.<key> <n>` with key window, baseline, drop or minRequests.
 
+## Lint
+
+```bash
+admobctl lint [--app <alias>] [--last 30d | --from … --to …]
+```
+
+Checks the setup by joining apps, ad units and mediation groups with traffic. `findings` have `kind`, `severity`,
+`target`, `app` and `message`; `problems` counts the problems, and the command **exits 1** when there is one.
+
+| Kind | Severity | Meaning |
+|---|---|---|
+| `app-action-required` | problem | The app needs the publisher's attention in AdMob review |
+| `missing-ad-unit` | problem | An enabled mediation group targets an ad unit that is not in the account |
+| `no-enabled-lines` | problem | An enabled mediation group has no enabled line |
+| `app-in-review` | note | The app is still in AdMob review |
+| `unused-ad-unit` | note | The ad unit sent no ad requests in the period |
+| `ungrouped-ad-unit` | note | The ad unit is in no enabled mediation group (only reported when the account has groups) |
+
+Mediation checks need AdMob API v1beta; without access they are skipped with a notice and `checked.mediation_groups`
+is null.
+
 ## Analyze
 
 ```bash
@@ -165,7 +186,7 @@ admobctl analyze trend     [--by total|app|format|country|platform] [--app <alia
 
 admobctl_list_accounts, admobctl_list_apps, admobctl_list_ad_units, admobctl_network_report,
 admobctl_mediation_report, admobctl_finance_month, admobctl_finance_range, admobctl_finance_export, admobctl_finance_forecast,
-admobctl_insights, admobctl_check,
+admobctl_insights, admobctl_check, admobctl_lint,
 admobctl_analyze_versions, admobctl_analyze_consent, admobctl_analyze_waterfall, admobctl_analyze_trend (`include_days` for the daily rows), admobctl_campaign_report,
 admobctl_list_ad_sources, admobctl_list_adapters (`ad_source`), admobctl_list_mediation_groups,
 admobctl_list_ad_unit_mappings (`ad_unit`), admobctl_check_app_ads.

@@ -6,6 +6,7 @@ import type { Check } from "../core/auth/doctor.js";
 import type { CheckResult, CheckRow } from "../core/check.js";
 import { JOURNAL_COLUMNS, type FinanceForecast, type FinanceMonth, type FinanceRange, type JournalRow } from "../core/finance.js";
 import type { InsightsResult } from "../core/insights.js";
+import type { LintResult } from "../core/lint.js";
 import type { PublisherAccount } from "../core/client.js";
 import { formatMicros } from "../core/money.js";
 import { shownRows, type ViewRow } from "../core/report-view.js";
@@ -593,5 +594,21 @@ export function trendView(r: TrendResult): Output {
       })),
     },
     notes,
+  };
+}
+
+export function lintView(r: LintResult): Output {
+  return {
+    data: r,
+    table: {
+      columns: [
+        { key: "severity", label: "Severity" },
+        { key: "kind", label: "Finding" },
+        { key: "target", label: "Target" },
+        { key: "message", label: "Detail" },
+      ],
+      rows: r.findings as unknown as Array<Record<string, unknown>>,
+    },
+    notes: [...r.summary, `Traffic checked ${r.from} → ${r.to}.`, ...r.notices],
   };
 }

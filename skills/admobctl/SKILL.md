@@ -16,6 +16,7 @@ Read-only access to the user's AdMob account through the `admobctl` MCP tools (p
 | How is this month pacing, where will it end | `admobctl_finance_forecast` | `admobctl finance forecast` |
 | A file for an accounting import (Revenue Journal JSON/CSV) | `admobctl_finance_export` | `admobctl finance export --month YYYY-MM` |
 | Is everything OK, did revenue or fill drop since yesterday | `admobctl_check` | `admobctl check` (exits 1 on a drop) |
+| Is the setup sound: unused ad units, broken mediation groups, apps needing action | `admobctl_lint` | `admobctl lint` (exits 1 on a problem) |
 | How is monetization doing, what underperforms, why did revenue change | `admobctl_insights` (then follow admobctl-insights) | `admobctl insights --last 30d` |
 | A specific breakdown (by country, format, date, ad unit…) | `admobctl_network_report` | `admobctl report network --from … --by …` |
 | Ad sources / mediation | `admobctl_mediation_report` | `admobctl report mediation --from … --by ad-source` |

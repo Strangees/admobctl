@@ -8,6 +8,7 @@ import { AdmobctlError } from "../core/errors.js";
 import { financeForecast, financeMonth, financeRange, JOURNAL_COLUMNS, journalRows } from "../core/finance.js";
 import { exportJournal } from "../core/journal.js";
 import { INSIGHT_DIMENSIONS, insights } from "../core/insights.js";
+import { lint } from "../core/lint.js";
 import { log } from "../core/log.js";
 import { shownRows } from "../core/report-view.js";
 import { COMPARISONS, type AdmobService, type ReportResult, type ServiceOptions } from "../core/service.js";
@@ -579,6 +580,19 @@ export function createMcpServer(deps: McpDeps): McpServer {
     wrap(async (a: RangeArgs & { app?: string; group?: string; currency?: string }) =>
       fitRows({ ...(await analyzeWaterfall(svc(a), { ...range(a), app: a.app, group: a.group, currency: a.currency })) }) as unknown as Record<string, unknown>,
     ),
+  );
+
+  server.registerTool(
+    "admobctl_lint",
+    {
+      title: "Lint the AdMob setup",
+      description:
+        "Check the account's setup for things that are broken or unused. Problems (they limit or stop ad serving): apps marked action required, enabled mediation groups that target an ad unit that does not exist or have no enabled line. Notes (worth a look, often intentional): apps in review, ad units with no ad requests in the period, ad units in no enabled mediation group. `problems` counts the problems; each finding has a kind, severity, target and message. Mediation checks are skipped with a notice when the account cannot read mediation groups (AdMob API v1beta).",
+      inputSchema: { ...appArg, ...rangeInput, ...accountArg },
+      outputSchema: loose({ from: z.string(), to: z.string(), checked: anyRecord, problems: z.number(), findings: z.array(anyRecord), summary: z.array(z.string()), notices: z.array(z.string()) }),
+      annotations,
+    },
+    wrap(async (a: RangeArgs & { app?: string }) => ({ ...(await lint(svc(a), { ...range(a), app: a.app })) })),
   );
 
   server.registerTool(

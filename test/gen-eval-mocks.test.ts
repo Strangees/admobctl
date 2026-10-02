@@ -120,6 +120,7 @@ it.skipIf(!process.env.GEN_MOCKS)("generate eval mocks", async () => {
     admobctl_finance_forecast: {},
     admobctl_insights: { last_days: 30, by: "ad-unit" },
     admobctl_check: {},
+    admobctl_lint: {},
     admobctl_analyze_versions: { by: "sdk", last_days: 30 },
     admobctl_analyze_consent: { last_days: 30 },
     admobctl_analyze_waterfall: { last_days: 30 },
