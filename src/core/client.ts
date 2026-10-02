@@ -118,8 +118,9 @@ export class AdmobClient {
     path: string,
     body?: unknown,
     version: ApiVersion = "v1",
+    http: Pick<HttpOptions, "retries"> = {},
   ): Promise<T> {
-    await (this.opts.limiters ?? processLimiters)[quota].take(this.opts.sleep);
+    const limiter = (this.opts.limiters ?? processLimiters)[quota];
     const headers: Record<string, string> = {
       authorization: `Bearer ${await this.opts.getToken()}`,
       accept: "application/json",
@@ -128,7 +129,12 @@ export class AdmobClient {
     if (body !== undefined) headers["content-type"] = "application/json";
     const base = version === "v1" ? (this.opts.baseUrl ?? API_BASE) : (this.opts.betaBaseUrl ?? API_BASE_BETA);
     try {
-      return await requestJson<T>(`${base}/${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) }, this.opts);
+      return await requestJson<T>(
+        `${base}/${path}`,
+        { method, headers, body: body === undefined ? undefined : JSON.stringify(body) },
+        // Every attempt, retries included, takes a rate-limiter slot.
+        { ...this.opts, ...http, beforeAttempt: () => limiter.take(this.opts.sleep) },
+      );
     } catch (err) {
       throw version === "v1beta" ? betaError(err, path, method) : err;
     }
@@ -203,8 +209,16 @@ export class AdmobClient {
   async write<T = unknown>(method: "POST" | "PATCH", path: string, body: unknown, query?: Record<string, string>): Promise<T> {
     const qs = query && Object.keys(query).length ? `?${new URLSearchParams(query)}` : "";
     try {
-      return await this.request<T>("inventory", method, `${path}${qs}`, body, "v1beta");
+      // Writes are not idempotent (creates, new "-1" lines): a retry after a timeout or 5xx could apply them twice.
+      return await this.request<T>("inventory", method, `${path}${qs}`, body, "v1beta", { retries: 0 });
     } catch (err) {
+      if (err instanceof AdmobctlError && (err.status === undefined || err.status >= 500)) {
+        throw new AdmobctlError(err.code, `${err.message} The change may have been applied anyway.`, {
+          status: err.status,
+          cause: err,
+          fix: "Check with admobctl (e.g. apps list, ad-units list, mediation-groups show) before retrying, so it is not applied twice.",
+        });
+      }
       if (err instanceof AdmobctlError && err.code === "AUTH_SCOPE_MISSING") {
         throw new AdmobctlError("AUTH_SCOPE_MISSING", "Write commands need the admob.monetization scope, which your credentials do not include.", {
           status: err.status,

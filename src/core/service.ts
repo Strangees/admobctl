@@ -54,6 +54,9 @@ export const DEFAULT_METRICS: Record<ReportKind, string[]> = {
   campaign: ["IMPRESSIONS", "CLICKS", "CLICK_THROUGH_RATE", "INSTALLS", "ESTIMATED_COST", "AVERAGE_CPI"],
 };
 
+/** The reports served by v1 networkReport/mediationReport:generate (campaign reports have their own method). */
+export type StreamedReportKind = Exclude<ReportKind, "campaign">;
+
 /** campaignReport:generate accepts at most 30 days per request. */
 export const CAMPAIGN_MAX_DAYS = 30;
 
@@ -163,10 +166,8 @@ export interface ReportResult {
  * Everything user-facing is resolved here: profile, auth, account, aliases.
  */
 export class AdmobService {
-  private accountPromise?: Promise<PublisherAccount>;
-  private appsPromise?: Promise<AppRef[]>;
-  private adUnitsPromise?: Promise<AdUnit[]>;
-  private adSourcesPromise?: Promise<AdSource[]>;
+  /** In-flight or settled lookups (account, apps, ad units, ad sources), shared by every caller. */
+  private readonly cache = new Map<string, Promise<unknown>>();
 
   private constructor(
     readonly profile: ResolvedProfile,
@@ -200,10 +201,24 @@ export class AdmobService {
     return this.client.listAccounts();
   }
 
+  /**
+   * Memoize a lookup for the life of the service. A failure is forgotten, so the next call retries
+   * (the service may be long-lived in the MCP server).
+   */
+  private memo<T>(key: string, load: () => Promise<T>): Promise<T> {
+    const hit = this.cache.get(key);
+    if (hit) return hit as Promise<T>;
+    const p = load();
+    this.cache.set(key, p);
+    p.catch(() => {
+      if (this.cache.get(key) === p) this.cache.delete(key);
+    });
+    return p;
+  }
+
   /** The active publisher account: --account, then profile, then the only accessible one. */
   account(): Promise<PublisherAccount> {
-    if (this.accountPromise) return this.accountPromise;
-    const p = (async () => {
+    return this.memo("account", async () => {
       const accounts = await this.client.listAccounts();
       const ids = accounts.map((a) => a.publisherId).join(", ") || "(none)";
       const wanted = this.accountOverride?.replace(/^accounts\//, "");
@@ -221,26 +236,11 @@ export class AdmobService {
       throw new AdmobctlError("USAGE", `Several AdMob accounts are accessible (${ids}). Pick one.`, {
         fix: "admobctl config set account <pub-…>  (or pass --account)",
       });
-    })();
-    this.accountPromise = p;
-    // Forget a failure so the next call retries (the service may be long-lived in the MCP server).
-    p.catch(() => {
-      if (this.accountPromise === p) this.accountPromise = undefined;
     });
-    return p;
   }
 
   apps(): Promise<AppRef[]> {
-    if (this.appsPromise) return this.appsPromise;
-    const p = (async () => {
-      const acct = await this.account();
-      return buildAppIndex(await this.client.listApps(acct.name), this.profile.aliases);
-    })();
-    this.appsPromise = p;
-    p.catch(() => {
-      if (this.appsPromise === p) this.appsPromise = undefined;
-    });
-    return p;
+    return this.memo("apps", async () => buildAppIndex(await this.client.listApps((await this.account()).name), this.profile.aliases));
   }
 
   async resolveApp(input: string): Promise<AppRef> {
@@ -248,13 +248,7 @@ export class AdmobService {
   }
 
   private rawAdUnits(): Promise<AdUnit[]> {
-    if (this.adUnitsPromise) return this.adUnitsPromise;
-    const p = (async () => this.client.listAdUnits((await this.account()).name))();
-    this.adUnitsPromise = p;
-    p.catch(() => {
-      if (this.adUnitsPromise === p) this.adUnitsPromise = undefined;
-    });
-    return p;
+    return this.memo("adUnits", async () => this.client.listAdUnits((await this.account()).name));
   }
 
   async adUnits(opts: { app?: string } = {}): Promise<AdUnitView[]> {
@@ -288,13 +282,7 @@ export class AdmobService {
   // ── v1beta reads ──────────────────────────────────────────────────
 
   adSources(): Promise<AdSource[]> {
-    if (this.adSourcesPromise) return this.adSourcesPromise;
-    const p = (async () => this.client.listAdSources((await this.account()).name))();
-    this.adSourcesPromise = p;
-    p.catch(() => {
-      if (this.adSourcesPromise === p) this.adSourcesPromise = undefined;
-    });
-    return p;
+    return this.memo("adSources", async () => this.client.listAdSources((await this.account()).name));
   }
 
   /** Resolve an ad source by ID or title (case-insensitive). */
@@ -328,7 +316,8 @@ export class AdmobService {
     const parts: string[] = [];
     if (f.app) parts.push(`CONTAINS_ANY(APP_IDS, ${filterValue((await this.resolveApp(f.app)).appId)})`);
     if (f.adSource) parts.push(`CONTAINS_ANY(AD_SOURCE_IDS, ${filterValue((await this.resolveAdSource(f.adSource)).adSourceId)})`);
-    if (f.format) parts.push(`IN(FORMAT, ${filterValue(f.format.toUpperCase())})`);
+    // "rewarded-interstitial" → REWARDED_INTERSTITIAL, the API's enum name.
+    if (f.format) parts.push(`IN(FORMAT, ${filterValue(f.format.trim().toUpperCase().replace(/-/g, "_"))})`);
     if (f.platform) parts.push(`IN(PLATFORM, ${filterValue(f.platform.toUpperCase())})`);
     if (f.state) parts.push(`IN(STATE, ${filterValue(f.state.toUpperCase())})`);
     const acct = await this.account();
@@ -461,7 +450,7 @@ export class AdmobService {
 
   /** Raw report access for finance/insights, which need exact micros per row. */
   async rawReport(
-    kind: ReportKind,
+    kind: StreamedReportKind,
     q: ReportQuery,
   ): Promise<{ report: Report; dimensions: string[]; metrics: string[]; range: DateRange; notices: string[] }> {
     const range = q.dateRange ?? dateRangeFromArgs(q.from ?? "", q.to ?? q.from ?? "");
@@ -479,7 +468,6 @@ export class AdmobService {
     const filters = await this.resolveFilters(kind, q.filters ?? {});
     const spec = buildReportSpec(kind, { dateRange: range, dimensions, metrics, filters, maxRows: q.maxRows, currency: q.currency });
     const acct = await this.account();
-    if (kind === "campaign") throw usageError("Use campaignReport() for campaign reports.");
     const report =
       kind === "network" ? await this.client.networkReport(acct.name, spec) : await this.client.mediationReport(acct.name, spec);
     notices.push(...freshnessNotices(kind, range, todayIn(acct.reportingTimeZone, this.now())));
@@ -495,7 +483,7 @@ export class AdmobService {
     return out;
   }
 
-  private async report(kind: ReportKind, q: ReportQuery): Promise<ReportResult> {
+  private async report(kind: StreamedReportKind, q: ReportQuery): Promise<ReportResult> {
     const { report, dimensions, metrics, range, notices } = await this.rawReport(kind, q);
     const needsApps = dimensions.includes("APP");
     const apps = needsApps ? await this.apps() : [];

@@ -15,6 +15,8 @@ export interface HttpOptions {
    * than silently sleeping. A value exactly equal to the cap is still honoured. Default 60s.
    */
   maxRetryAfterMs?: number;
+  /** Awaited before every attempt, retries included (e.g. to take a rate-limiter slot). */
+  beforeAttempt?: () => Promise<void>;
 }
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
@@ -105,6 +107,7 @@ export async function requestJson<T = unknown>(url: string, init: RequestInit, o
   const maxRetryAfterMs = opts.maxRetryAfterMs ?? DEFAULT_MAX_RETRY_AFTER_MS;
 
   for (let attempt = 0; ; attempt++) {
+    await opts.beforeAttempt?.();
     const backoff = base * 2 ** attempt + Math.floor(Math.random() * base * 0.25);
     const timer = new AbortController();
     const timeoutId = setTimeout(

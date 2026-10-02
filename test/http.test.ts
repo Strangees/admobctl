@@ -204,3 +204,13 @@ describe("requestJson", () => {
     expect(h.count()).toBe(1);
   });
 });
+
+describe("requestJson beforeAttempt", () => {
+  it("runs before every attempt, retries included, so a rate limiter sees each request", async () => {
+    const s = sequence([jsonResponse({}, 503), jsonResponse({}, 429), jsonResponse({ ok: true })]);
+    let calls = 0;
+    const r = await requestJson("https://x.test/a", {}, { fetch: s.fetch, sleep: s.sleep, beforeAttempt: async () => void calls++ });
+    expect(r).toEqual({ ok: true });
+    expect(calls).toBe(3);
+  });
+});

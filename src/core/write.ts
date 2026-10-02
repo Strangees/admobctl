@@ -1,6 +1,7 @@
-import { appendAudit } from "./audit.js";
+import { appendAudit, type AuditEntry } from "./audit.js";
 import type { AdUnit, MediationGroupLine } from "./client.js";
 import { AdmobctlError, usageError } from "./errors.js";
+import { log } from "./log.js";
 import { formatMicros } from "./money.js";
 import type { AdapterView, AdmobService, MediationGroupView, MediationLineView } from "./service.js";
 
@@ -391,13 +392,24 @@ export async function applyPlan(svc: AdmobService, plan: WritePlan): Promise<unk
     ...(plan.query ? { query: plan.query } : {}),
     body: plan.body,
   };
+  let result: unknown;
   try {
-    const result = await svc.client.write(plan.method, plan.path, plan.body, plan.query);
-    const name = (result as { name?: unknown } | undefined)?.name;
-    appendAudit(svc.configDir, { ...entry, ok: true, ...(typeof name === "string" ? { result: name } : {}) });
-    return result;
+    result = await svc.client.write(plan.method, plan.path, plan.body, plan.query);
   } catch (err) {
-    appendAudit(svc.configDir, { ...entry, ok: false, error: err instanceof AdmobctlError ? err.code : String(err) });
+    audit(svc, { ...entry, ok: false, error: err instanceof AdmobctlError ? err.code : String(err) });
     throw err;
+  }
+  // Recorded after the write, outside its try: an audit failure must never make an applied change look failed.
+  const name = (result as { name?: unknown } | undefined)?.name;
+  audit(svc, { ...entry, ok: true, ...(typeof name === "string" ? { result: name } : {}) });
+  return result;
+}
+
+/** Best effort: a full disk or unwritable config dir is reported, not thrown. */
+function audit(svc: AdmobService, e: AuditEntry): void {
+  try {
+    appendAudit(svc.configDir, e);
+  } catch (err) {
+    log.warn(`Could not write the audit log in ${svc.configDir}: ${(err as Error).message}`);
   }
 }
