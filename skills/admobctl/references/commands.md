@@ -130,11 +130,13 @@ admobctl analyze waterfall [--app <alias>] [--group <name|id>] [--currency X] [-
 ## MCP tools (`admobctl mcp`)
 
 admobctl_list_accounts, admobctl_list_apps, admobctl_list_ad_units, admobctl_network_report,
-admobctl_mediation_report, admobctl_finance_month, admobctl_finance_range, admobctl_insights,
+admobctl_mediation_report, admobctl_finance_month, admobctl_finance_range, admobctl_finance_export, admobctl_insights,
 admobctl_analyze_versions, admobctl_analyze_consent, admobctl_analyze_waterfall, admobctl_campaign_report,
 admobctl_list_ad_sources, admobctl_list_adapters (`ad_source`), admobctl_list_mediation_groups,
-admobctl_list_ad_unit_mappings (`ad_unit`).
+admobctl_list_ad_unit_mappings (`ad_unit`), admobctl_check_app_ads.
 They take the same arguments as the CLI, in snake_case: `max_rows`, `include_journal`, `last_days`.
+`admobctl_finance_export` takes `month` or `from`+`to`, `as` (`json` or `csv`), `integer_amounts`, `scale`, and returns
+the file as `content`.
 Reports default to 200 rows.
 
 ## Write commands (v1beta; CLI only)
