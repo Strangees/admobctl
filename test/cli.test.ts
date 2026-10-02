@@ -88,6 +88,18 @@ describe("cli", () => {
     expect(r.code).toBe(0);
   });
 
+  it("auth status reports the account other commands use (--account beats the profile)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "admobctl-cli-"));
+    expect((await cli(["config", "set", "account", "pub-A"], { dir })).code).toBe(0);
+    const fromProfile = await cli(["auth", "status", "-o", "json"], { dir });
+    expect(fromProfile.code, fromProfile.stderr).toBe(0);
+    expect(JSON.parse(fromProfile.stdout).account).toBe("pub-A");
+    const overridden = await cli(["--account", "pub-B", "auth", "status", "-o", "json"], { dir });
+    expect(overridden.code, overridden.stderr).toBe(0);
+    expect(JSON.parse(overridden.stdout).account).toBe("pub-B");
+    expect(overridden.calls.some((c) => c.url.includes("/v1/accounts"))).toBe(false);
+  });
+
   it("sets and reads config values", async () => {
     const dir = mkdtempSync(join(tmpdir(), "admobctl-cli-"));
     expect((await cli(["config", "set", "finance.revenueAccount", "3100"], { dir })).code).toBe(0);

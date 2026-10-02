@@ -128,7 +128,7 @@ export function buildProgram(io: CliIO): Command {
         profile: s.profile.name,
         mode: s.tokenProvider.mode,
         quotaProject: s.profile.quotaProject ?? s.tokenProvider.quotaProject() ?? null,
-        account: s.profile.account ?? g(cmd).account ?? "(auto)",
+        account: s.configuredAccount ?? "(auto)",
       };
       try {
         const ti = await fetchTokenInfo(await s.tokenProvider.getToken(), io.service?.fetch);

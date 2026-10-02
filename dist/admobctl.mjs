@@ -12189,6 +12189,10 @@ var AdmobService = class _AdmobService {
     });
     return new _AdmobService(profile, client, tokenProvider, opts.account ?? profile.account, deps.now ?? (() => /* @__PURE__ */ new Date()));
   }
+  /** The account that will be used (--account, then profile), without calling the API. Undefined means auto-detect. */
+  get configuredAccount() {
+    return this.accountOverride;
+  }
   listAccounts() {
     return this.client.listAccounts();
   }
@@ -42136,7 +42140,7 @@ function buildProgram(io) {
       profile: s.profile.name,
       mode: s.tokenProvider.mode,
       quotaProject: s.profile.quotaProject ?? s.tokenProvider.quotaProject() ?? null,
-      account: s.profile.account ?? g(cmd).account ?? "(auto)"
+      account: s.configuredAccount ?? "(auto)"
     };
     try {
       const ti = await fetchTokenInfo(await s.tokenProvider.getToken(), io.service?.fetch);

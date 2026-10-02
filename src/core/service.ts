@@ -98,6 +98,11 @@ export class AdmobService {
     return new AdmobService(profile, client, tokenProvider, opts.account ?? profile.account, deps.now ?? (() => new Date()));
   }
 
+  /** The account that will be used (--account, then profile), without calling the API. Undefined means auto-detect. */
+  get configuredAccount(): string | undefined {
+    return this.accountOverride;
+  }
+
   listAccounts(): Promise<PublisherAccount[]> {
     return this.client.listAccounts();
   }
