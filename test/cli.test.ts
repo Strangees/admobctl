@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -178,6 +178,75 @@ describe("cli", () => {
   it("prints a finance range by month", async () => {
     const r = await cli(["finance", "range", "--from", "2026-07", "--to", "2026-09", "-o", "csv"]);
     expect(r.stdout).toBe("Month,Earnings (NOK),Complete\n2026-07,65.00,yes\n2026-08,78.08,yes\n2026-09,102.45,yes\n");
+  });
+
+  describe("finance export (Revenue Journal)", () => {
+    type Doc = { format: string; amounts?: unknown; vouchers: Array<{ voucher_id: string; lines: Array<Record<string, unknown>> }> };
+
+    it("writes a month as a Revenue Journal JSON document with decimal amounts by default", async () => {
+      const r = await cli(["finance", "export", "--month", "2026-09"]);
+      expect(r.code, r.stderr).toBe(0);
+      const doc = JSON.parse(r.stdout) as Doc;
+      expect(doc.format).toBe("revenue-journal/1");
+      expect(doc.amounts).toBeUndefined();
+      expect(doc.vouchers.map((v) => v.voucher_id)).toEqual(["admob:pub-0000000000000001:accrual:2026-09"]);
+      expect(doc.vouchers[0]!.lines[0]).toMatchObject({ role: "earnings_receivable", debit: "102.45" });
+      expect(r.stderr).toMatch(/reconcile against AdMob Payments/);
+    });
+
+    it("writes integer amounts with --integer-amounts, at scale 2 unless --scale says otherwise", async () => {
+      const two = JSON.parse((await cli(["finance", "export", "--month", "2026-09", "--integer-amounts"])).stdout) as Doc;
+      expect(two.amounts).toEqual({ encoding: "integer", scale: 2 });
+      expect(two.vouchers[0]!.lines[0]!.debit).toBe(10245);
+      const six = JSON.parse((await cli(["finance", "export", "--month", "2026-09", "--integer-amounts", "--scale", "6"])).stdout) as Doc;
+      expect(six.vouchers[0]!.lines[0]!.debit).toBe(102_450_000);
+    });
+
+    it("writes a range as CSV, one voucher per month", async () => {
+      const r = await cli(["finance", "export", "--from", "2026-07", "--to", "2026-09", "--as", "revenue-journal-csv"]);
+      expect(r.code, r.stderr).toBe(0);
+      const rows = r.stdout.trim().split("\n");
+      expect(rows[0]).toMatch(/^format,voucher_id,kind,date,/);
+      const ids = new Set(rows.slice(1).map((row) => row.split(",")[1]));
+      expect([...ids]).toEqual([
+        "admob:pub-0000000000000001:accrual:2026-07",
+        "admob:pub-0000000000000001:accrual:2026-08",
+        "admob:pub-0000000000000001:accrual:2026-09",
+      ]);
+    });
+
+    it("uses account numbers only when configured", async () => {
+      const plain = JSON.parse((await cli(["finance", "export", "--month", "2026-09"])).stdout) as Doc;
+      expect(plain.vouchers[0]!.lines[1]).not.toHaveProperty("account");
+      const dir = mkdtempSync(join(tmpdir(), "admobctl-cli-"));
+      await cli(["config", "set", "finance.revenueAccount", "3125"], { dir });
+      const configured = JSON.parse((await cli(["finance", "export", "--month", "2026-09"], { dir })).stdout) as Doc;
+      expect(configured.vouchers[0]!.lines[1]).toMatchObject({ role: "revenue", account: "3125" });
+      expect(configured.vouchers[0]!.lines[0]).not.toHaveProperty("account");
+    });
+
+    it("writes to --out instead of stdout, readable only by the user", async () => {
+      const out = join(mkdtempSync(join(tmpdir(), "admobctl-cli-")), "sept.rj.json");
+      const r = await cli(["finance", "export", "--month", "2026-09", "--out", out]);
+      expect(r.code, r.stderr).toBe(0);
+      expect(r.stdout).toBe("");
+      expect((JSON.parse(readFileSync(out, "utf8")) as Doc).format).toBe("revenue-journal/1");
+      expect(statSync(out).mode & 0o777).toBe(0o600);
+      expect(r.stderr).toContain(out);
+    });
+
+    it.each([
+      [["--month", "2026-09", "--as", "tripletex"], /Unknown export format.*tripletex.*revenue-journal-json, revenue-journal-csv/],
+      [["--month", "2026-09", "--as", "revenue-journal-csv", "--integer-amounts"], /--integer-amounts.*JSON/],
+      [["--month", "2026-09", "--scale", "6"], /--scale needs --integer-amounts/],
+      [[], /--month YYYY-MM or --from YYYY-MM --to YYYY-MM/],
+      [["--month", "2026-09", "--from", "2026-07", "--to", "2026-09"], /either --month or --from\/--to/],
+      [["--from", "2026-07"], /--from and --to/],
+    ])("rejects %j with a usage error", async (args, message) => {
+      const r = await cli(["finance", "export", ...args]);
+      expect(r.code).toBe(2);
+      expect(r.stderr).toMatch(message);
+    });
   });
 
   it("runs insights with --last", async () => {

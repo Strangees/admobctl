@@ -1,0 +1,197 @@
+{
+  "format": "revenue-journal/1",
+  "fixtures": [
+    {
+      "file": "valid/minimal.json",
+      "valid": true,
+      "rule": null,
+      "note": "One voucher, two lines, required fields only"
+    },
+    {
+      "file": "valid/empty.json",
+      "valid": true,
+      "rule": null,
+      "note": "A document with no vouchers"
+    },
+    {
+      "file": "valid/all-fields.json",
+      "valid": true,
+      "rule": null,
+      "note": "Every field in use, two vouchers"
+    },
+    {
+      "file": "valid/extensions.json",
+      "valid": true,
+      "rule": null,
+      "note": "Custom x- role, unknown fields, amounts with 0 and 4 fraction digits"
+    },
+    {
+      "file": "invalid/wrong-format.json",
+      "valid": false,
+      "rule": "RJ-SCHEMA",
+      "note": "format is not revenue-journal/1"
+    },
+    {
+      "file": "invalid/unbalanced.json",
+      "valid": false,
+      "rule": "RJ-BALANCE",
+      "note": "Debits 10.00, credits 9.99"
+    },
+    {
+      "file": "invalid/both-sides.json",
+      "valid": false,
+      "rule": "RJ-ONE-SIDE",
+      "note": "A line with both debit and credit"
+    },
+    {
+      "file": "invalid/no-side.json",
+      "valid": false,
+      "rule": "RJ-ONE-SIDE",
+      "note": "A line with neither debit nor credit"
+    },
+    {
+      "file": "invalid/zero-amount.json",
+      "valid": false,
+      "rule": "RJ-POSITIVE",
+      "note": "A zero amount"
+    },
+    {
+      "file": "invalid/negative-amount.json",
+      "valid": false,
+      "rule": "RJ-AMOUNT",
+      "note": "A signed amount"
+    },
+    {
+      "file": "invalid/number-amount.json",
+      "valid": false,
+      "rule": "RJ-AMOUNT",
+      "note": "An amount written as a JSON number"
+    },
+    {
+      "file": "invalid/thousands-separator.json",
+      "valid": false,
+      "rule": "RJ-AMOUNT",
+      "note": "An amount with a thousands separator"
+    },
+    {
+      "file": "invalid/too-many-decimals.json",
+      "valid": false,
+      "rule": "RJ-AMOUNT",
+      "note": "Five fraction digits"
+    },
+    {
+      "file": "invalid/duplicate-id.json",
+      "valid": false,
+      "rule": "RJ-UNIQUE-ID",
+      "note": "Two vouchers with the same voucher_id"
+    },
+    {
+      "file": "invalid/line-gap.json",
+      "valid": false,
+      "rule": "RJ-LINES",
+      "note": "Lines numbered 1 and 3"
+    },
+    {
+      "file": "invalid/one-line.json",
+      "valid": false,
+      "rule": "RJ-LINES",
+      "note": "A voucher with a single line"
+    },
+    {
+      "file": "invalid/period-order.json",
+      "valid": false,
+      "rule": "RJ-PERIOD",
+      "note": "period.from after period.to"
+    },
+    {
+      "file": "invalid/bad-date.json",
+      "valid": false,
+      "rule": "RJ-DATE",
+      "note": "February 30th"
+    },
+    {
+      "file": "invalid/foreign-half.json",
+      "valid": false,
+      "rule": "RJ-FOREIGN",
+      "note": "foreign_currency without foreign_amount"
+    },
+    {
+      "file": "invalid/unknown-role.json",
+      "valid": false,
+      "rule": "RJ-SCHEMA",
+      "note": "A role that is neither standard nor x- prefixed"
+    },
+    {
+      "file": "invalid/attachment-escape.json",
+      "valid": false,
+      "rule": "RJ-SCHEMA",
+      "note": "An attachment path that leaves the file's directory"
+    },
+    {
+      "file": "invalid/missing-currency.json",
+      "valid": false,
+      "rule": "RJ-SCHEMA",
+      "note": "A voucher without currency"
+    },
+    {
+      "file": "valid/integer-amounts.json",
+      "valid": true,
+      "rule": null,
+      "note": "Integer encoding, scale 2"
+    },
+    {
+      "file": "valid/decimal-explicit.json",
+      "valid": true,
+      "rule": null,
+      "note": "Decimal encoding declared explicitly"
+    },
+    {
+      "file": "valid/integer-scale-6.json",
+      "valid": true,
+      "rule": null,
+      "note": "Integer encoding in micros"
+    },
+    {
+      "file": "invalid/integer-string-amount.json",
+      "valid": false,
+      "rule": "RJ-AMOUNT",
+      "note": "Decimal strings in an integer-encoded document"
+    },
+    {
+      "file": "invalid/integer-fraction.json",
+      "valid": false,
+      "rule": "RJ-AMOUNT",
+      "note": "A fractional number in the integer encoding"
+    },
+    {
+      "file": "invalid/integer-missing-scale.json",
+      "valid": false,
+      "rule": "RJ-AMOUNT",
+      "note": "Integer encoding without a scale"
+    },
+    {
+      "file": "invalid/integer-unsafe.json",
+      "valid": false,
+      "rule": "RJ-AMOUNT",
+      "note": "An integer above 2^53 - 1"
+    },
+    {
+      "file": "invalid/integer-zero.json",
+      "valid": false,
+      "rule": "RJ-POSITIVE",
+      "note": "A zero amount in the integer encoding"
+    },
+    {
+      "file": "invalid/integer-unbalanced.json",
+      "valid": false,
+      "rule": "RJ-BALANCE",
+      "note": "Unbalanced in the integer encoding"
+    },
+    {
+      "file": "invalid/decimal-number-amount.json",
+      "valid": false,
+      "rule": "RJ-AMOUNT",
+      "note": "Integers in a decimal-encoded document"
+    }
+  ]
+}

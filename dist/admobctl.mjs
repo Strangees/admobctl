@@ -10634,7 +10634,7 @@ var require_dist = __commonJS({
 });
 
 // src/cli/program.ts
-import { readFileSync as readFileSync4 } from "node:fs";
+import { chmodSync as chmodSync5, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
 
 // node_modules/commander/esm.mjs
 var import_index = __toESM(require_commander(), 1);
@@ -11024,6 +11024,7 @@ function resolveProfile(config2, name) {
     name: profileName,
     authMode: p?.authMode ?? "auto",
     finance: { ...DEFAULT_FINANCE, ...p?.finance },
+    financeConfigured: { ...p?.finance },
     aliases: { ...p?.aliases }
   };
 }
@@ -12258,6 +12259,184 @@ async function checkAppAds(svc, opts) {
     })
   );
   return { account: account.name, publisherId: account.publisherId, expectedLine, apps: results, ...summarize(results, expectedLine) };
+}
+
+// src/version.ts
+var VERSION = true ? "0.1.0" : "0.0.0-dev";
+
+// src/core/journal.ts
+var JOURNAL_FORMAT = "revenue-journal/1";
+function roleAccounts(configured) {
+  const c = configured ?? {};
+  const role = (account, name, fallback) => account ? { account, name: name ?? fallback } : { name: name ?? fallback };
+  return {
+    earnings_receivable: role(c.receivableAccount, c.receivableAccountName, "Accounts receivable \u2013 AdMob"),
+    revenue: role(c.revenueAccount, c.revenueAccountName, "Ad revenue \u2013 AdMob")
+  };
+}
+var MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+var toCents = (amount) => Math.round(amount * 100);
+function accountFields(r) {
+  return r.account ? { account: r.account, account_name: r.name } : { account_name: r.name };
+}
+function accrualVoucher(m, ctx) {
+  const apps = m.apps.filter((a) => toCents(a.earnings) > 0);
+  const total = toCents(m.total);
+  if (total <= 0 || apps.length === 0) return void 0;
+  const [year, month] = m.month.split("-");
+  return {
+    voucher_id: `admob:${ctx.publisherId}:accrual:${m.month}`,
+    kind: "accrual",
+    date: m.bookingDate,
+    period: { from: m.from, to: m.to },
+    currency: m.currency,
+    status: "estimate",
+    source: "admob",
+    description: `AdMob earnings, ${MONTH_NAMES[Number(month) - 1]} ${year}`,
+    counterparty: ctx.counterparty,
+    account_ref: ctx.publisherId,
+    lines: [
+      { line: 1, role: "earnings_receivable", side: "debit", cents: total, ...accountFields(ctx.roles.earnings_receivable) },
+      ...apps.map((a, i) => ({
+        line: i + 2,
+        role: "revenue",
+        side: "credit",
+        cents: toCents(a.earnings),
+        ...accountFields(ctx.roles.revenue),
+        dimension: a.alias
+      }))
+    ]
+  };
+}
+var decimal = (cents2) => `${Math.floor(cents2 / 100)}.${String(cents2 % 100).padStart(2, "0")}`;
+function encoder(amounts) {
+  if (!amounts || amounts.encoding === "decimal") return decimal;
+  const { scale } = amounts;
+  if (!Number.isInteger(scale) || scale < 0 || scale > 6) throw usageError(`--scale must be between 0 and 6, got ${scale}`);
+  return (cents2) => {
+    if (scale >= 2) return cents2 * 10 ** (scale - 2);
+    const divisor = 10 ** (2 - scale);
+    if (cents2 % divisor !== 0) {
+      throw usageError(`${decimal(cents2)} cannot be written exactly with --scale ${scale}; use --scale 2 or more.`);
+    }
+    return cents2 / divisor;
+  };
+}
+function journalDocument(vouchers, opts) {
+  const amount = encoder(opts.amounts);
+  return {
+    format: JOURNAL_FORMAT,
+    ...opts.producer ? { producer: opts.producer } : {},
+    ...opts.amounts?.encoding === "integer" ? { amounts: opts.amounts } : {},
+    vouchers: vouchers.map(({ lines, ...v }) => ({
+      ...v,
+      lines: lines.map(({ side, cents: cents2, ...l }) => ({
+        line: l.line,
+        role: l.role,
+        ...l.account !== void 0 ? { account: l.account } : {},
+        ...l.account_name !== void 0 ? { account_name: l.account_name } : {},
+        [side]: amount(cents2),
+        ...l.dimension !== void 0 ? { dimension: l.dimension } : {}
+      }))
+    }))
+  };
+}
+var JOURNAL_CSV_COLUMNS = [
+  "format",
+  "voucher_id",
+  "kind",
+  "date",
+  "period_from",
+  "period_to",
+  "currency",
+  "status",
+  "source",
+  "description",
+  "counterparty",
+  "account_ref",
+  "line",
+  "role",
+  "account",
+  "account_name",
+  "debit",
+  "credit",
+  "vat_code",
+  "line_description",
+  "dimension",
+  "foreign_currency",
+  "foreign_amount"
+];
+var csvField = (s) => /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+function journalCsv(vouchers) {
+  const rows = [JOURNAL_CSV_COLUMNS.join(",")];
+  for (const v of vouchers) {
+    for (const l of v.lines) {
+      const row = {
+        format: JOURNAL_FORMAT,
+        voucher_id: v.voucher_id,
+        kind: v.kind,
+        date: v.date,
+        period_from: v.period.from,
+        period_to: v.period.to,
+        currency: v.currency,
+        status: v.status,
+        source: v.source,
+        description: v.description,
+        counterparty: v.counterparty ?? "",
+        account_ref: v.account_ref ?? "",
+        line: String(l.line),
+        role: l.role,
+        account: l.account ?? "",
+        account_name: l.account_name ?? "",
+        debit: l.side === "debit" ? decimal(l.cents) : "",
+        credit: l.side === "credit" ? decimal(l.cents) : "",
+        vat_code: "",
+        line_description: "",
+        dimension: l.dimension ?? "",
+        foreign_currency: "",
+        foreign_amount: ""
+      };
+      rows.push(JOURNAL_CSV_COLUMNS.map((c) => csvField(row[c])).join(","));
+    }
+  }
+  return `${rows.join("\n")}
+`;
+}
+var EXPORT_FORMATS = ["revenue-journal-json", "revenue-journal-csv"];
+async function exportJournal(svc, q) {
+  if (!EXPORT_FORMATS.includes(q.as)) {
+    throw usageError(`Unknown export format "${q.as}". Formats: ${EXPORT_FORMATS.join(", ")}`);
+  }
+  if (q.integerAmounts && q.as !== "revenue-journal-json") {
+    throw usageError("--integer-amounts only applies to JSON (revenue-journal-json); CSV amounts are always decimal.");
+  }
+  if (q.scale !== void 0 && !q.integerAmounts) throw usageError("--scale needs --integer-amounts.");
+  if (q.month && (q.from || q.to)) throw usageError("Give either --month or --from/--to, not both.");
+  if (!q.month && !q.from && !q.to) throw usageError("Give a period: --month YYYY-MM or --from YYYY-MM --to YYYY-MM.");
+  if (!q.month && !(q.from && q.to)) throw usageError("A range needs both --from and --to (YYYY-MM).");
+  const { months, notes } = q.month ? await financeMonth(svc, q.month).then((m) => ({ months: [m], notes: m.notes })) : await financeRange(svc, q.from, q.to).then((r) => ({ months: r.months, notes: r.notes }));
+  const acct = await svc.account();
+  const ctx = {
+    publisherId: acct.publisherId,
+    counterparty: svc.profile.finance.counterparty,
+    roles: roleAccounts(svc.profile.financeConfigured)
+  };
+  const vouchers = [];
+  for (const m of months) {
+    const v = accrualVoucher(m, ctx);
+    if (v) vouchers.push(v);
+    else notes.push(`${m.month}: no earnings, so no voucher.`);
+  }
+  const content = q.as === "revenue-journal-csv" ? journalCsv(vouchers) : `${JSON.stringify(
+    journalDocument(vouchers, {
+      producer: { name: "admobctl", version: VERSION },
+      amounts: q.integerAmounts ? { encoding: "integer", scale: q.scale ?? 2 } : void 0
+    }),
+    null,
+    2
+  )}
+`;
+  return { content, notes };
 }
 
 // src/core/audit.ts
@@ -13687,12 +13866,12 @@ function renderTable({ columns, rows, footer = [] }, notes) {
   return `${lines.join("\n")}
 `;
 }
-function csvField(v) {
+function csvField2(v) {
   return /[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
 }
 function renderCsv({ columns, rows }) {
-  const lines = [columns.map((c) => csvField(c.label)).join(",")];
-  for (const r of rows) lines.push(columns.map((c) => csvField(cell(r[c.key]))).join(","));
+  const lines = [columns.map((c) => csvField2(c.label)).join(",")];
+  for (const r of rows) lines.push(columns.map((c) => csvField2(cell(r[c.key]))).join(","));
   return `${lines.join("\n")}
 `;
 }
@@ -13732,9 +13911,6 @@ function renderTsv({ columns, rows }) {
   return `${lines.join("\n")}
 `;
 }
-
-// src/version.ts
-var VERSION = true ? "0.1.0" : "0.0.0-dev";
 
 // src/cli/views.ts
 var ESTIMATE_NOTE = "Estimated earnings \u2014 reconcile against AdMob Payments (finalized).";
@@ -14389,6 +14565,19 @@ function buildProgram(io) {
     const m = await financeMonth(s, month);
     emitFinance(cmd, o.as, financeMonthView(m), () => journalView(journalRows(m, s.profile.finance), m.notes));
   });
+  finance.command("export").description("Export accrual vouchers in the Revenue Journal format (spec/SPEC.md), for accounting imports").option("--month <YYYY-MM>", "one month").option("--from <YYYY-MM>", "first month of a range").option("--to <YYYY-MM>", "last month of a range").option("--as <format>", `export format: ${EXPORT_FORMATS.join(", ")}`, "revenue-journal-json").option("--integer-amounts", "write amounts as JSON integers instead of decimal strings (JSON only)").option("--scale <digits>", "decimal places the integers carry, 0-6 (default 2; 6 = micros)", (v) => Number(v)).option("--out <file>", "write to this file (readable only by you) instead of stdout").action(
+    async (o, cmd) => {
+      const { content, notes } = await exportJournal(svc(cmd), o);
+      if (o.out) {
+        writeFileSync3(o.out, content, { mode: 384 });
+        chmodSync5(o.out, 384);
+        io.stderr(`Wrote ${o.out}
+`);
+      } else io.stdout(content);
+      for (const n of notes) io.stderr(`${n}
+`);
+    }
+  );
   finance.command("range").description("Estimated earnings per month over a range").requiredOption("--from <YYYY-MM>", "first month").requiredOption("--to <YYYY-MM>", "last month").addOption(asOption()).action(async (o, cmd) => {
     const s = svc(cmd);
     const r = await financeRange(s, o.from, o.to);

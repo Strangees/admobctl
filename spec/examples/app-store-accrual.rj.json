@@ -1,0 +1,43 @@
+{
+  "format": "revenue-journal/1",
+  "producer": {
+    "name": "example-producer",
+    "version": "1.0.0"
+  },
+  "vouchers": [
+    {
+      "voucher_id": "app-store:example-vendor:accrual:2026-09",
+      "kind": "accrual",
+      "date": "2026-09-30",
+      "period": {
+        "from": "2026-09-01",
+        "to": "2026-09-30"
+      },
+      "currency": "USD",
+      "status": "estimate",
+      "source": "app-store",
+      "description": "App Store proceeds, September 2026",
+      "counterparty": "Apple Distribution International Ltd.",
+      "account_ref": "example-vendor",
+      "lines": [
+        {
+          "line": 1,
+          "role": "earnings_receivable",
+          "debit": "85.00"
+        },
+        {
+          "line": 2,
+          "role": "fees",
+          "debit": "15.00",
+          "description": "App Store commission (15%)"
+        },
+        {
+          "line": 3,
+          "role": "revenue",
+          "credit": "100.00",
+          "dimension": "example-quiz-ios"
+        }
+      ]
+    }
+  ]
+}

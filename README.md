@@ -59,6 +59,8 @@ admobctl report mediation --from 2026-09 --by ad-source
 admobctl finance month 2026-09                       # per app + total
 admobctl finance month 2026-09 --as journal          # paste-ready journal rows (TSV)
 admobctl finance range --from 2026-01 --to 2026-09
+admobctl finance export --month 2026-09               # Revenue Journal JSON for accounting imports
+admobctl finance export --from 2026-01 --to 2026-09 --as revenue-journal-csv
 
 admobctl insights --last 30d --by ad-unit
 
@@ -92,6 +94,8 @@ All earnings are **estimates**. Reconcile them against AdMob Payments, because t
 ### Finance
 
 `finance month` returns estimated earnings per app and the month total, with the per-app amounts rounded so they sum exactly to the total. It flags months that are not over yet. `--as journal` emits one debit row (receivable, default account 1509) and one credit row per app (revenue, default 3120), dated at month-end, with the columns `Bilag, Dato, Kilde, Beskrivelse, Konto, Kontonavn, Debet, Kredit, MVA-behandling, Motpart, Status, Merknad`. Set accounts, names, VAT text and the decimal separator with `admobctl config set finance.<key> <value>`.
+
+`finance export` writes the same accruals in [Revenue Journal](spec/README.md), an open format for platform revenue bookkeeping: one balanced voucher per month, one revenue line per app. `--as revenue-journal-json` (default) or `revenue-journal-csv`; `--integer-amounts` writes JSON integers instead of decimal strings (`--scale 6` for micros); `--out <file>` writes a file only you can read. Lines carry account roles (`earnings_receivable`, `revenue`) and generic names; account numbers appear only when you have set `finance.receivableAccount` / `finance.revenueAccount`.
 
 ### Insights
 

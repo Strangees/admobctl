@@ -1,0 +1,39 @@
+{
+  "format": "revenue-journal/1",
+  "amounts": {
+    "encoding": "integer",
+    "scale": 2
+  },
+  "vouchers": [
+    {
+      "voucher_id": "example:acct:accrual:2026-09",
+      "kind": "accrual",
+      "date": "2026-09-30",
+      "period": {
+        "from": "2026-09-01",
+        "to": "2026-09-30"
+      },
+      "currency": "EUR",
+      "status": "estimate",
+      "source": "example",
+      "description": "Example earnings, September 2026",
+      "lines": [
+        {
+          "line": 1,
+          "role": "earnings_receivable",
+          "debit": 1000
+        },
+        {
+          "line": 2,
+          "role": "revenue",
+          "credit": 600
+        },
+        {
+          "line": 3,
+          "role": "revenue",
+          "credit": 400
+        }
+      ]
+    }
+  ]
+}

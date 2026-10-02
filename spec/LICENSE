@@ -1,0 +1,9 @@
+Revenue Journal — licensing
+
+The specification text (SPEC.md, README.md, CHANGELOG.md) is licensed under the
+Creative Commons Attribution 4.0 International licence (CC BY 4.0):
+https://creativecommons.org/licenses/by/4.0/legalcode
+
+The JSON Schema (schema/), examples (examples/) and conformance files
+(conformance/) are licensed under the MIT licence, the same as admobctl:
+see the LICENSE file at the root of the admobctl repository.
