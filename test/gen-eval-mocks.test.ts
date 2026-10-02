@@ -54,9 +54,14 @@ it.skipIf(!process.env.GEN_MOCKS)("generate eval mocks", async () => {
     "POST /networkReport:generate": (c: RecordedCall) => {
       const spec = (c.body as { reportSpec: { dimensions: string[]; dateRange: { startDate: { month: number } } } }).reportSpec;
       if (spec.dimensions.includes("AD_UNIT")) return jsonResponse(adUnitReport(spec.dateRange.startDate.month === 9 ? current : previous));
+      if (spec.dimensions.includes("GMA_SDK_VERSION")) return jsonResponse(fixture("network-report-by-sdk-version.json"));
+      if (spec.dimensions.includes("SERVING_RESTRICTION")) return jsonResponse(fixture("network-report-by-serving-restriction.json"));
       return jsonResponse(fixture(spec.dimensions.includes("MONTH") ? "network-report-by-month-app.json" : "network-report-by-app.json"));
     },
-    "POST /mediationReport:generate": () => jsonResponse(fixture("network-report-by-app.json")),
+    "POST /mediationReport:generate": (c: RecordedCall) => {
+      const dims = (c.body as { reportSpec: { dimensions: string[] } }).reportSpec.dimensions;
+      return jsonResponse(fixture(dims.includes("MEDIATION_GROUP") ? "mediation-report-waterfall.json" : "network-report-by-app.json"));
+    },
   });
   const dir = mkdtempSync(join(tmpdir(), "admobctl-mocks-"));
   const server = createMcpServer({
@@ -82,6 +87,9 @@ it.skipIf(!process.env.GEN_MOCKS)("generate eval mocks", async () => {
     admobctl_finance_month: { month: "2026-09", include_journal: true },
     admobctl_finance_range: { from: "2026-07", to: "2026-09" },
     admobctl_insights: { last_days: 30, by: "ad-unit" },
+    admobctl_analyze_versions: { by: "sdk", last_days: 30 },
+    admobctl_analyze_consent: { last_days: 30 },
+    admobctl_analyze_waterfall: { last_days: 30 },
   };
   for (const [name, args] of Object.entries(calls)) {
     const r = (await client.callTool({ name, arguments: args })) as { content: Array<{ text: string }> };

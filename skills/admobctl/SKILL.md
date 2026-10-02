@@ -16,6 +16,9 @@ Read-only access to the user's AdMob account through the `admobctl` MCP tools (p
 | How is monetization doing, what underperforms, why did revenue change | `admobctl_insights` (then follow admobctl-insights) | `admobctl insights --last 30d` |
 | A specific breakdown (by country, format, date, ad unit…) | `admobctl_network_report` | `admobctl report network --from … --by …` |
 | Ad sources / mediation | `admobctl_mediation_report` | `admobctl report mediation --from … --by ad-source` |
+| Mediation waterfall, which lines earn, idle lines | `admobctl_analyze_waterfall` | `admobctl analyze waterfall` |
+| Did an SDK upgrade or app release hurt fill / show rate | `admobctl_analyze_versions` | `admobctl analyze versions --by sdk\|app\|os` |
+| Consent / non-personalized ads / RDP impact on eCPM | `admobctl_analyze_consent` | `admobctl analyze consent` |
 | Which apps / ad units exist | `admobctl_list_apps`, `admobctl_list_ad_units` | `admobctl apps list` |
 
 Refer to apps by their alias (e.g. `my-game-ios`) from `admobctl_list_apps`. Dates are `YYYY-MM` or `YYYY-MM-DD`;

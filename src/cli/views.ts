@@ -1,4 +1,5 @@
 import { appsNeedingAction, approvalLabel, type AppRef } from "../core/aliases.js";
+import type { ConsentResult, VersionsResult, WaterfallResult } from "../core/analyze.js";
 import type { Check } from "../core/auth/doctor.js";
 import { JOURNAL_COLUMNS, type FinanceMonth, type FinanceRange, type JournalRow } from "../core/finance.js";
 import type { InsightsResult } from "../core/insights.js";
@@ -215,5 +216,87 @@ export function insightsView(r: InsightsResult): Output {
       footer: [{ label: "Total", earnings: r.totals.earnings.toFixed(2), ecpm: r.totals.ecpm.toFixed(2), requests: r.totals.requests }],
     },
     notes: r.summary,
+  };
+}
+
+const VERSION_LABELS: Record<VersionsResult["by"], string> = { sdk: "SDK version", app: "App version", os: "OS version" };
+
+export function versionsView(r: VersionsResult): Output {
+  return {
+    data: r,
+    table: {
+      columns: [
+        { key: "group", label: r.group_by === "app" ? "App" : "Platform" },
+        { key: "version", label: VERSION_LABELS[r.by] },
+        { key: "requests", label: "Requests", align: "right" },
+        { key: "request_share", label: "Share", align: "right" },
+        { key: "match_rate", label: "Match", align: "right" },
+        { key: "show_rate", label: "Show", align: "right" },
+        { key: "ctr", label: "CTR", align: "right" },
+      ],
+      rows: r.rows.map((x) => ({
+        ...x,
+        request_share: formatPercent(x.request_share),
+        match_rate: formatPercent(x.match_rate),
+        show_rate: formatPercent(x.show_rate),
+        ctr: formatPercent(x.ctr),
+      })),
+    },
+    notes: [...r.summary, ...r.notices],
+  };
+}
+
+export function consentView(r: ConsentResult): Output {
+  return {
+    data: r,
+    table: {
+      columns: [
+        { key: "restriction", label: "Serving restriction" },
+        { key: "requests", label: "Requests", align: "right" },
+        { key: "request_share", label: "Share", align: "right" },
+        { key: "earnings", label: `Earnings (${r.currency})`, align: "right" },
+        { key: "ecpm", label: "eCPM", align: "right" },
+        { key: "ecpm_vs_unrestricted", label: "vs open", align: "right" },
+        { key: "match_rate", label: "Match", align: "right" },
+        { key: "show_rate", label: "Show", align: "right" },
+      ],
+      rows: r.rows.map((x) => ({
+        ...x,
+        request_share: formatPercent(x.request_share),
+        earnings: x.earnings.toFixed(2),
+        ecpm: x.ecpm.toFixed(2),
+        ecpm_vs_unrestricted: x.ecpm_vs_unrestricted === undefined ? "" : formatPercent(x.ecpm_vs_unrestricted),
+        match_rate: formatPercent(x.match_rate),
+        show_rate: formatPercent(x.show_rate),
+      })),
+    },
+    notes: [...r.summary, ...r.notices],
+  };
+}
+
+export function waterfallView(r: WaterfallResult): Output {
+  return {
+    data: r,
+    table: {
+      columns: [
+        { key: "group", label: "Mediation group" },
+        { key: "source", label: "Ad source" },
+        { key: "instance", label: "Instance" },
+        { key: "ecpm", label: `Obs. eCPM (${r.currency})`, align: "right" },
+        { key: "earnings", label: `Earnings (${r.currency})`, align: "right" },
+        { key: "earnings_share", label: "Share", align: "right" },
+        { key: "requests", label: "Requests", align: "right" },
+        { key: "match_rate", label: "Match", align: "right" },
+        { key: "impressions", label: "Impressions", align: "right" },
+      ],
+      rows: r.rows.map((x) => ({
+        ...x,
+        ecpm: formatMicros(x.ecpm_micros),
+        earnings: formatMicros(x.earnings_micros),
+        earnings_share: formatPercent(x.earnings_share),
+        match_rate: formatPercent(x.match_rate),
+      })),
+    },
+    notes: [...r.summary, ...r.notices],
   };
 }

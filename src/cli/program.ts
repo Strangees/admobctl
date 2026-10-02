@@ -3,6 +3,7 @@ import { fetchTokenInfo, runDoctor } from "../core/auth/doctor.js";
 import { login, logout } from "../core/auth/login.js";
 import { defaultSecretStore } from "../core/auth/oauth.js";
 import { configDir, configPath, loadConfig, resolveProfile, saveConfig, setProfileValue } from "../core/config.js";
+import { analyzeConsent, analyzeVersions, analyzeWaterfall, VERSION_KINDS, type VersionKind } from "../core/analyze.js";
 import { AdmobctlError } from "../core/errors.js";
 import { financeMonth, financeRange, journalRows } from "../core/finance.js";
 import { INSIGHT_DIMENSIONS, insights, type InsightDimension } from "../core/insights.js";
@@ -14,6 +15,7 @@ import {
   accountsView,
   adUnitsView,
   appsView,
+  consentView,
   doctorView,
   financeMonthView,
   financeRangeView,
@@ -21,6 +23,8 @@ import {
   journalView,
   keyValueView,
   reportView,
+  versionsView,
+  waterfallView,
 } from "./views.js";
 
 export interface CliIO {
@@ -282,6 +286,46 @@ export function buildProgram(io: CliIO): Command {
       });
       emit(cmd, insightsView(r));
     });
+
+  // ── analyze ───────────────────────────────────────────────────────
+  type RangeOpts = { last?: number; from?: string; to?: string };
+  const withRange = (cmd: Command) =>
+    cmd
+      .option("--last <Nd>", "the last N complete days (default 30d)", parseDays)
+      .option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)")
+      .option("--to <date>", "end, YYYY-MM or YYYY-MM-DD");
+  const range = (o: RangeOpts) => ({ last: o.last, from: o.from, to: o.to });
+  const analyze = program
+    .command("analyze")
+    .description("Curated analyses: SDK/app/OS version health, consent (serving restriction) impact, mediation waterfall");
+  withRange(
+    analyze
+      .command("versions")
+      .description("Match and show rate per SDK, app or OS version, flagging versions that do worse than the rest")
+      .addOption(new Option("--by <kind>", "which version").choices([...VERSION_KINDS]).default("sdk"))
+      .option("--app <alias|id>", "only this app"),
+  ).action(async (o: RangeOpts & { by: VersionKind; app?: string }, cmd: Command) => {
+    emit(cmd, versionsView(await analyzeVersions(svc(cmd), { ...range(o), by: o.by, app: o.app })));
+  });
+  withRange(
+    analyze
+      .command("consent")
+      .description("Traffic and eCPM by serving restriction (consent, RDP, limited ads) vs unrestricted traffic")
+      .option("--app <alias|id>", "only this app")
+      .option("--currency <code>", "convert earnings to this ISO 4217 currency"),
+  ).action(async (o: RangeOpts & { app?: string; currency?: string }, cmd: Command) => {
+    emit(cmd, consentView(await analyzeConsent(svc(cmd), { ...range(o), app: o.app, currency: o.currency })));
+  });
+  withRange(
+    analyze
+      .command("waterfall")
+      .description("Mediation lines per group by observed eCPM, with idle and low-fill lines flagged")
+      .option("--app <alias|id>", "only this app")
+      .option("--group <name|id>", "only this mediation group")
+      .option("--currency <code>", "convert earnings to this ISO 4217 currency"),
+  ).action(async (o: RangeOpts & { app?: string; group?: string; currency?: string }, cmd: Command) => {
+    emit(cmd, waterfallView(await analyzeWaterfall(svc(cmd), { ...range(o), app: o.app, group: o.group, currency: o.currency })));
+  });
 
   // ── mcp ───────────────────────────────────────────────────────────
   program

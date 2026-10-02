@@ -42,7 +42,7 @@
     {
       "name": "admobctl_list_apps",
       "title": "List AdMob apps",
-      "description": "List apps in the AdMob account with their aliases (use the alias in other tools), platform, app ID and store ID.",
+      "description": "List apps in the AdMob account with their aliases (use the alias in other tools), platform, app ID, store ID and approval state (ACTION_REQUIRED means the app needs the publisher's attention in AdMob review; ad serving may be limited).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -179,6 +179,11 @@
             "exclusiveMinimum": 0,
             "maximum": 5000
           },
+          "currency": {
+            "description": "ISO 4217 code to convert earnings into, e.g. USD. Default: the account currency.",
+            "type": "string",
+            "pattern": "^[A-Za-z]{3}$"
+          },
           "account": {
             "description": "Publisher ID (pub-…). Defaults to the configured or only account.",
             "type": "string"
@@ -226,6 +231,12 @@
           },
           "notice": {
             "type": "string"
+          },
+          "notices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -233,7 +244,8 @@
           "from",
           "to",
           "rows",
-          "truncated"
+          "truncated",
+          "notices"
         ],
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": {}
@@ -296,6 +308,11 @@
             "exclusiveMinimum": 0,
             "maximum": 5000
           },
+          "currency": {
+            "description": "ISO 4217 code to convert earnings into, e.g. USD. Default: the account currency.",
+            "type": "string",
+            "pattern": "^[A-Za-z]{3}$"
+          },
           "account": {
             "description": "Publisher ID (pub-…). Defaults to the configured or only account.",
             "type": "string"
@@ -343,6 +360,12 @@
           },
           "notice": {
             "type": "string"
+          },
+          "notices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -350,7 +373,8 @@
           "from",
           "to",
           "rows",
-          "truncated"
+          "truncated",
+          "notices"
         ],
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": {}
@@ -577,6 +601,11 @@
               "platform"
             ]
           },
+          "currency": {
+            "description": "ISO 4217 code to convert earnings into, e.g. USD. Default: the account currency.",
+            "type": "string",
+            "pattern": "^[A-Za-z]{3}$"
+          },
           "account": {
             "description": "Publisher ID (pub-…). Defaults to the configured or only account.",
             "type": "string"
@@ -643,6 +672,354 @@
           "rows",
           "highlights",
           "summary"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "admobctl_analyze_versions",
+      "title": "AdMob version health",
+      "description": "Match rate, show rate and CTR per Google Mobile Ads SDK version (by platform), app version (by app) or OS version, comparing each version with the rest of its group. Highlights versions that fill or show worse, e.g. after an SDK upgrade or app release. Traffic metrics only: the AdMob API does not split earnings by version.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "by": {
+            "description": "sdk (default), app or os",
+            "type": "string",
+            "enum": [
+              "sdk",
+              "app",
+              "os"
+            ]
+          },
+          "app": {
+            "description": "Only this app (alias, app ID or name)",
+            "type": "string"
+          },
+          "last_days": {
+            "description": "The last N complete days (default 30)",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 366
+          },
+          "from": {
+            "description": "Start, YYYY-MM or YYYY-MM-DD (instead of last_days)",
+            "type": "string"
+          },
+          "to": {
+            "description": "End, YYYY-MM or YYYY-MM-DD",
+            "type": "string"
+          },
+          "account": {
+            "description": "Publisher ID (pub-…). Defaults to the configured or only account.",
+            "type": "string"
+          }
+        },
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "highlights": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "summary": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "notices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "by": {
+            "type": "string"
+          },
+          "group_by": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "rows",
+          "highlights",
+          "summary",
+          "notices",
+          "by",
+          "group_by"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "admobctl_analyze_consent",
+      "title": "AdMob consent impact",
+      "description": "Ad requests, earnings and eCPM by serving restriction (no restriction, non-personalized, limited ads, RDP…), with each restricted mode's eCPM relative to unrestricted traffic and the share of traffic served under a restriction. Earnings are estimates. Data starts 2021-03-13.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "description": "Only this app (alias, app ID or name)",
+            "type": "string"
+          },
+          "last_days": {
+            "description": "The last N complete days (default 30)",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 366
+          },
+          "from": {
+            "description": "Start, YYYY-MM or YYYY-MM-DD (instead of last_days)",
+            "type": "string"
+          },
+          "to": {
+            "description": "End, YYYY-MM or YYYY-MM-DD",
+            "type": "string"
+          },
+          "currency": {
+            "description": "ISO 4217 code to convert earnings into, e.g. USD. Default: the account currency.",
+            "type": "string",
+            "pattern": "^[A-Za-z]{3}$"
+          },
+          "account": {
+            "description": "Publisher ID (pub-…). Defaults to the configured or only account.",
+            "type": "string"
+          }
+        },
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "highlights": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "summary": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "notices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "currency": {
+            "type": "string"
+          },
+          "estimate": {
+            "type": "boolean",
+            "const": true
+          },
+          "restricted_request_share": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "rows",
+          "highlights",
+          "summary",
+          "notices",
+          "currency",
+          "estimate"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "admobctl_analyze_waterfall",
+      "title": "AdMob mediation waterfall",
+      "description": "Mediation lines (ad source instances) per mediation group, sorted by observed eCPM, with each line's share of the group's earnings, requests and match rate. Highlights the top line per group, idle lines (requests but no impressions) and lines that rarely fill. Earnings are estimates.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "description": "Only this app (alias, app ID or name)",
+            "type": "string"
+          },
+          "group": {
+            "description": "Only this mediation group (name or ID)",
+            "type": "string"
+          },
+          "last_days": {
+            "description": "The last N complete days (default 30)",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 366
+          },
+          "from": {
+            "description": "Start, YYYY-MM or YYYY-MM-DD (instead of last_days)",
+            "type": "string"
+          },
+          "to": {
+            "description": "End, YYYY-MM or YYYY-MM-DD",
+            "type": "string"
+          },
+          "currency": {
+            "description": "ISO 4217 code to convert earnings into, e.g. USD. Default: the account currency.",
+            "type": "string",
+            "pattern": "^[A-Za-z]{3}$"
+          },
+          "account": {
+            "description": "Publisher ID (pub-…). Defaults to the configured or only account.",
+            "type": "string"
+          }
+        },
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "highlights": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "summary": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "notices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "currency": {
+            "type": "string"
+          },
+          "estimate": {
+            "type": "boolean",
+            "const": true
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "rows",
+          "highlights",
+          "summary",
+          "notices",
+          "currency",
+          "estimate",
+          "groups"
         ],
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": {}

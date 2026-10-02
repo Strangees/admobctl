@@ -17,8 +17,11 @@ async function cli(args: string[], opts: { isTTY?: boolean; dir?: string } = {})
     "GET /adUnits": () => jsonResponse(fixture("ad-units.json")),
     "POST /networkReport:generate": (c) => {
       const dims = (c.body as { reportSpec: { dimensions: string[] } }).reportSpec.dimensions;
+      if (dims.includes("GMA_SDK_VERSION")) return jsonResponse(fixture("network-report-by-sdk-version.json"));
+      if (dims.includes("SERVING_RESTRICTION")) return jsonResponse(fixture("network-report-by-serving-restriction.json"));
       return jsonResponse(fixture(dims.includes("MONTH") ? "network-report-by-month-app.json" : "network-report-by-app.json"));
     },
+    "POST /mediationReport:generate": () => jsonResponse(fixture("mediation-report-waterfall.json")),
     "POST /tokeninfo": () => jsonResponse({ scope: "https://www.googleapis.com/auth/admob.readonly", expires_in: "3000" }),
   });
   let stdout = "";
@@ -211,5 +214,30 @@ describe("cli", () => {
     expect(r.stdout).toMatch(/Approval/);
     expect(r.stdout).toMatch(/example-quiz-ios .*approved/);
     expect(r.stdout).not.toMatch(/need action/);
+  });
+
+  it("analyze versions prints each SDK version with its share, match and show rate", async () => {
+    const r = await cli(["analyze", "versions", "--by", "sdk", "--last", "30d"], { isTTY: true });
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/Platform\s+SDK version\s+Requests/);
+    expect(r.stdout).toMatch(/iOS\s+ios-11\.12\.0\s+20000\s+20\.0%\s+90\.0%\s+38\.9%/);
+    expect(r.stdout).toMatch(/show rate 38\.9% vs 83\.3%/);
+  });
+
+  it("analyze consent and waterfall return JSON with highlights", async () => {
+    const consent = await cli(["analyze", "consent", "--last", "30d"]);
+    expect(consent.code, consent.stderr).toBe(0);
+    expect(JSON.parse(consent.stdout).restricted_request_share).toBeCloseTo(0.4);
+    const wf = await cli(["analyze", "waterfall", "--group", "Banners", "-o", "json"]);
+    expect(wf.code, wf.stderr).toBe(0);
+    const j = JSON.parse(wf.stdout);
+    expect(j.groups).toHaveLength(1);
+    expect(j.highlights.map((h: { kind: string }) => h.kind)).toContain("idle");
+  });
+
+  it("analyze waterfall names the groups when --group matches none", async () => {
+    const r = await cli(["analyze", "waterfall", "--group", "Nope"]);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toMatch(/Banners, Interstitials/);
   });
 });

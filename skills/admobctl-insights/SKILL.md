@@ -11,6 +11,11 @@ Call `admobctl_insights` (CLI: `admobctl insights`). The default is ad units ove
 compared with the 30 days before. Use `by: "app" | "country" | "format" | "platform"` or `from`/`to` when the
 question asks for it. Drill down with `admobctl_network_report` only when the insights output cannot answer the question.
 
+For narrower questions use the curated analyses, which follow the same highlights/summary shape:
+`admobctl_analyze_versions` (did an SDK upgrade or app release hurt match or show rate),
+`admobctl_analyze_consent` (how much traffic runs under consent/RDP/limited-ads restrictions and at what eCPM) and
+`admobctl_analyze_waterfall` (which mediation lines earn, which sit idle).
+
 ## Present it
 
 1. **Headline:** total estimated earnings for the period and the change vs the previous period.
@@ -30,3 +35,7 @@ facts about the user's account. If something does not add up, say what and stop;
 | `swing-down` / `gone` | Revenue drop | Break down by country or format with `admobctl_network_report`, and check app releases |
 | `swing-up` / `new` | Revenue gain | Name it; confirm it is not a one-off spike |
 | `bottom` | Traffic with little revenue | Consider the format or placement, or removing the unit |
+| `low-show-rate` / `low-match-rate` on a version | The SDK or app release behaves differently | Compare release notes and the ad-loading code between that version and the others; check adapter versions |
+| `restricted` (consent) | Restricted traffic earns less | Review the consent message (UMP) and its acceptance rate; numbers only, no legal advice |
+| `idle` (waterfall) | A line gets requests but never serves | Check the line's ad unit mapping and the network's account; remove the line if it stays idle |
+| `low-fill` (waterfall) | A line rarely fills, adding latency | Lower its position or eCPM floor, or remove it |

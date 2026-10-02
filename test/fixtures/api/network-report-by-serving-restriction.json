@@ -1,0 +1,109 @@
+[
+  {
+    "header": {
+      "dateRange": {
+        "startDate": {
+          "year": 2026,
+          "month": 9,
+          "day": 2
+        },
+        "endDate": {
+          "year": 2026,
+          "month": 10,
+          "day": 1
+        }
+      },
+      "localizationSettings": {
+        "currencyCode": "NOK",
+        "languageCode": "en-US"
+      },
+      "reportingTimeZone": "Europe/Oslo"
+    }
+  },
+  {
+    "row": {
+      "dimensionValues": {
+        "SERVING_RESTRICTION": {
+          "value": "NONE",
+          "displayLabel": "No restriction"
+        }
+      },
+      "metricValues": {
+        "ESTIMATED_EARNINGS": {
+          "microsValue": "80000000"
+        },
+        "AD_REQUESTS": {
+          "integerValue": "60000"
+        },
+        "MATCHED_REQUESTS": {
+          "integerValue": "54000"
+        },
+        "IMPRESSIONS": {
+          "integerValue": "40000"
+        },
+        "CLICKS": {
+          "integerValue": "400"
+        }
+      }
+    }
+  },
+  {
+    "row": {
+      "dimensionValues": {
+        "SERVING_RESTRICTION": {
+          "value": "NPA",
+          "displayLabel": "Non-personalized ads"
+        }
+      },
+      "metricValues": {
+        "ESTIMATED_EARNINGS": {
+          "microsValue": "10000000"
+        },
+        "AD_REQUESTS": {
+          "integerValue": "30000"
+        },
+        "MATCHED_REQUESTS": {
+          "integerValue": "27000"
+        },
+        "IMPRESSIONS": {
+          "integerValue": "20000"
+        },
+        "CLICKS": {
+          "integerValue": "200"
+        }
+      }
+    }
+  },
+  {
+    "row": {
+      "dimensionValues": {
+        "SERVING_RESTRICTION": {
+          "value": "LTD",
+          "displayLabel": "Limited ads"
+        }
+      },
+      "metricValues": {
+        "ESTIMATED_EARNINGS": {
+          "microsValue": "1000000"
+        },
+        "AD_REQUESTS": {
+          "integerValue": "10000"
+        },
+        "MATCHED_REQUESTS": {
+          "integerValue": "9000"
+        },
+        "IMPRESSIONS": {
+          "integerValue": "5000"
+        },
+        "CLICKS": {
+          "integerValue": "50"
+        }
+      }
+    }
+  },
+  {
+    "footer": {
+      "matchingRowCount": "3"
+    }
+  }
+]

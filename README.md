@@ -8,6 +8,7 @@ A fast command-line tool for the Google AdMob API, with an agent plugin for Clau
 - Network and mediation reports as table, JSON, CSV or Markdown
 - Monthly finance output you can book directly (per app, journal rows)
 - Monetization insights: eCPM/RPM, fill and show rate, weakest units, swings vs the previous period
+- Curated analyses: SDK/app/OS version health, consent (serving restriction) impact, mediation waterfall
 - `admobctl mcp`: the same capabilities as typed, read-only MCP tools for Claude Code, Codex and other MCP clients
 
 ## Install
@@ -60,6 +61,11 @@ admobctl finance month 2026-09 --as journal          # paste-ready journal rows 
 admobctl finance range --from 2026-01 --to 2026-09
 
 admobctl insights --last 30d --by ad-unit
+
+admobctl analyze versions --by sdk                  # match/show rate per SDK version, per platform
+admobctl analyze versions --by app --app my-game-ios
+admobctl analyze consent --last 30d                  # eCPM under consent/RDP/limited ads vs unrestricted
+admobctl analyze waterfall --group "Banners"         # mediation lines by observed eCPM
 ```
 
 Global flags:
@@ -70,6 +76,12 @@ Global flags:
 | `--profile <name>` | Use a named profile from the config |
 | `--account pub-…` | Pick the publisher account (otherwise auto-selected when there is only one) |
 | `-v, --verbose` | Debug logs to stderr |
+
+Reports, `insights` and `analyze consent|waterfall` take `--currency USD` (any ISO 4217 code) to convert earnings at
+Google's daily average rate; the default is the account currency. Combinations the AdMob API rejects (two time
+dimensions, `ad-type` with requests, match rate or RPM) fail before any API call, and default metrics that do not
+fit the chosen dimensions are left out with a note. Reports also note when they include data that is still arriving
+(today's AdMob data; the last day of third-party mediation data).
 
 Dates are `YYYY-MM` (whole month) or `YYYY-MM-DD`. Dimensions and metrics accept friendly names
 (`app`, `ad-unit`, `country`, `format`, `platform`, `date`, `month`; `earnings`, `requests`, `impressions`,
@@ -85,9 +97,17 @@ All earnings are **estimates**. Reconcile them against AdMob Payments, because t
 
 `insights` compares a period with the equally long period before it, by app, ad unit, country, format or platform. It reports earnings, share, eCPM, request RPM, match rate, show rate and CTR. Highlights cover top and bottom earners, high requests with low fill, low show rate, and swings above `--swing` percent, and a plain-language summary gives the numbers behind each claim.
 
+### Analyze
+
+- `analyze versions --by sdk|app|os` shows match rate, show rate and CTR per Google Mobile Ads SDK version (grouped by platform), app version (grouped by app; `--app` narrows it) or OS version, and flags versions that fill or show at least 20% worse than the rest of their group. It uses traffic metrics only, because Google documents the version dimensions as incompatible with earnings.
+- `analyze consent` breaks traffic and earnings down by serving restriction (non-personalized, limited ads, RDP…) and compares each restricted mode's eCPM with unrestricted traffic. The data starts 2021-03-13.
+- `analyze waterfall` lists each mediation group's lines (ad source instances) by observed eCPM, with their share of the group's earnings, and flags idle lines (requests, no impressions) and lines that rarely fill.
+
+`apps list` shows each app's approval state, and `auth doctor` warns about apps marked *action required* in AdMob.
+
 ## MCP server
 
-`admobctl mcp` serves eight read-only tools over stdio: `admobctl_list_accounts`, `admobctl_list_apps`, `admobctl_list_ad_units`, `admobctl_network_report`, `admobctl_mediation_report`, `admobctl_finance_month`, `admobctl_finance_range` and `admobctl_insights`. Reports default to 200 rows and are trimmed with a notice to stay within roughly 25k tokens.
+`admobctl mcp` serves eleven read-only tools over stdio: `admobctl_list_accounts`, `admobctl_list_apps`, `admobctl_list_ad_units`, `admobctl_network_report`, `admobctl_mediation_report`, `admobctl_finance_month`, `admobctl_finance_range`, `admobctl_insights`, `admobctl_analyze_versions`, `admobctl_analyze_consent` and `admobctl_analyze_waterfall`. Reports default to 200 rows and are trimmed with a notice to stay within roughly 25k tokens.
 
 ## Agent plugin (Claude Code and Codex)
 

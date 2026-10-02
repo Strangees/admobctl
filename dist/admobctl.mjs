@@ -3886,9 +3886,9 @@ var require_codegen = __commonJS({
       }
     };
     var Label = class extends Node {
-      constructor(label) {
+      constructor(label2) {
         super();
-        this.label = label;
+        this.label = label2;
         this.names = {};
       }
       render({ _n }) {
@@ -3896,14 +3896,14 @@ var require_codegen = __commonJS({
       }
     };
     var Break = class extends Node {
-      constructor(label) {
+      constructor(label2) {
         super();
-        this.label = label;
+        this.label = label2;
         this.names = {};
       }
       render({ _n }) {
-        const label = this.label ? ` ${this.label}` : "";
-        return `break${label};` + _n;
+        const label2 = this.label ? ` ${this.label}` : "";
+        return `break${label2};` + _n;
       }
     };
     var Throw = class extends Node {
@@ -4315,12 +4315,12 @@ var require_codegen = __commonJS({
         return this._endBlockNode(For);
       }
       // `label` statement
-      label(label) {
-        return this._leafNode(new Label(label));
+      label(label2) {
+        return this._leafNode(new Label(label2));
       }
       // `break` statement
-      break(label) {
-        return this._leafNode(new Break(label));
+      break(label2) {
+        return this._leafNode(new Break(label2));
       }
       // `return` statement
       return(value) {
@@ -10723,6 +10723,63 @@ function diagnoseApiError(status, body) {
   return new AdmobctlError("API_ERROR", `AdMob API error ${status}: ${message}`, opts);
 }
 
+// src/core/aliases.ts
+var TRANSLITERATE = { \u00E6: "ae", \u00F8: "o", \u00E5: "a", \u00DF: "ss", \u0153: "oe", \u0111: "d", \u0142: "l" };
+function slugify(input2) {
+  return input2.toLowerCase().replace(/[æøåßœđł]/g, (c) => TRANSLITERATE[c] ?? c).normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+var APPROVAL_LABELS = {
+  APPROVED: "approved",
+  IN_REVIEW: "in review",
+  ACTION_REQUIRED: "action required"
+};
+function approvalLabel(state) {
+  return state ? APPROVAL_LABELS[state] ?? "" : "";
+}
+function appsNeedingAction(apps) {
+  return apps.filter((a) => a.approval === "ACTION_REQUIRED");
+}
+function appDisplayName(app) {
+  return app.manualAppInfo?.displayName || app.linkedAppInfo?.displayName || app.appId;
+}
+function platformSuffix(platform) {
+  return slugify(platform || "app");
+}
+function buildAppIndex(apps, overrides = {}) {
+  const overrideByApp = new Map(Object.entries(overrides).map(([alias, appId]) => [appId, alias]));
+  const taken = new Set(overrideByApp.values());
+  return apps.map((app) => {
+    let alias = overrideByApp.get(app.appId);
+    if (!alias) {
+      const base = `${slugify(appDisplayName(app)) || "app"}-${platformSuffix(app.platform)}`;
+      alias = base;
+      for (let n = 2; taken.has(alias); n++) alias = `${base}-${n}`;
+      taken.add(alias);
+    }
+    const ref = {
+      alias,
+      appId: app.appId,
+      name: appDisplayName(app),
+      platform: app.platform,
+      resource: app.name
+    };
+    if (app.linkedAppInfo?.appStoreId) ref.storeId = app.linkedAppInfo.appStoreId;
+    if (app.appApprovalState) ref.approval = app.appApprovalState;
+    return ref;
+  });
+}
+function resolveApp(input2, index) {
+  const q = input2.trim();
+  const exact = index.find((a) => a.alias === q || a.appId === q || a.resource === q || a.appId.endsWith(`~${q}`));
+  if (exact) return exact;
+  const byName = index.filter((a) => a.name.toLowerCase() === q.toLowerCase());
+  if (byName.length === 1) return byName[0];
+  if (byName.length > 1) {
+    throw usageError(`App name "${input2}" is ambiguous: ${byName.map((a) => a.alias).join(", ")}`);
+  }
+  throw usageError(`Unknown app "${input2}". Known apps: ${index.map((a) => a.alias).join(", ") || "(none)"}`);
+}
+
 // src/core/auth/doctor.ts
 var ADMOB_SCOPES = ["https://www.googleapis.com/auth/admob.readonly", "https://www.googleapis.com/auth/admob.report"];
 function failed(id, err) {
@@ -10807,6 +10864,26 @@ async function runDoctor(d) {
     checks.push({ id: "account", status: "ok", summary: `Using ${a.publisherId} (${a.currencyCode}, ${a.reportingTimeZone})` });
   } catch (err) {
     checks.push(failed("account", err));
+    if (d.listApps) skipRest(["apps"], "skipped: no account");
+    return checks;
+  }
+  if (d.listApps) {
+    try {
+      const apps = await d.listApps();
+      const blocked = appsNeedingAction(apps);
+      const inReview = apps.filter((a) => a.approval === "IN_REVIEW").length;
+      const review = inReview ? `; ${inReview} in review` : "";
+      checks.push(
+        blocked.length ? {
+          id: "apps",
+          status: "warn",
+          summary: `${blocked.length} of ${apps.length} app(s) need action in AdMob review: ${blocked.map((a) => a.alias).join(", ")}${review}`,
+          fix: "Open AdMob \u2192 Apps \u2192 View all apps and follow the review steps for each app marked 'Action required'."
+        } : { id: "apps", status: "ok", summary: `${apps.length} app(s), none waiting on you in AdMob review${review}` }
+      );
+    } catch (err) {
+      checks.push(failed("apps", err));
+    }
   }
   return checks;
 }
@@ -11469,8 +11546,8 @@ function aggregate(report, dim, aliasOf) {
   for (const row of report.rows) {
     const d = row.dimensions[dim];
     const key = d?.value ?? "(unknown)";
-    const label = (dim === "APP" ? aliasOf(key) : void 0) ?? d?.label ?? key;
-    const a = out.get(key) ?? { key, label, earnings: 0, requests: 0, matched: 0, impressions: 0, clicks: 0 };
+    const label2 = (dim === "APP" ? aliasOf(key) : void 0) ?? d?.label ?? key;
+    const a = out.get(key) ?? { key, label: label2, earnings: 0, requests: 0, matched: 0, impressions: 0, clicks: 0 };
     a.earnings += row.metrics.ESTIMATED_EARNINGS ?? 0;
     a.requests += row.metrics.AD_REQUESTS ?? 0;
     a.matched += row.metrics.MATCHED_REQUESTS ?? 0;
@@ -11500,8 +11577,8 @@ async function insights(svc, opts) {
   const metrics = ["earnings", "requests", "matched-requests", "impressions", "clicks"];
   const dim = DIM_API[opts.by];
   const [cur, prev, apps] = await Promise.all([
-    svc.rawReport("network", { dateRange: range, by: [opts.by], metrics }),
-    svc.rawReport("network", { dateRange: prevRange, by: [opts.by], metrics }),
+    svc.rawReport("network", { dateRange: range, by: [opts.by], metrics, currency: opts.currency }),
+    svc.rawReport("network", { dateRange: prevRange, by: [opts.by], metrics, currency: opts.currency }),
     opts.by === "app" ? svc.apps() : []
   ]);
   const aliasOf = (id) => apps.find((a) => a.appId === id)?.alias;
@@ -11610,6 +11687,296 @@ async function insights(svc, opts) {
   };
 }
 
+// src/core/analyze.ts
+var MIN_REQUESTS = 1e3;
+var MIN_SHARE = 0.05;
+async function fetchReport(svc, kind, opts) {
+  const acct = await svc.account();
+  const range = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
+  const { report, notices } = await svc.rawReport(kind, {
+    dateRange: range,
+    by: opts.by,
+    metrics: opts.metrics,
+    filters: opts.filters,
+    currency: opts.currency
+  });
+  return {
+    report,
+    range,
+    from: formatDate(range.startDate),
+    to: formatDate(range.endDate),
+    currency: report.currency ?? acct.currencyCode,
+    timeZone: report.timeZone ?? acct.reportingTimeZone,
+    notices: [...report.warnings.map((w) => `API warning: ${w}`), ...notices]
+  };
+}
+var label = (v) => v?.label ?? v?.value ?? "(unknown)";
+var metric = (row, m) => row.metrics[m] ?? 0;
+var startsBefore = (range, d) => compareDates(range.startDate, d) < 0;
+var VERSION_KINDS = ["sdk", "app", "os"];
+var VERSION_DIM = { sdk: "GMA_SDK_VERSION", app: "APP_VERSION_NAME", os: "MOBILE_OS_VERSION" };
+var VERSION_NOUN = { sdk: "SDK version", app: "app version", os: "OS version" };
+async function analyzeVersions(svc, opts) {
+  if (!VERSION_KINDS.includes(opts.by)) throw usageError(`--by must be one of ${VERSION_KINDS.join(", ")}`);
+  const groupDim = opts.by === "app" ? "APP" : "PLATFORM";
+  const dim = VERSION_DIM[opts.by];
+  const [r, apps] = await Promise.all([
+    fetchReport(svc, "network", {
+      ...opts,
+      by: [groupDim, dim],
+      metrics: ["AD_REQUESTS", "MATCHED_REQUESTS", "IMPRESSIONS", "CLICKS"],
+      filters: opts.app ? { app: [opts.app] } : void 0
+    }),
+    groupDim === "APP" ? svc.apps() : Promise.resolve([])
+  ]);
+  const alias = new Map(apps.map((a) => [a.appId, a.alias]));
+  const groupOf = (row) => {
+    const v = row.dimensions[groupDim];
+    return groupDim === "APP" ? alias.get(v?.value ?? "") ?? label(v) : label(v);
+  };
+  const groupRequests = /* @__PURE__ */ new Map();
+  for (const row of r.report.rows) groupRequests.set(groupOf(row), (groupRequests.get(groupOf(row)) ?? 0) + metric(row, "AD_REQUESTS"));
+  const rows = r.report.rows.map((row) => {
+    const requests = metric(row, "AD_REQUESTS");
+    const matched = metric(row, "MATCHED_REQUESTS");
+    const impressions = metric(row, "IMPRESSIONS");
+    const clicks = metric(row, "CLICKS");
+    const group = groupOf(row);
+    return {
+      group,
+      version: label(row.dimensions[dim]),
+      requests,
+      matched_requests: matched,
+      impressions,
+      clicks,
+      match_rate: ratio(matched, requests),
+      show_rate: ratio(impressions, matched),
+      ctr: ratio(clicks, impressions),
+      request_share: ratio(requests, groupRequests.get(group) ?? 0)
+    };
+  });
+  rows.sort((a, b) => (groupRequests.get(b.group) ?? 0) - (groupRequests.get(a.group) ?? 0) || a.group.localeCompare(b.group) || b.requests - a.requests);
+  const highlights = [];
+  const noun = VERSION_NOUN[opts.by];
+  for (const row of rows) {
+    if (row.requests < MIN_REQUESTS || row.request_share < MIN_SHARE) continue;
+    const rest = rows.filter((o) => o.group === row.group && o !== row);
+    const restRequests = rest.reduce((s, o) => s + o.requests, 0);
+    const restMatched = rest.reduce((s, o) => s + o.matched_requests, 0);
+    const restImpressions = rest.reduce((s, o) => s + o.impressions, 0);
+    if (restRequests < MIN_REQUESTS) continue;
+    const key = `${row.group} ${row.version}`;
+    const traffic = `${row.requests} requests, ${pct(row.request_share)} of ${row.group}`;
+    const restMatch = ratio(restMatched, restRequests);
+    const restShow = ratio(restImpressions, restMatched);
+    if (restMatch > 0 && row.match_rate < 0.8 * restMatch) {
+      highlights.push({
+        kind: "low-match-rate",
+        key,
+        label: key,
+        message: `${key}: match rate ${pct(row.match_rate)} vs ${pct(restMatch)} on other ${row.group} ${noun}s (${traffic}).`
+      });
+    }
+    if (restShow > 0 && row.show_rate < 0.8 * restShow) {
+      highlights.push({
+        kind: "low-show-rate",
+        key,
+        label: key,
+        message: `${key}: show rate ${pct(row.show_rate)} vs ${pct(restShow)} on other ${row.group} ${noun}s (${traffic}).`
+      });
+    }
+  }
+  const summary = [
+    `${rows.length} ${noun}s across ${groupRequests.size} ${groupDim === "APP" ? "app(s)" : "platform(s)"}, ${r.from} \u2192 ${r.to}.`,
+    ...highlights.length ? highlights.map((h) => h.message) : [`No ${noun} with enough traffic stands out on match rate or show rate.`]
+  ];
+  return {
+    by: opts.by,
+    group_by: groupDim === "APP" ? "app" : "platform",
+    from: r.from,
+    to: r.to,
+    timeZone: r.timeZone,
+    rows,
+    highlights,
+    summary,
+    notices: r.notices
+  };
+}
+var SERVING_RESTRICTION_START = { year: 2021, month: 3, day: 13 };
+var UNRESTRICTED = /no restriction|unrestricted|^none$|restriction_none|no_restriction/i;
+async function analyzeConsent(svc, opts) {
+  const r = await fetchReport(svc, "network", {
+    ...opts,
+    by: ["SERVING_RESTRICTION"],
+    metrics: ["ESTIMATED_EARNINGS", "AD_REQUESTS", "MATCHED_REQUESTS", "IMPRESSIONS", "CLICKS"],
+    filters: opts.app ? { app: [opts.app] } : void 0
+  });
+  const totalRequests = r.report.rows.reduce((s, x) => s + metric(x, "AD_REQUESTS"), 0);
+  const totalEarnings = sumMicros(r.report.rows.map((x) => metric(x, "ESTIMATED_EARNINGS")));
+  const rows = r.report.rows.map((row) => {
+    const v = row.dimensions.SERVING_RESTRICTION;
+    const earnings = metric(row, "ESTIMATED_EARNINGS");
+    const requests = metric(row, "AD_REQUESTS");
+    const matched = metric(row, "MATCHED_REQUESTS");
+    const impressions = metric(row, "IMPRESSIONS");
+    return {
+      restriction: label(v),
+      restriction_id: v?.value ?? "",
+      requests,
+      request_share: ratio(requests, totalRequests),
+      earnings: microsToAmount(earnings),
+      earnings_micros: earnings,
+      earnings_share: ratio(earnings, totalEarnings),
+      impressions,
+      ecpm: perMille(earnings, impressions),
+      request_rpm: perMille(earnings, requests),
+      match_rate: ratio(matched, requests),
+      show_rate: ratio(impressions, matched)
+    };
+  }).sort((a, b) => b.requests - a.requests);
+  const isOpen = (x) => UNRESTRICTED.test(x.restriction) || UNRESTRICTED.test(x.restriction_id);
+  const open2 = rows.find(isOpen);
+  const restricted = rows.filter((x) => !isOpen(x));
+  const money = (m) => `${formatMicros(m)} ${r.currency}`;
+  const highlights = [];
+  if (open2) {
+    const openEcpm = perMille(open2.earnings_micros, open2.impressions);
+    for (const x of restricted) {
+      if (openEcpm > 0) x.ecpm_vs_unrestricted = ratio(x.ecpm, openEcpm);
+      if (x.request_share < MIN_SHARE || x.ecpm_vs_unrestricted === void 0) continue;
+      const diff = Math.round((x.ecpm_vs_unrestricted - 1) * 100);
+      highlights.push({
+        kind: "restricted",
+        key: x.restriction_id,
+        label: x.restriction,
+        message: `${x.restriction}: ${pct(x.request_share)} of requests at eCPM ${x.ecpm.toFixed(2)} ${r.currency} vs ${openEcpm.toFixed(2)} unrestricted (${diff >= 0 ? "+" : ""}${diff}%).`
+      });
+    }
+  }
+  const restrictedShare = open2 ? ratio(totalRequests - open2.requests, totalRequests) : void 0;
+  const notices = [...r.notices];
+  if (startsBefore(r.range, SERVING_RESTRICTION_START)) notices.push("Serving-restriction data starts 2021-03-13; earlier traffic is not broken down.");
+  if (!open2 && rows.length) notices.push("No unrestricted traffic found to compare against.");
+  const summary = [
+    `Estimated earnings ${money(totalEarnings)} from ${totalRequests} ad requests, ${r.from} \u2192 ${r.to}.`,
+    ...restrictedShare !== void 0 ? [`${pct(restrictedShare)} of ad requests were served under a restriction (consent, RDP or limited ads).`] : [],
+    ...highlights.map((h) => h.message),
+    ESTIMATE_LABEL
+  ];
+  const result = {
+    from: r.from,
+    to: r.to,
+    currency: r.currency,
+    timeZone: r.timeZone,
+    estimate: true,
+    rows,
+    highlights,
+    summary,
+    notices
+  };
+  if (restrictedShare !== void 0) result.restricted_request_share = restrictedShare;
+  return result;
+}
+async function analyzeWaterfall(svc, opts) {
+  const r = await fetchReport(svc, "mediation", {
+    ...opts,
+    by: ["MEDIATION_GROUP", "AD_SOURCE", "AD_SOURCE_INSTANCE"],
+    metrics: ["ESTIMATED_EARNINGS", "AD_REQUESTS", "MATCHED_REQUESTS", "IMPRESSIONS", "OBSERVED_ECPM"],
+    filters: opts.app ? { app: [opts.app] } : void 0
+  });
+  const wanted = opts.group?.trim().toLowerCase();
+  const all = r.report.rows.filter((row) => {
+    const g = row.dimensions.MEDIATION_GROUP;
+    return !wanted || g?.value.toLowerCase() === wanted || g?.label?.toLowerCase() === wanted;
+  });
+  if (wanted && r.report.rows.length && !all.length) {
+    const names = [...new Set(r.report.rows.map((row) => label(row.dimensions.MEDIATION_GROUP)))];
+    throw usageError(`No mediation group "${opts.group}" in this period. Groups: ${names.join(", ")}`);
+  }
+  const groupEarnings = /* @__PURE__ */ new Map();
+  for (const row of all) {
+    const id = row.dimensions.MEDIATION_GROUP?.value ?? "";
+    groupEarnings.set(id, (groupEarnings.get(id) ?? 0) + metric(row, "ESTIMATED_EARNINGS"));
+  }
+  const rows = all.map((row) => {
+    const g = row.dimensions.MEDIATION_GROUP;
+    const earnings = metric(row, "ESTIMATED_EARNINGS");
+    const requests = metric(row, "AD_REQUESTS");
+    const matched = metric(row, "MATCHED_REQUESTS");
+    const ecpm = metric(row, "OBSERVED_ECPM");
+    return {
+      group: label(g),
+      group_id: g?.value ?? "",
+      source: label(row.dimensions.AD_SOURCE),
+      source_id: row.dimensions.AD_SOURCE?.value ?? "",
+      instance: label(row.dimensions.AD_SOURCE_INSTANCE),
+      instance_id: row.dimensions.AD_SOURCE_INSTANCE?.value ?? "",
+      earnings: microsToAmount(earnings),
+      earnings_micros: earnings,
+      earnings_share: ratio(earnings, groupEarnings.get(g?.value ?? "") ?? 0),
+      requests,
+      matched_requests: matched,
+      impressions: metric(row, "IMPRESSIONS"),
+      match_rate: ratio(matched, requests),
+      ecpm: microsToAmount(ecpm),
+      ecpm_micros: ecpm
+    };
+  });
+  const gEarn = (row) => groupEarnings.get(row.group_id) ?? 0;
+  rows.sort((a, b) => gEarn(b) - gEarn(a) || a.group.localeCompare(b.group) || b.ecpm_micros - a.ecpm_micros || b.earnings_micros - a.earnings_micros);
+  const groups = [];
+  for (const row of rows) {
+    const last = groups[groups.length - 1];
+    if (last?.group_id === row.group_id) last.lines++;
+    else groups.push({ group: row.group, group_id: row.group_id, earnings: microsToAmount(gEarn(row)), earnings_micros: gEarn(row), lines: 1 });
+  }
+  const money = (m) => `${formatMicros(m)} ${r.currency}`;
+  const highlights = [];
+  for (const g of groups) {
+    const lines = rows.filter((x) => x.group_id === g.group_id);
+    const top = lines.reduce((best, x) => x.earnings_micros > best.earnings_micros ? x : best, lines[0]);
+    if (top.earnings_micros > 0) {
+      highlights.push({
+        kind: "top",
+        key: `${g.group_id}/${top.instance_id}`,
+        label: `${g.group} / ${top.instance}`,
+        message: `${g.group}: ${top.instance} (${top.source}) earns most, ${money(top.earnings_micros)} (${pct(top.earnings_share)} of the group, observed eCPM ${top.ecpm.toFixed(2)}).`
+      });
+    }
+    const groupRequests = lines.reduce((s, x) => s + x.requests, 0);
+    for (const x of lines) {
+      if (x.requests < MIN_REQUESTS) continue;
+      const key = `${g.group_id}/${x.instance_id}`;
+      const name = `${g.group} / ${x.instance}`;
+      if (x.impressions === 0) {
+        highlights.push({ kind: "idle", key, label: name, message: `${name} (${x.source}) got ${x.requests} requests and served no ads; check its ad unit mapping or remove the line.` });
+      } else if (x.match_rate < 0.02 && ratio(x.requests, groupRequests) >= MIN_SHARE) {
+        highlights.push({ kind: "low-fill", key, label: name, message: `${name} (${x.source}) fills only ${pct(x.match_rate)} of ${x.requests} requests; each miss adds latency before the next line.` });
+      }
+    }
+  }
+  const total = sumMicros(rows.map((x) => x.earnings_micros));
+  const summary = [
+    `Estimated mediation earnings ${money(total)} across ${groups.length} mediation group(s) and ${rows.length} line(s), ${r.from} \u2192 ${r.to}.`,
+    ...highlights.filter((h) => h.kind !== "top").map((h) => h.message),
+    ...highlights.filter((h) => h.kind === "top").slice(0, 3).map((h) => h.message),
+    "Observed eCPM for third-party sources is their own estimate.",
+    ESTIMATE_LABEL
+  ];
+  return {
+    from: r.from,
+    to: r.to,
+    currency: r.currency,
+    timeZone: r.timeZone,
+    estimate: true,
+    groups,
+    rows,
+    highlights,
+    summary,
+    notices: r.notices
+  };
+}
+
 // src/core/log.ts
 var verbose = Boolean(process.env.ADMOBCTL_DEBUG);
 var log = {
@@ -11625,52 +11992,6 @@ var log = {
 `);
   }
 };
-
-// src/core/aliases.ts
-var TRANSLITERATE = { \u00E6: "ae", \u00F8: "o", \u00E5: "a", \u00DF: "ss", \u0153: "oe", \u0111: "d", \u0142: "l" };
-function slugify(input2) {
-  return input2.toLowerCase().replace(/[æøåßœđł]/g, (c) => TRANSLITERATE[c] ?? c).normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-}
-function appDisplayName(app) {
-  return app.manualAppInfo?.displayName || app.linkedAppInfo?.displayName || app.appId;
-}
-function platformSuffix(platform) {
-  return slugify(platform || "app");
-}
-function buildAppIndex(apps, overrides = {}) {
-  const overrideByApp = new Map(Object.entries(overrides).map(([alias, appId]) => [appId, alias]));
-  const taken = new Set(overrideByApp.values());
-  return apps.map((app) => {
-    let alias = overrideByApp.get(app.appId);
-    if (!alias) {
-      const base = `${slugify(appDisplayName(app)) || "app"}-${platformSuffix(app.platform)}`;
-      alias = base;
-      for (let n = 2; taken.has(alias); n++) alias = `${base}-${n}`;
-      taken.add(alias);
-    }
-    const ref = {
-      alias,
-      appId: app.appId,
-      name: appDisplayName(app),
-      platform: app.platform,
-      resource: app.name
-    };
-    if (app.linkedAppInfo?.appStoreId) ref.storeId = app.linkedAppInfo.appStoreId;
-    if (app.appApprovalState) ref.approval = app.appApprovalState;
-    return ref;
-  });
-}
-function resolveApp(input2, index) {
-  const q = input2.trim();
-  const exact = index.find((a) => a.alias === q || a.appId === q || a.resource === q || a.appId.endsWith(`~${q}`));
-  if (exact) return exact;
-  const byName = index.filter((a) => a.name.toLowerCase() === q.toLowerCase());
-  if (byName.length === 1) return byName[0];
-  if (byName.length > 1) {
-    throw usageError(`App name "${input2}" is ambiguous: ${byName.map((a) => a.alias).join(", ")}`);
-  }
-  throw usageError(`Unknown app "${input2}". Known apps: ${index.map((a) => a.alias).join(", ") || "(none)"}`);
-}
 
 // src/core/auth/adc.ts
 import { readFileSync as readFileSync3 } from "node:fs";
@@ -11863,6 +12184,38 @@ async function requestJson(url2, init, opts = {}) {
   }
 }
 
+// src/core/ratelimit.ts
+var MINUTE = 6e4;
+var QUOTAS = { account: 900, inventory: 120, reporting: 900 };
+var RateLimiter = class {
+  constructor(limit, windowMs, now = Date.now) {
+    this.limit = limit;
+    this.windowMs = windowMs;
+    this.now = now;
+  }
+  limit;
+  windowMs;
+  now;
+  starts = [];
+  /** Wait until a call may start. `sleep` is the caller's, so tests with a fake sleep never block. */
+  async take(sleep = defaultSleep) {
+    const t = this.now();
+    this.starts = this.starts.filter((s) => s > t - this.windowMs);
+    const at = this.starts.length >= this.limit ? this.starts[this.starts.length - this.limit] + this.windowMs : t;
+    this.starts.push(at);
+    this.starts.sort((a, b) => a - b);
+    if (at > t) {
+      log.debug(`rate limit: waiting ${at - t}ms for a free slot`);
+      await sleep(at - t);
+    }
+  }
+};
+function createLimiters(now) {
+  const make = (c) => new RateLimiter(QUOTAS[c], MINUTE, now);
+  return { account: make("account"), inventory: make("inventory"), reporting: make("reporting") };
+}
+var processLimiters = createLimiters();
+
 // src/core/report.ts
 var DIMENSIONS = {
   network: [
@@ -11944,6 +12297,10 @@ function canonical(name) {
 function friendlyName(apiName) {
   return apiName.toLowerCase().replace(/_/g, "-");
 }
+function friendlyMetric(apiName) {
+  const alias = Object.keys(METRIC_ALIASES).find((k) => METRIC_ALIASES[k] === apiName);
+  return friendlyName(alias ?? apiName);
+}
 function normalizeDimension(name, kind) {
   const c = canonical(name);
   const resolved = DIMENSION_ALIASES[c] ?? c;
@@ -11964,10 +12321,41 @@ function normalizeMetric(name, kind) {
   }
   return resolved;
 }
+var API_MAX_ROWS = 1e5;
 var TIME_DIMENSIONS = ["DATE", "WEEK", "MONTH"];
+var INCOMPATIBLE = {
+  AD_TYPE: ["AD_REQUESTS", "MATCH_RATE", "IMPRESSION_RPM"]
+};
+var DISCOURAGED = {
+  MOBILE_OS_VERSION: ["ESTIMATED_EARNINGS", "OBSERVED_ECPM", "IMPRESSION_RPM"],
+  GMA_SDK_VERSION: ["ESTIMATED_EARNINGS", "OBSERVED_ECPM", "IMPRESSION_RPM"],
+  APP_VERSION_NAME: ["ESTIMATED_EARNINGS", "OBSERVED_ECPM", "IMPRESSION_RPM"]
+};
+function compatibleMetrics(_kind, dimensions, metrics) {
+  const excluded = new Set(dimensions.flatMap((d) => [...INCOMPATIBLE[d] ?? [], ...DISCOURAGED[d] ?? []]));
+  return { kept: metrics.filter((m) => !excluded.has(m)), dropped: metrics.filter((m) => excluded.has(m)) };
+}
+function checkCombination(dimensions, metrics) {
+  const timeDims = dimensions.filter((d) => TIME_DIMENSIONS.includes(d));
+  if (timeDims.length > 1) {
+    throw usageError(`A report can use only one time dimension (date, week or month), got ${timeDims.map(friendlyName).join(", ")}.`);
+  }
+  for (const d of dimensions) {
+    const bad = metrics.filter((m) => INCOMPATIBLE[d]?.includes(m));
+    if (bad.length) {
+      throw usageError(`${friendlyName(d)} cannot be combined with ${bad.map(friendlyMetric).join(", ")} (an AdMob API restriction). Drop one of them.`);
+    }
+  }
+}
+function normalizeCurrency(code2) {
+  const c = code2.trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(c)) throw usageError(`Currency must be an ISO 4217 code like USD or EUR, got "${code2}"`);
+  return c;
+}
 function buildReportSpec(kind, input2) {
   const dimensions = input2.dimensions.map((d) => normalizeDimension(d, kind));
   const metrics = input2.metrics.map((m) => normalizeMetric(m, kind));
+  checkCombination(dimensions, metrics);
   const spec = { dateRange: input2.dateRange, dimensions, metrics };
   const filters = Object.entries(input2.filters ?? {});
   if (filters.length) {
@@ -11981,6 +12369,7 @@ function buildReportSpec(kind, input2) {
   else if (metrics.includes("ESTIMATED_EARNINGS")) {
     spec.sortConditions = [{ metric: "ESTIMATED_EARNINGS", order: "DESCENDING" }];
   }
+  if (input2.currency !== void 0) spec.localizationSettings = { currencyCode: normalizeCurrency(input2.currency) };
   if (input2.maxRows !== void 0) spec.maxReportRows = input2.maxRows;
   return spec;
 }
@@ -12025,7 +12414,8 @@ var AdmobClient = class {
     this.opts = opts;
   }
   opts;
-  async request(method, path, body) {
+  async request(quota, method, path, body) {
+    await (this.opts.limiters ?? processLimiters)[quota].take(this.opts.sleep);
     const headers = {
       authorization: `Bearer ${await this.opts.getToken()}`,
       accept: "application/json"
@@ -12035,36 +12425,54 @@ var AdmobClient = class {
     const url2 = `${this.opts.baseUrl ?? API_BASE}/${path}`;
     return requestJson(url2, { method, headers, body: body === void 0 ? void 0 : JSON.stringify(body) }, this.opts);
   }
-  async paginate(path, key) {
+  async paginate(quota, path, key) {
     const out = [];
     let pageToken;
     do {
       const qs = new URLSearchParams({ pageSize: "1000" });
       if (pageToken) qs.set("pageToken", pageToken);
-      const page = await this.request("GET", `${path}?${qs}`);
+      const page = await this.request(quota, "GET", `${path}?${qs}`);
       out.push(...page?.[key] ?? []);
       pageToken = page?.nextPageToken || void 0;
     } while (pageToken);
     return out;
   }
   listAccounts() {
-    return this.paginate("accounts", "account");
+    return this.paginate("account", "accounts", "account");
   }
   listApps(account) {
-    return this.paginate(`${accountName(account)}/apps`, "apps");
+    return this.paginate("inventory", `${accountName(account)}/apps`, "apps");
   }
   listAdUnits(account) {
-    return this.paginate(`${accountName(account)}/adUnits`, "adUnits");
+    return this.paginate("inventory", `${accountName(account)}/adUnits`, "adUnits");
   }
   async networkReport(account, spec) {
-    const raw = await this.request("POST", `${accountName(account)}/networkReport:generate`, { reportSpec: spec });
+    const raw = await this.request("reporting", "POST", `${accountName(account)}/networkReport:generate`, { reportSpec: spec });
     return parseReport(raw);
   }
   async mediationReport(account, spec) {
-    const raw = await this.request("POST", `${accountName(account)}/mediationReport:generate`, { reportSpec: spec });
+    const raw = await this.request("reporting", "POST", `${accountName(account)}/mediationReport:generate`, { reportSpec: spec });
     return parseReport(raw);
   }
 };
+
+// src/core/freshness.ts
+var MEDIATION_DETAIL_START = { year: 2019, month: 10, day: 20 };
+function freshnessNotices(kind, range, today) {
+  const notes = [];
+  if (compareDates(range.endDate, today) >= 0) {
+    notes.push("Includes today: AdMob data arrives about 4 hours late and some metrics are computed once a day, so today's figures are partial.");
+  }
+  if (kind === "mediation") {
+    if (compareDates(range.endDate, addDays(today, -1)) >= 0) {
+      notes.push("Third-party ad sources report 8-24 hours late, so the most recent day's mediation figures may still change.");
+    }
+    if (compareDates(range.startDate, MEDIATION_DETAIL_START) < 0) {
+      notes.push("Third-party earnings and observed eCPM read 0 before 2019-10-20.");
+    }
+  }
+  return notes;
+}
 
 // src/core/report-view.ts
 var METRIC_KEYS = {
@@ -12079,8 +12487,8 @@ var METRIC_KEYS = {
   IMPRESSION_RPM: "rpm",
   OBSERVED_ECPM: "ecpm"
 };
-function metricKey(metric) {
-  return METRIC_KEYS[metric] ?? metric.toLowerCase();
+function metricKey(metric2) {
+  return METRIC_KEYS[metric2] ?? metric2.toLowerCase();
 }
 function dimensionKey(dim) {
   return friendlyName(dim).replace(/-/g, "_");
@@ -12186,6 +12594,7 @@ var AdmobService = class _AdmobService {
   now;
   accountPromise;
   appsPromise;
+  adUnitsPromise;
   static create(opts = {}, deps = {}) {
     const dir = deps.configDir ?? configDir();
     const profile = resolveProfile(loadConfig(dir), opts.profile);
@@ -12248,9 +12657,17 @@ var AdmobService = class _AdmobService {
   async resolveApp(input2) {
     return resolveApp(input2, await this.apps());
   }
+  rawAdUnits() {
+    if (this.adUnitsPromise) return this.adUnitsPromise;
+    const p = (async () => this.client.listAdUnits((await this.account()).name))();
+    this.adUnitsPromise = p;
+    p.catch(() => {
+      if (this.adUnitsPromise === p) this.adUnitsPromise = void 0;
+    });
+    return p;
+  }
   async adUnits(opts = {}) {
-    const acct = await this.account();
-    const [apps, units] = await Promise.all([this.apps(), this.client.listAdUnits(acct.name)]);
+    const [apps, units] = await Promise.all([this.apps(), this.rawAdUnits()]);
     const filterApp = opts.app ? resolveApp(opts.app, apps) : void 0;
     const aliasById = new Map(apps.map((a) => [a.appId, a.alias]));
     return units.filter((u) => !filterApp || u.appId === filterApp.appId).map((u) => ({
@@ -12272,12 +12689,22 @@ var AdmobService = class _AdmobService {
   async rawReport(kind, q) {
     const range = q.dateRange ?? dateRangeFromArgs(q.from ?? "", q.to ?? q.from ?? "");
     const dimensions = q.by.map((d) => normalizeDimension(d, kind));
-    const metrics = (q.metrics?.length ? q.metrics : DEFAULT_METRICS[kind]).map((m) => normalizeMetric(m, kind));
+    const notices = [];
+    let metrics;
+    if (q.metrics?.length) metrics = q.metrics.map((m) => normalizeMetric(m, kind));
+    else {
+      const { kept, dropped } = compatibleMetrics(kind, dimensions, DEFAULT_METRICS[kind]);
+      metrics = kept;
+      if (dropped.length) {
+        notices.push(`Left out ${dropped.map(friendlyMetric).join(", ")}: the AdMob API does not combine them with ${dimensions.map(friendlyName).join(", ")}.`);
+      }
+    }
     const filters = await this.resolveFilters(kind, q.filters ?? {});
-    const spec = buildReportSpec(kind, { dateRange: range, dimensions, metrics, filters, maxRows: q.maxRows });
+    const spec = buildReportSpec(kind, { dateRange: range, dimensions, metrics, filters, maxRows: q.maxRows, currency: q.currency });
     const acct = await this.account();
     const report = kind === "network" ? await this.client.networkReport(acct.name, spec) : await this.client.mediationReport(acct.name, spec);
-    return { report, dimensions, metrics, range };
+    notices.push(...freshnessNotices(kind, range, todayIn(acct.reportingTimeZone, this.now())));
+    return { report, dimensions, metrics, range, notices };
   }
   async resolveFilters(kind, filters) {
     const out = {};
@@ -12288,11 +12715,12 @@ var AdmobService = class _AdmobService {
     return out;
   }
   async report(kind, q) {
-    const { report, dimensions, metrics, range } = await this.rawReport(kind, q);
+    const { report, dimensions, metrics, range, notices } = await this.rawReport(kind, q);
     const needsApps = dimensions.includes("APP");
     const apps = needsApps ? await this.apps() : [];
-    if (q.maxRows !== void 0 && report.rows.length > q.maxRows) report.rows = report.rows.slice(0, q.maxRows);
-    const truncated = report.matchingRowCount !== void 0 ? report.matchingRowCount > report.rows.length : q.maxRows !== void 0 && report.rows.length >= q.maxRows;
+    const cap = q.maxRows ?? API_MAX_ROWS;
+    if (report.rows.length > cap) report.rows = report.rows.slice(0, cap);
+    const truncated = report.rows.length >= cap && (report.matchingRowCount === void 0 || report.matchingRowCount > report.rows.length);
     const acct = await this.account();
     const result = {
       kind,
@@ -12305,7 +12733,8 @@ var AdmobService = class _AdmobService {
       metrics: metrics.map(metricKey),
       rows: toViewRows(report, dimensions, metrics, apps),
       truncated,
-      warnings: report.warnings
+      warnings: report.warnings,
+      notices
     };
     if (!truncated) result.totals = computeTotals(report, metrics);
     if (report.matchingRowCount !== void 0) result.matchingRowCount = report.matchingRowCount;
@@ -12408,6 +12837,7 @@ function accountsView(accounts) {
   };
 }
 function appsView(apps) {
+  const blocked = appsNeedingAction(apps);
   return {
     data: apps,
     table: {
@@ -12416,10 +12846,12 @@ function appsView(apps) {
         { key: "name", label: "Name" },
         { key: "platform", label: "Platform" },
         { key: "appId", label: "App ID" },
-        { key: "storeId", label: "Store ID" }
+        { key: "storeId", label: "Store ID" },
+        { key: "approval", label: "Approval" }
       ],
-      rows: apps
-    }
+      rows: apps.map((a) => ({ ...a, approval: approvalLabel(a.approval) }))
+    },
+    notes: blocked.length ? [`${blocked.map((a) => a.alias).join(", ")} ${blocked.length === 1 ? "needs" : "need"} action in AdMob (Apps \u2192 View all apps); ad serving may be limited until then.`] : void 0
   };
 }
 function adUnitsView(units) {
@@ -12468,14 +12900,15 @@ function displayRow(row) {
 function reportView(r) {
   const columns = r.dimensions.map((d) => ({ key: d, label: d === "app" ? "App" : titleCase(d) }));
   for (const key of r.metrics) {
-    const label = METRIC_LABELS[key] ?? titleCase(key);
-    columns.push({ key, label: MONEY_KEYS.has(key) && r.currency ? `${label} (${r.currency})` : label, align: "right" });
+    const label2 = METRIC_LABELS[key] ?? titleCase(key);
+    columns.push({ key, label: MONEY_KEYS.has(key) && r.currency ? `${label2} (${r.currency})` : label2, align: "right" });
   }
   const notes = [`${r.kind === "network" ? "Network" : "Mediation"} report ${r.from} \u2192 ${r.to}, ${r.timeZone ?? ""}. ${ESTIMATE_NOTE}`];
   if (r.truncated) {
     notes.push(`Truncated: ${shownRows(r)}. Raise --max-rows or narrow the query.`);
   }
   for (const w of r.warnings) notes.push(`API warning: ${w}`);
+  notes.push(...r.notices);
   const footer = r.totals && r.rows.length > 1 ? [{ ...displayRow(r.totals), [columns[0].key]: "Total" }] : void 0;
   return {
     data: r,
@@ -12581,6 +13014,84 @@ function insightsView(r) {
     notes: r.summary
   };
 }
+var VERSION_LABELS = { sdk: "SDK version", app: "App version", os: "OS version" };
+function versionsView(r) {
+  return {
+    data: r,
+    table: {
+      columns: [
+        { key: "group", label: r.group_by === "app" ? "App" : "Platform" },
+        { key: "version", label: VERSION_LABELS[r.by] },
+        { key: "requests", label: "Requests", align: "right" },
+        { key: "request_share", label: "Share", align: "right" },
+        { key: "match_rate", label: "Match", align: "right" },
+        { key: "show_rate", label: "Show", align: "right" },
+        { key: "ctr", label: "CTR", align: "right" }
+      ],
+      rows: r.rows.map((x) => ({
+        ...x,
+        request_share: formatPercent(x.request_share),
+        match_rate: formatPercent(x.match_rate),
+        show_rate: formatPercent(x.show_rate),
+        ctr: formatPercent(x.ctr)
+      }))
+    },
+    notes: [...r.summary, ...r.notices]
+  };
+}
+function consentView(r) {
+  return {
+    data: r,
+    table: {
+      columns: [
+        { key: "restriction", label: "Serving restriction" },
+        { key: "requests", label: "Requests", align: "right" },
+        { key: "request_share", label: "Share", align: "right" },
+        { key: "earnings", label: `Earnings (${r.currency})`, align: "right" },
+        { key: "ecpm", label: "eCPM", align: "right" },
+        { key: "ecpm_vs_unrestricted", label: "vs open", align: "right" },
+        { key: "match_rate", label: "Match", align: "right" },
+        { key: "show_rate", label: "Show", align: "right" }
+      ],
+      rows: r.rows.map((x) => ({
+        ...x,
+        request_share: formatPercent(x.request_share),
+        earnings: x.earnings.toFixed(2),
+        ecpm: x.ecpm.toFixed(2),
+        ecpm_vs_unrestricted: x.ecpm_vs_unrestricted === void 0 ? "" : formatPercent(x.ecpm_vs_unrestricted),
+        match_rate: formatPercent(x.match_rate),
+        show_rate: formatPercent(x.show_rate)
+      }))
+    },
+    notes: [...r.summary, ...r.notices]
+  };
+}
+function waterfallView(r) {
+  return {
+    data: r,
+    table: {
+      columns: [
+        { key: "group", label: "Mediation group" },
+        { key: "source", label: "Ad source" },
+        { key: "instance", label: "Instance" },
+        { key: "ecpm", label: `Obs. eCPM (${r.currency})`, align: "right" },
+        { key: "earnings", label: `Earnings (${r.currency})`, align: "right" },
+        { key: "earnings_share", label: "Share", align: "right" },
+        { key: "requests", label: "Requests", align: "right" },
+        { key: "match_rate", label: "Match", align: "right" },
+        { key: "impressions", label: "Impressions", align: "right" }
+      ],
+      rows: r.rows.map((x) => ({
+        ...x,
+        ecpm: formatMicros(x.ecpm_micros),
+        earnings: formatMicros(x.earnings_micros),
+        earnings_share: formatPercent(x.earnings_share),
+        match_rate: formatPercent(x.match_rate)
+      }))
+    },
+    notes: [...r.summary, ...r.notices]
+  };
+}
 
 // src/cli/program.ts
 var list = (v, prev = []) => [...prev, ...v.split(",").map((s) => s.trim()).filter(Boolean)];
@@ -12666,7 +13177,8 @@ function buildProgram(io) {
       tokenInfo: (t) => fetchTokenInfo(t, io.service?.fetch),
       quotaProject: s.profile.quotaProject ?? tp.quotaProject(),
       listAccounts: () => s.listAccounts(),
-      account: () => s.account()
+      account: () => s.account(),
+      listApps: () => s.apps()
     });
     emit(cmd, doctorView(checks));
     if (checks.some((c) => c.status === "fail")) process.exitCode = 1;
@@ -12676,7 +13188,7 @@ function buildProgram(io) {
   program2.command("ad-units").description("Ad units in the account").command("list").description("List ad units").option("--app <alias|id>", "only ad units of this app").action(async (o, cmd) => emit(cmd, adUnitsView(await svc(cmd).adUnits({ app: o.app }))));
   const report = program2.command("report").description("Network and mediation reports");
   for (const kind of ["network", "mediation"]) {
-    report.command(kind).description(`Generate a ${kind} report`).requiredOption("--from <date>", "start, YYYY-MM or YYYY-MM-DD").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD (default: same as --from)").option("--by <dims>", `dimensions, comma-separated (e.g. app,country${kind === "mediation" ? ",ad-source" : ""})`, list).option("--metrics <metrics>", "metrics, comma-separated (default: all common ones)", list).option("--filter <k=v,\u2026>", "filter, repeatable (e.g. country=NO,SE or app=<alias>)", (v, p = []) => [...p, v]).option("--max-rows <n>", "cap the number of rows", positiveInt).action(async (o, cmd) => {
+    report.command(kind).description(`Generate a ${kind} report`).requiredOption("--from <date>", "start, YYYY-MM or YYYY-MM-DD").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD (default: same as --from)").option("--by <dims>", `dimensions, comma-separated (e.g. app,country${kind === "mediation" ? ",ad-source" : ""})`, list).option("--metrics <metrics>", "metrics, comma-separated (default: all common ones)", list).option("--filter <k=v,\u2026>", "filter, repeatable (e.g. country=NO,SE or app=<alias>)", (v, p = []) => [...p, v]).option("--max-rows <n>", "cap the number of rows", positiveInt).option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)").action(async (o, cmd) => {
       const s = svc(cmd);
       const q = {
         from: o.from,
@@ -12684,7 +13196,8 @@ function buildProgram(io) {
         by: o.by?.length ? o.by : ["app"],
         metrics: o.metrics,
         filters: parseFilters(o.filter),
-        maxRows: o.maxRows
+        maxRows: o.maxRows,
+        currency: o.currency
       };
       emit(cmd, reportView(kind === "network" ? await s.networkReport(q) : await s.mediationReport(q)));
     });
@@ -12722,15 +13235,34 @@ function buildProgram(io) {
       () => journalView(r.months.flatMap((m) => journalRows(m, s.profile.finance)), r.notes)
     );
   });
-  program2.command("insights").description("Monetization insights: top/bottom earners, low fill, swings vs the previous period").option("--last <Nd>", "the last N complete days (default 30d)", parseDays).option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD").addOption(new Option("--by <dimension>", "group by").choices([...INSIGHT_DIMENSIONS]).default("ad-unit")).option("--swing <percent>", "change that counts as a swing (default 30)", positiveInt).action(async (o, cmd) => {
+  program2.command("insights").description("Monetization insights: top/bottom earners, low fill, swings vs the previous period").option("--last <Nd>", "the last N complete days (default 30d)", parseDays).option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD").addOption(new Option("--by <dimension>", "group by").choices([...INSIGHT_DIMENSIONS]).default("ad-unit")).option("--swing <percent>", "change that counts as a swing (default 30)", positiveInt).option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)").action(async (o, cmd) => {
     const r = await insights(svc(cmd), {
       last: o.last,
       from: o.from,
       to: o.to,
       by: o.by,
-      swingThreshold: o.swing === void 0 ? void 0 : o.swing / 100
+      swingThreshold: o.swing === void 0 ? void 0 : o.swing / 100,
+      currency: o.currency
     });
     emit(cmd, insightsView(r));
+  });
+  const withRange = (cmd) => cmd.option("--last <Nd>", "the last N complete days (default 30d)", parseDays).option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD");
+  const range = (o) => ({ last: o.last, from: o.from, to: o.to });
+  const analyze = program2.command("analyze").description("Curated analyses: SDK/app/OS version health, consent (serving restriction) impact, mediation waterfall");
+  withRange(
+    analyze.command("versions").description("Match and show rate per SDK, app or OS version, flagging versions that do worse than the rest").addOption(new Option("--by <kind>", "which version").choices([...VERSION_KINDS]).default("sdk")).option("--app <alias|id>", "only this app")
+  ).action(async (o, cmd) => {
+    emit(cmd, versionsView(await analyzeVersions(svc(cmd), { ...range(o), by: o.by, app: o.app })));
+  });
+  withRange(
+    analyze.command("consent").description("Traffic and eCPM by serving restriction (consent, RDP, limited ads) vs unrestricted traffic").option("--app <alias|id>", "only this app").option("--currency <code>", "convert earnings to this ISO 4217 currency")
+  ).action(async (o, cmd) => {
+    emit(cmd, consentView(await analyzeConsent(svc(cmd), { ...range(o), app: o.app, currency: o.currency })));
+  });
+  withRange(
+    analyze.command("waterfall").description("Mediation lines per group by observed eCPM, with idle and low-fill lines flagged").option("--app <alias|id>", "only this app").option("--group <name|id>", "only this mediation group").option("--currency <code>", "convert earnings to this ISO 4217 currency")
+  ).action(async (o, cmd) => {
+    emit(cmd, waterfallView(await analyzeWaterfall(svc(cmd), { ...range(o), app: o.app, group: o.group, currency: o.currency })));
   });
   program2.command("mcp").description("Run the MCP server over stdio (for Claude Code, Codex and other MCP clients)").action(async (_o, cmd) => {
     if (!io.runMcp) throw new AdmobctlError("USAGE", "The mcp command is not available in this build (no MCP server wired in).");
@@ -29608,9 +30140,9 @@ function codePointLengthVar(doc, ctx, accessor, inDoubt) {
   doc.write(`const ${v} = typeof ${accessor} === "string" && ${inDoubt} ? ${cpLen}(${accessor}) : ${accessor}.length;`);
   return v;
 }
-function numericOperand(value, label) {
+function numericOperand(value, label2) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new ZodCompileUnsupportedError(`${label} bound of type ${typeof value}`);
+    throw new ZodCompileUnsupportedError(`${label2} bound of type ${typeof value}`);
   }
   return `${value}`;
 }
@@ -42083,9 +42615,13 @@ var INSTRUCTIONS = `Read-only access to the user's Google AdMob account via admo
 - Apps are referred to by alias (e.g. "my-game-ios"); call admobctl_list_apps to see them.
 - All earnings are ESTIMATES. When reporting money, say so and that they should be reconciled against AdMob Payments (finalized).
 - For "what did I earn in <month>" use admobctl_finance_month; for trends and recommendations use admobctl_insights.
+- For SDK/app-version problems, consent impact or mediation waterfalls use the admobctl_analyze_* tools.
 - Errors include a "Fix:" line with the exact command the user should run.`;
 var annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 var accountArg = { account: external_exports.string().optional().describe("Publisher ID (pub-\u2026). Defaults to the configured or only account.") };
+var currencyArg = {
+  currency: external_exports.string().regex(/^[A-Za-z]{3}$/, "an ISO 4217 code like USD").optional().describe("ISO 4217 code to convert earnings into, e.g. USD. Default: the account currency.")
+};
 var anyRecord = external_exports.record(external_exports.string(), external_exports.unknown());
 var loose = (shape) => external_exports.looseObject(shape);
 function textOf(data) {
@@ -42132,6 +42668,7 @@ var reportInput = {
   metrics: external_exports.array(external_exports.string()).optional().describe('Metrics, e.g. ["earnings","impressions","match-rate","show-rate","rpm"]. Default: all common metrics.'),
   filters: external_exports.record(external_exports.string(), external_exports.array(external_exports.string())).optional().describe('Dimension filters, e.g. {"country":["NO","SE"],"app":["my-game-ios"]}. App filters accept aliases.'),
   max_rows: external_exports.number().int().positive().max(HARD_MAX_ROWS).optional().describe(`Row cap (default ${DEFAULT_MAX_ROWS}).`),
+  ...currencyArg,
   ...accountArg
 };
 var reportOutput = loose({
@@ -42142,7 +42679,8 @@ var reportOutput = loose({
   rows: external_exports.array(anyRecord),
   totals: anyRecord.optional(),
   truncated: external_exports.boolean(),
-  notice: external_exports.string().optional()
+  notice: external_exports.string().optional(),
+  notices: external_exports.array(external_exports.string())
 });
 function createMcpServer(deps) {
   const server = new McpServer({ name: "admobctl", version: VERSION }, { instructions: INSTRUCTIONS });
@@ -42179,7 +42717,7 @@ function createMcpServer(deps) {
     "admobctl_list_apps",
     {
       title: "List AdMob apps",
-      description: "List apps in the AdMob account with their aliases (use the alias in other tools), platform, app ID and store ID.",
+      description: "List apps in the AdMob account with their aliases (use the alias in other tools), platform, app ID, store ID and approval state (ACTION_REQUIRED means the app needs the publisher's attention in AdMob review; ad serving may be limited).",
       inputSchema: { ...accountArg },
       outputSchema: loose({ apps: external_exports.array(anyRecord) }),
       annotations
@@ -42215,7 +42753,8 @@ function createMcpServer(deps) {
           by: a.by?.length ? a.by : ["app"],
           metrics: a.metrics,
           filters: a.filters,
-          maxRows: a.max_rows ?? DEFAULT_MAX_ROWS
+          maxRows: a.max_rows ?? DEFAULT_MAX_ROWS,
+          currency: a.currency
         };
         return reportPayload(kind === "network" ? await s.networkReport(q) : await s.mediationReport(q));
       })
@@ -42282,6 +42821,7 @@ function createMcpServer(deps) {
         from: external_exports.string().optional().describe("Start, YYYY-MM or YYYY-MM-DD (instead of last_days)"),
         to: external_exports.string().optional().describe("End, YYYY-MM or YYYY-MM-DD"),
         by: external_exports.enum(INSIGHT_DIMENSIONS).optional().describe("Group by (default ad-unit)"),
+        ...currencyArg,
         ...accountArg
       },
       outputSchema: loose({
@@ -42297,9 +42837,62 @@ function createMcpServer(deps) {
       annotations
     },
     wrap(async (a) => {
-      const r = await insights(svc(a), { last: a.last_days, from: a.from, to: a.to, by: a.by ?? "ad-unit" });
+      const r = await insights(svc(a), { last: a.last_days, from: a.from, to: a.to, by: a.by ?? "ad-unit", currency: a.currency });
       return fitRows({ ...r });
     })
+  );
+  const rangeInput = {
+    last_days: external_exports.number().int().min(1).max(366).optional().describe("The last N complete days (default 30)"),
+    from: external_exports.string().optional().describe("Start, YYYY-MM or YYYY-MM-DD (instead of last_days)"),
+    to: external_exports.string().optional().describe("End, YYYY-MM or YYYY-MM-DD")
+  };
+  const range = (a) => ({ last: a.last_days, from: a.from, to: a.to });
+  const analysisOutput = (shape) => loose({ from: external_exports.string(), to: external_exports.string(), rows: external_exports.array(anyRecord), highlights: external_exports.array(anyRecord), summary: external_exports.array(external_exports.string()), notices: external_exports.array(external_exports.string()), ...shape });
+  const appArg = { app: external_exports.string().optional().describe("Only this app (alias, app ID or name)") };
+  server.registerTool(
+    "admobctl_analyze_versions",
+    {
+      title: "AdMob version health",
+      description: "Match rate, show rate and CTR per Google Mobile Ads SDK version (by platform), app version (by app) or OS version, comparing each version with the rest of its group. Highlights versions that fill or show worse, e.g. after an SDK upgrade or app release. Traffic metrics only: the AdMob API does not split earnings by version.",
+      inputSchema: { by: external_exports.enum(VERSION_KINDS).optional().describe("sdk (default), app or os"), ...appArg, ...rangeInput, ...accountArg },
+      outputSchema: analysisOutput({ by: external_exports.string(), group_by: external_exports.string() }),
+      annotations
+    },
+    wrap(
+      async (a) => fitRows({ ...await analyzeVersions(svc(a), { ...range(a), by: a.by ?? "sdk", app: a.app }) })
+    )
+  );
+  server.registerTool(
+    "admobctl_analyze_consent",
+    {
+      title: "AdMob consent impact",
+      description: "Ad requests, earnings and eCPM by serving restriction (no restriction, non-personalized, limited ads, RDP\u2026), with each restricted mode's eCPM relative to unrestricted traffic and the share of traffic served under a restriction. Earnings are estimates. Data starts 2021-03-13.",
+      inputSchema: { ...appArg, ...rangeInput, ...currencyArg, ...accountArg },
+      outputSchema: analysisOutput({ currency: external_exports.string(), estimate: external_exports.literal(true), restricted_request_share: external_exports.number().optional() }),
+      annotations
+    },
+    wrap(
+      async (a) => fitRows({ ...await analyzeConsent(svc(a), { ...range(a), app: a.app, currency: a.currency }) })
+    )
+  );
+  server.registerTool(
+    "admobctl_analyze_waterfall",
+    {
+      title: "AdMob mediation waterfall",
+      description: "Mediation lines (ad source instances) per mediation group, sorted by observed eCPM, with each line's share of the group's earnings, requests and match rate. Highlights the top line per group, idle lines (requests but no impressions) and lines that rarely fill. Earnings are estimates.",
+      inputSchema: {
+        ...appArg,
+        group: external_exports.string().optional().describe("Only this mediation group (name or ID)"),
+        ...rangeInput,
+        ...currencyArg,
+        ...accountArg
+      },
+      outputSchema: analysisOutput({ currency: external_exports.string(), estimate: external_exports.literal(true), groups: external_exports.array(anyRecord) }),
+      annotations
+    },
+    wrap(
+      async (a) => fitRows({ ...await analyzeWaterfall(svc(a), { ...range(a), app: a.app, group: a.group, currency: a.currency }) })
+    )
   );
   return server;
 }
