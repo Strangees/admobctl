@@ -52,6 +52,7 @@ apps use `--website` (this run), then `admobctl config set websites.<alias> <url
 
 ```bash
 admobctl report network   --from YYYY-MM[-DD] [--to …] [--by dims] [--metrics m] [--filter k=v,v] [--max-rows n]
+                          [--sort field[:asc|desc]] [--compare previous]
 admobctl report mediation --from … [--to …] --by ad-source,app
 ```
 
@@ -65,6 +66,11 @@ admobctl report mediation --from … [--to …] --by ad-source,app
 - JSON `dimensions` and `metrics` list the row keys (e.g. `["app"]`, `["earnings","requests",…,"rpm"]`).
 - JSON rows carry money as a rounded amount (`earnings`) plus exact `earnings_micros`. Rates are fractions (0.75 = 75%).
 - `totals` is omitted when the report is truncated (`truncated: true`).
+- `--sort impressions`, `--sort match-rate:asc`, `--sort country`: any dimension or metric of the report (dimensions
+  ascend, metrics descend by default). Without it: by time for a time series, else by earnings.
+- `--compare previous` adds, per row and in `totals`, `previous_<metric>` and `<metric>_change` (a fraction, 0.5 = +50%)
+  against the equal-length period just before (`previous.from`/`to`). A row without `previous_*` keys is new; rows that
+  existed only before are counted in `notices`. Not with date, week or month. The table shows the first metric's change.
 - `--currency USD` converts earnings (Google's daily average rate); the API then adds a warning that converted
   earnings may not match the payment.
 - Only one of date/week/month per report; `ad-type` cannot be combined with requests, match-rate or rpm. Default
@@ -134,7 +140,7 @@ admobctl_mediation_report, admobctl_finance_month, admobctl_finance_range, admob
 admobctl_analyze_versions, admobctl_analyze_consent, admobctl_analyze_waterfall, admobctl_campaign_report,
 admobctl_list_ad_sources, admobctl_list_adapters (`ad_source`), admobctl_list_mediation_groups,
 admobctl_list_ad_unit_mappings (`ad_unit`), admobctl_check_app_ads.
-They take the same arguments as the CLI, in snake_case: `max_rows`, `include_journal`, `last_days`.
+They take the same arguments as the CLI, in snake_case: `max_rows`, `sort`, `compare`, `include_journal`, `last_days`.
 `admobctl_finance_export` takes `month` or `from`+`to`, `as` (`json` or `csv`), `integer_amounts`, `scale`, and returns
 the file as `content`.
 Reports default to 200 rows.
