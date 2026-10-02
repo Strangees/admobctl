@@ -175,4 +175,70 @@ describe("AdmobService", () => {
       expect(r.totals).toBeDefined();
     });
   });
+
+  it("does not call a complete report truncated when matchingRowCount exceeds the rows returned", async () => {
+    // Google: matchingRowCount "does NOT always match the number of rows in the response".
+    const overCount = () =>
+      jsonResponse(
+        fixture<Array<Record<string, unknown>>>("network-report-by-app.json").map((e) => ("footer" in e ? { footer: { matchingRowCount: "5" } } : e)),
+      );
+    const { svc } = service({ routes: { "POST /networkReport:generate": overCount } });
+    const r = await svc.networkReport({ from: "2026-09", to: "2026-09", by: ["app"] });
+    expect(r.truncated).toBe(false);
+    expect(r.totals).toMatchObject({ earnings_micros: 102_450_000 });
+    expect(r.matchingRowCount).toBe(5);
+  });
+
+  it("sends --currency to the API and reports the currency it answered in", async () => {
+    const { svc, calls } = service({
+      routes: {
+        "POST /networkReport:generate": () =>
+          jsonResponse(
+            fixture<Array<Record<string, { localizationSettings?: unknown }>>>("network-report-by-app.json").map((e) =>
+              e.header ? { header: { ...e.header, localizationSettings: { currencyCode: "USD" } } } : e,
+            ),
+          ),
+      },
+    });
+    const r = await svc.networkReport({ from: "2026-09", by: ["app"], currency: "USD" });
+    const sent = calls.find((c) => c.url.includes("networkReport"))!.body as { reportSpec: { localizationSettings: unknown } };
+    expect(sent.reportSpec.localizationSettings).toEqual({ currencyCode: "USD" });
+    expect(r.currency).toBe("USD");
+  });
+
+  it("leaves out default metrics the dimensions cannot be combined with, and says so", async () => {
+    const { svc, calls } = service();
+    const r = await svc.networkReport({ from: "2026-09", by: ["ad-type"] });
+    const sent = calls.find((c) => c.url.includes("networkReport"))!.body as { reportSpec: { metrics: string[] } };
+    expect(sent.reportSpec.metrics).not.toContain("AD_REQUESTS");
+    expect(sent.reportSpec.metrics).not.toContain("IMPRESSION_RPM");
+    expect(sent.reportSpec.metrics).toContain("ESTIMATED_EARNINGS");
+    expect(r.notices.join(" ")).toMatch(/Left out requests, match-rate, rpm/);
+  });
+
+  it("rejects explicitly requested metrics that ad-type cannot be combined with", async () => {
+    const { svc } = service();
+    await expect(svc.networkReport({ from: "2026-09", by: ["ad-type"], metrics: ["requests"] })).rejects.toThrow(/ad-type/);
+  });
+
+  it("notes that today's data is partial", async () => {
+    const { svc } = service();
+    const r = await svc.networkReport({ from: "2026-10-01", to: "2026-10-02", by: ["app"] });
+    expect(r.notices.join(" ")).toMatch(/today.*partial/i);
+    const past = await svc.networkReport({ from: "2026-09", by: ["app"] });
+    expect(past.notices).toEqual([]);
+  });
+
+  it("notes that third-party ad sources lag up to a day in mediation reports", async () => {
+    const { svc } = service({ routes: { "POST /mediationReport:generate": () => jsonResponse(fixture("network-report-by-app.json")) } });
+    const r = await svc.mediationReport({ from: "2026-10-01", by: ["app"] });
+    expect(r.notices.join(" ")).toMatch(/third-party/i);
+  });
+
+  it("caches ad units for the life of the service", async () => {
+    const { svc, calls } = service();
+    await svc.adUnits();
+    await svc.adUnits({ app: "example-quiz-ios" });
+    expect(calls.filter((c) => c.url.includes("/adUnits"))).toHaveLength(1);
+  });
 });

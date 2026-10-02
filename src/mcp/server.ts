@@ -35,6 +35,13 @@ const INSTRUCTIONS = `Read-only access to the user's Google AdMob account via ad
 const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } as const;
 
 const accountArg = { account: z.string().optional().describe("Publisher ID (pub-…). Defaults to the configured or only account.") };
+const currencyArg = {
+  currency: z
+    .string()
+    .regex(/^[A-Za-z]{3}$/, "an ISO 4217 code like USD")
+    .optional()
+    .describe("ISO 4217 code to convert earnings into, e.g. USD. Default: the account currency."),
+};
 const anyRecord = z.record(z.string(), z.unknown());
 const loose = (shape: z.ZodRawShape) => z.looseObject(shape);
 
@@ -102,6 +109,7 @@ const reportInput = {
     .optional()
     .describe('Dimension filters, e.g. {"country":["NO","SE"],"app":["my-game-ios"]}. App filters accept aliases.'),
   max_rows: z.number().int().positive().max(HARD_MAX_ROWS).optional().describe(`Row cap (default ${DEFAULT_MAX_ROWS}).`),
+  ...currencyArg,
   ...accountArg,
 };
 
@@ -114,6 +122,7 @@ const reportOutput = loose({
   totals: anyRecord.optional(),
   truncated: z.boolean(),
   notice: z.string().optional(),
+  notices: z.array(z.string()),
 });
 
 export function createMcpServer(deps: McpDeps): McpServer {
@@ -189,7 +198,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
         outputSchema: reportOutput,
         annotations,
       },
-      wrap(async (a: { from: string; to?: string; by?: string[]; metrics?: string[]; filters?: Record<string, string[]>; max_rows?: number; account?: string }) => {
+      wrap(async (a: { from: string; to?: string; by?: string[]; metrics?: string[]; filters?: Record<string, string[]>; max_rows?: number; currency?: string; account?: string }) => {
         const s = svc(a);
         const q = {
           from: a.from,
@@ -198,6 +207,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
           metrics: a.metrics,
           filters: a.filters,
           maxRows: a.max_rows ?? DEFAULT_MAX_ROWS,
+          currency: a.currency,
         };
         return reportPayload(kind === "network" ? await s.networkReport(q) : await s.mediationReport(q));
       }),
@@ -269,6 +279,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
         from: z.string().optional().describe("Start, YYYY-MM or YYYY-MM-DD (instead of last_days)"),
         to: z.string().optional().describe("End, YYYY-MM or YYYY-MM-DD"),
         by: z.enum(INSIGHT_DIMENSIONS).optional().describe("Group by (default ad-unit)"),
+        ...currencyArg,
         ...accountArg,
       },
       outputSchema: loose({
@@ -283,8 +294,8 @@ export function createMcpServer(deps: McpDeps): McpServer {
       }),
       annotations,
     },
-    wrap(async (a: { last_days?: number; from?: string; to?: string; by?: (typeof INSIGHT_DIMENSIONS)[number]; account?: string }) => {
-      const r = await insights(svc(a), { last: a.last_days, from: a.from, to: a.to, by: a.by ?? "ad-unit" });
+    wrap(async (a: { last_days?: number; from?: string; to?: string; by?: (typeof INSIGHT_DIMENSIONS)[number]; currency?: string; account?: string }) => {
+      const r = await insights(svc(a), { last: a.last_days, from: a.from, to: a.to, by: a.by ?? "ad-unit", currency: a.currency });
       return fitRows({ ...r }) as unknown as Record<string, unknown>;
     }),
   );

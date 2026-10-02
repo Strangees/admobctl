@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildReportSpec, normalizeDimension, normalizeMetric, parseReport } from "../src/core/report.js";
+import { buildReportSpec, compatibleMetrics, normalizeDimension, normalizeMetric, parseReport } from "../src/core/report.js";
 import { fixture } from "./helpers.js";
 
 describe("parseReport", () => {
@@ -89,5 +89,50 @@ describe("buildReportSpec", () => {
       metrics: ["impressions"],
     });
     expect(spec.sortConditions).toEqual([{ dimension: "DATE", order: "ASCENDING" }]);
+  });
+
+  const sept = { startDate: { year: 2026, month: 9, day: 1 }, endDate: { year: 2026, month: 9, day: 30 } };
+
+  it("asks for a currency conversion via localizationSettings", () => {
+    const spec = buildReportSpec("network", { dateRange: sept, dimensions: ["app"], metrics: ["earnings"], currency: "usd" });
+    expect(spec.localizationSettings).toEqual({ currencyCode: "USD" });
+  });
+
+  it("rejects a currency that is not an ISO 4217 code", () => {
+    expect(() => buildReportSpec("network", { dateRange: sept, dimensions: ["app"], metrics: ["earnings"], currency: "dollars" })).toThrow(
+      /ISO 4217/,
+    );
+  });
+
+  it("rejects more than one time dimension", () => {
+    expect(() => buildReportSpec("network", { dateRange: sept, dimensions: ["date", "month"], metrics: ["earnings"] })).toThrow(
+      /one time dimension/,
+    );
+  });
+
+  it("rejects ad-type with requests, match rate or RPM", () => {
+    expect(() => buildReportSpec("network", { dateRange: sept, dimensions: ["ad-type"], metrics: ["earnings", "requests", "rpm"] })).toThrow(
+      /ad-type.*requests, rpm/,
+    );
+    expect(() => buildReportSpec("network", { dateRange: sept, dimensions: ["ad-type"], metrics: ["earnings", "impressions"] })).not.toThrow();
+  });
+});
+
+describe("compatibleMetrics", () => {
+  it("drops default metrics that ad-type cannot be combined with", () => {
+    const r = compatibleMetrics("network", ["AD_TYPE"], ["ESTIMATED_EARNINGS", "AD_REQUESTS", "MATCH_RATE", "IMPRESSIONS", "IMPRESSION_RPM"]);
+    expect(r.kept).toEqual(["ESTIMATED_EARNINGS", "IMPRESSIONS"]);
+    expect(r.dropped).toEqual(["AD_REQUESTS", "MATCH_RATE", "IMPRESSION_RPM"]);
+  });
+
+  it("drops earnings-based defaults for version dimensions", () => {
+    const r = compatibleMetrics("mediation", ["GMA_SDK_VERSION"], ["ESTIMATED_EARNINGS", "AD_REQUESTS", "OBSERVED_ECPM"]);
+    expect(r.kept).toEqual(["AD_REQUESTS"]);
+    expect(r.dropped).toEqual(["ESTIMATED_EARNINGS", "OBSERVED_ECPM"]);
+  });
+
+  it("keeps everything for ordinary dimensions", () => {
+    const r = compatibleMetrics("network", ["APP", "COUNTRY"], ["ESTIMATED_EARNINGS", "AD_REQUESTS"]);
+    expect(r).toEqual({ kept: ["ESTIMATED_EARNINGS", "AD_REQUESTS"], dropped: [] });
   });
 });

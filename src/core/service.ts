@@ -1,12 +1,23 @@
 import { buildAppIndex, resolveApp, type AppRef } from "./aliases.js";
 import { resolveTokenProvider } from "./auth/index.js";
 import type { TokenProvider } from "./auth/types.js";
-import { AdmobClient, type PublisherAccount } from "./client.js";
+import { AdmobClient, type AdUnit, type PublisherAccount } from "./client.js";
 import { configDir, loadConfig, resolveProfile, type ResolvedProfile } from "./config.js";
-import { dateRangeFromArgs, formatDate, type DateRange } from "./dates.js";
+import { dateRangeFromArgs, formatDate, todayIn, type DateRange } from "./dates.js";
 import { AdmobctlError } from "./errors.js";
 import type { Exec } from "./exec.js";
-import { buildReportSpec, normalizeDimension, normalizeMetric, type Report, type ReportKind } from "./report.js";
+import { freshnessNotices } from "./freshness.js";
+import {
+  API_MAX_ROWS,
+  buildReportSpec,
+  compatibleMetrics,
+  friendlyMetric,
+  friendlyName,
+  normalizeDimension,
+  normalizeMetric,
+  type Report,
+  type ReportKind,
+} from "./report.js";
 import { computeTotals, dimensionKey, metricKey, toViewRows, type ViewRow } from "./report-view.js";
 
 export interface ServiceOptions {
@@ -50,6 +61,8 @@ export interface ReportQuery {
   /** friendly dimension → values; app filters accept aliases. */
   filters?: Record<string, string[]>;
   maxRows?: number;
+  /** ISO 4217 code to convert earnings into (default: the account currency). */
+  currency?: string;
 }
 
 export interface ReportResult {
@@ -67,7 +80,10 @@ export interface ReportResult {
   truncated: boolean;
   /** Total rows matching the query, when the API reports it. */
   matchingRowCount?: number;
+  /** Warnings from the API (e.g. DATA_DELAYED). */
   warnings: string[];
+  /** admobctl's own notes: partial recent data, default metrics left out. */
+  notices: string[];
 }
 
 /**
@@ -77,6 +93,7 @@ export interface ReportResult {
 export class AdmobService {
   private accountPromise?: Promise<PublisherAccount>;
   private appsPromise?: Promise<AppRef[]>;
+  private adUnitsPromise?: Promise<AdUnit[]>;
 
   private constructor(
     readonly profile: ResolvedProfile,
@@ -155,9 +172,18 @@ export class AdmobService {
     return resolveApp(input, await this.apps());
   }
 
+  private rawAdUnits(): Promise<AdUnit[]> {
+    if (this.adUnitsPromise) return this.adUnitsPromise;
+    const p = (async () => this.client.listAdUnits((await this.account()).name))();
+    this.adUnitsPromise = p;
+    p.catch(() => {
+      if (this.adUnitsPromise === p) this.adUnitsPromise = undefined;
+    });
+    return p;
+  }
+
   async adUnits(opts: { app?: string } = {}): Promise<AdUnitView[]> {
-    const acct = await this.account();
-    const [apps, units] = await Promise.all([this.apps(), this.client.listAdUnits(acct.name)]);
+    const [apps, units] = await Promise.all([this.apps(), this.rawAdUnits()]);
     const filterApp = opts.app ? resolveApp(opts.app, apps) : undefined;
     const aliasById = new Map(apps.map((a) => [a.appId, a.alias]));
     return units
@@ -181,16 +207,29 @@ export class AdmobService {
   }
 
   /** Raw report access for finance/insights, which need exact micros per row. */
-  async rawReport(kind: ReportKind, q: ReportQuery): Promise<{ report: Report; dimensions: string[]; metrics: string[]; range: DateRange }> {
+  async rawReport(
+    kind: ReportKind,
+    q: ReportQuery,
+  ): Promise<{ report: Report; dimensions: string[]; metrics: string[]; range: DateRange; notices: string[] }> {
     const range = q.dateRange ?? dateRangeFromArgs(q.from ?? "", q.to ?? q.from ?? "");
     const dimensions = q.by.map((d) => normalizeDimension(d, kind));
-    const metrics = (q.metrics?.length ? q.metrics : DEFAULT_METRICS[kind]).map((m) => normalizeMetric(m, kind));
+    const notices: string[] = [];
+    let metrics: string[];
+    if (q.metrics?.length) metrics = q.metrics.map((m) => normalizeMetric(m, kind));
+    else {
+      const { kept, dropped } = compatibleMetrics(kind, dimensions, DEFAULT_METRICS[kind]);
+      metrics = kept;
+      if (dropped.length) {
+        notices.push(`Left out ${dropped.map(friendlyMetric).join(", ")}: the AdMob API does not combine them with ${dimensions.map(friendlyName).join(", ")}.`);
+      }
+    }
     const filters = await this.resolveFilters(kind, q.filters ?? {});
-    const spec = buildReportSpec(kind, { dateRange: range, dimensions, metrics, filters, maxRows: q.maxRows });
+    const spec = buildReportSpec(kind, { dateRange: range, dimensions, metrics, filters, maxRows: q.maxRows, currency: q.currency });
     const acct = await this.account();
     const report =
       kind === "network" ? await this.client.networkReport(acct.name, spec) : await this.client.mediationReport(acct.name, spec);
-    return { report, dimensions, metrics, range };
+    notices.push(...freshnessNotices(kind, range, todayIn(acct.reportingTimeZone, this.now())));
+    return { report, dimensions, metrics, range, notices };
   }
 
   private async resolveFilters(kind: ReportKind, filters: Record<string, string[]>): Promise<Record<string, string[]>> {
@@ -203,15 +242,15 @@ export class AdmobService {
   }
 
   private async report(kind: ReportKind, q: ReportQuery): Promise<ReportResult> {
-    const { report, dimensions, metrics, range } = await this.rawReport(kind, q);
+    const { report, dimensions, metrics, range, notices } = await this.rawReport(kind, q);
     const needsApps = dimensions.includes("APP");
     const apps = needsApps ? await this.apps() : [];
-    if (q.maxRows !== undefined && report.rows.length > q.maxRows) report.rows = report.rows.slice(0, q.maxRows);
-    // Without a matchingRowCount, a report that fills the row cap may have been cut short.
+    const cap = q.maxRows ?? API_MAX_ROWS;
+    if (report.rows.length > cap) report.rows = report.rows.slice(0, cap);
+    // Only a report that fills the row cap can have been cut short. matchingRowCount then tells us
+    // whether it was; on its own it is not reliable ("does NOT always match the number of rows").
     const truncated =
-      report.matchingRowCount !== undefined
-        ? report.matchingRowCount > report.rows.length
-        : q.maxRows !== undefined && report.rows.length >= q.maxRows;
+      report.rows.length >= cap && (report.matchingRowCount === undefined || report.matchingRowCount > report.rows.length);
     const acct = await this.account();
     const result: ReportResult = {
       kind,
@@ -225,6 +264,7 @@ export class AdmobService {
       rows: toViewRows(report, dimensions, metrics, apps),
       truncated,
       warnings: report.warnings,
+      notices,
     };
     if (!truncated) result.totals = computeTotals(report, metrics);
     if (report.matchingRowCount !== undefined) result.matchingRowCount = report.matchingRowCount;

@@ -16,6 +16,8 @@ export interface InsightsOptions {
   by: InsightDimension;
   /** Relative change that counts as a swing (default 0.3 = 30%). */
   swingThreshold?: number;
+  /** ISO 4217 code to convert earnings into (default: the account currency). */
+  currency?: string;
 }
 
 export interface InsightRow {
@@ -121,8 +123,8 @@ export async function insights(svc: AdmobService, opts: InsightsOptions): Promis
   const metrics = ["earnings", "requests", "matched-requests", "impressions", "clicks"];
   const dim = DIM_API[opts.by];
   const [cur, prev, apps] = await Promise.all([
-    svc.rawReport("network", { dateRange: range, by: [opts.by], metrics }),
-    svc.rawReport("network", { dateRange: prevRange, by: [opts.by], metrics }),
+    svc.rawReport("network", { dateRange: range, by: [opts.by], metrics, currency: opts.currency }),
+    svc.rawReport("network", { dateRange: prevRange, by: [opts.by], metrics, currency: opts.currency }),
     opts.by === "app" ? svc.apps() : [],
   ]);
   const aliasOf = (id: string) => apps.find((a) => a.appId === id)?.alias;

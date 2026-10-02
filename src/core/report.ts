@@ -58,6 +58,12 @@ export function friendlyName(apiName: string): string {
   return apiName.toLowerCase().replace(/_/g, "-");
 }
 
+/** The short name users type for an API metric, e.g. AD_REQUESTS → requests. */
+export function friendlyMetric(apiName: string): string {
+  const alias = Object.keys(METRIC_ALIASES).find((k) => METRIC_ALIASES[k] === apiName);
+  return friendlyName(alias ?? apiName);
+}
+
 export function normalizeDimension(name: string, kind: ReportKind): string {
   const c = canonical(name);
   const resolved = DIMENSION_ALIASES[c] ?? c;
@@ -87,6 +93,8 @@ export interface ReportSpecInput {
   /** dimension → allowed values */
   filters?: Record<string, string[]>;
   maxRows?: number;
+  /** ISO 4217 code; the API converts earnings at the daily average rate. */
+  currency?: string;
 }
 
 export interface ReportSpec {
@@ -95,14 +103,59 @@ export interface ReportSpec {
   metrics: string[];
   dimensionFilters?: Array<{ dimension: string; matchesAny: { values: string[] } }>;
   sortConditions?: Array<{ dimension?: string; metric?: string; order: "ASCENDING" | "DESCENDING" }>;
+  localizationSettings?: { currencyCode: string };
   maxReportRows?: number;
 }
 
+/** The API's own maximum for maxReportRows. */
+export const API_MAX_ROWS = 100_000;
+
 const TIME_DIMENSIONS = ["DATE", "WEEK", "MONTH"];
+
+/** Combinations the API rejects (both the reference and the metrics guide agree). */
+const INCOMPATIBLE: Record<string, readonly string[]> = {
+  AD_TYPE: ["AD_REQUESTS", "MATCH_RATE", "IMPRESSION_RPM"],
+};
+
+/**
+ * Combinations the 2025 metrics guide calls incompatible but the newer reference no longer mentions.
+ * We leave these out of default metrics but still send them when asked for explicitly.
+ */
+const DISCOURAGED: Record<string, readonly string[]> = {
+  MOBILE_OS_VERSION: ["ESTIMATED_EARNINGS", "OBSERVED_ECPM", "IMPRESSION_RPM"],
+  GMA_SDK_VERSION: ["ESTIMATED_EARNINGS", "OBSERVED_ECPM", "IMPRESSION_RPM"],
+  APP_VERSION_NAME: ["ESTIMATED_EARNINGS", "OBSERVED_ECPM", "IMPRESSION_RPM"],
+};
+
+/** Split (API-named) default metrics into those that work with the dimensions and those to leave out. */
+export function compatibleMetrics(_kind: ReportKind, dimensions: string[], metrics: string[]): { kept: string[]; dropped: string[] } {
+  const excluded = new Set(dimensions.flatMap((d) => [...(INCOMPATIBLE[d] ?? []), ...(DISCOURAGED[d] ?? [])]));
+  return { kept: metrics.filter((m) => !excluded.has(m)), dropped: metrics.filter((m) => excluded.has(m)) };
+}
+
+function checkCombination(dimensions: string[], metrics: string[]): void {
+  const timeDims = dimensions.filter((d) => TIME_DIMENSIONS.includes(d));
+  if (timeDims.length > 1) {
+    throw usageError(`A report can use only one time dimension (date, week or month), got ${timeDims.map(friendlyName).join(", ")}.`);
+  }
+  for (const d of dimensions) {
+    const bad = metrics.filter((m) => INCOMPATIBLE[d]?.includes(m));
+    if (bad.length) {
+      throw usageError(`${friendlyName(d)} cannot be combined with ${bad.map(friendlyMetric).join(", ")} (an AdMob API restriction). Drop one of them.`);
+    }
+  }
+}
+
+export function normalizeCurrency(code: string): string {
+  const c = code.trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(c)) throw usageError(`Currency must be an ISO 4217 code like USD or EUR, got "${code}"`);
+  return c;
+}
 
 export function buildReportSpec(kind: ReportKind, input: ReportSpecInput): ReportSpec {
   const dimensions = input.dimensions.map((d) => normalizeDimension(d, kind));
   const metrics = input.metrics.map((m) => normalizeMetric(m, kind));
+  checkCombination(dimensions, metrics);
   const spec: ReportSpec = { dateRange: input.dateRange, dimensions, metrics };
 
   const filters = Object.entries(input.filters ?? {});
@@ -119,6 +172,7 @@ export function buildReportSpec(kind: ReportKind, input: ReportSpecInput): Repor
     spec.sortConditions = [{ metric: "ESTIMATED_EARNINGS", order: "DESCENDING" }];
   }
 
+  if (input.currency !== undefined) spec.localizationSettings = { currencyCode: normalizeCurrency(input.currency) };
   if (input.maxRows !== undefined) spec.maxReportRows = input.maxRows;
   return spec;
 }

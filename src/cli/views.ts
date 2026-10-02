@@ -99,6 +99,7 @@ export function reportView(r: ReportResult): Output {
     notes.push(`Truncated: ${shownRows(r)}. Raise --max-rows or narrow the query.`);
   }
   for (const w of r.warnings) notes.push(`API warning: ${w}`);
+  notes.push(...r.notices);
   const footer = r.totals && r.rows.length > 1 ? [{ ...displayRow(r.totals), [columns[0]!.key]: "Total" }] : undefined;
   return {
     data: r,

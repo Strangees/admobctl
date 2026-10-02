@@ -228,4 +228,16 @@ describe("mcp server", () => {
     expect(r.isError).toBe(true);
     expect(r.content[0]!.text).toMatch(/YYYY-MM/);
   });
+
+  it("passes currency through to the report and returns admobctl notices", async () => {
+    const { client, calls } = await connect();
+    const r = (await client.callTool({
+      name: "admobctl_network_report",
+      arguments: { from: "2026-10-01", to: "2026-10-02", currency: "USD" },
+    })) as ToolResult;
+    expect(r.isError, r.content[0]!.text).toBeFalsy();
+    const sent = calls.find((c) => c.url.includes("networkReport"))!.body as { reportSpec: { localizationSettings: unknown } };
+    expect(sent.reportSpec.localizationSettings).toEqual({ currencyCode: "USD" });
+    expect(String(r.structuredContent!.notices)).toMatch(/Includes today/);
+  });
 });

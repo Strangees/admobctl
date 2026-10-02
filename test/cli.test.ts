@@ -175,9 +175,34 @@ describe("cli", () => {
       rows: [{ country: "C0" }, { country: "C1" }],
       truncated: true,
       warnings: [],
+      notices: [],
     };
     const notes = reportView(r).notes ?? [];
     expect(notes.join("\n")).toContain("Truncated: showing 2 rows; more may exist.");
     expect(notes.join("\n")).not.toContain("undefined");
+  });
+
+  it("passes --currency to report and insights", async () => {
+    const r = await cli(["report", "network", "--from", "2026-09", "--by", "app", "--currency", "usd"]);
+    expect(r.code, r.stderr).toBe(0);
+    const body = r.calls.find((c) => c.url.includes("networkReport"))!.body as { reportSpec: { localizationSettings: unknown } };
+    expect(body.reportSpec.localizationSettings).toEqual({ currencyCode: "USD" });
+    const ins = await cli(["insights", "--last", "30d", "--by", "app", "--currency", "EUR"]);
+    expect(ins.code, ins.stderr).toBe(0);
+    for (const c of ins.calls.filter((c) => c.url.includes("networkReport"))) {
+      expect((c.body as { reportSpec: { localizationSettings: unknown } }).reportSpec.localizationSettings).toEqual({ currencyCode: "EUR" });
+    }
+  });
+
+  it("prints admobctl notices under a report table", async () => {
+    const r = await cli(["report", "network", "--from", "2026-10-01", "--to", "2026-10-02", "--by", "app"], { isTTY: true });
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/Includes today/);
+  });
+
+  it("rejects incompatible report combinations with exit code 2", async () => {
+    const r = await cli(["report", "network", "--from", "2026-09", "--by", "date,month"]);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toMatch(/one time dimension/);
   });
 });

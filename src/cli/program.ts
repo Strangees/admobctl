@@ -199,7 +199,8 @@ export function buildProgram(io: CliIO): Command {
       .option("--metrics <metrics>", "metrics, comma-separated (default: all common ones)", list)
       .option("--filter <k=v,…>", "filter, repeatable (e.g. country=NO,SE or app=<alias>)", (v, p: string[] = []) => [...p, v])
       .option("--max-rows <n>", "cap the number of rows", positiveInt)
-      .action(async (o: { from: string; to?: string; by?: string[]; metrics?: string[]; filter?: string[]; maxRows?: number }, cmd: Command) => {
+      .option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)")
+      .action(async (o: { from: string; to?: string; by?: string[]; metrics?: string[]; filter?: string[]; maxRows?: number; currency?: string }, cmd: Command) => {
         const s = svc(cmd);
         const q = {
           from: o.from,
@@ -208,6 +209,7 @@ export function buildProgram(io: CliIO): Command {
           metrics: o.metrics,
           filters: parseFilters(o.filter),
           maxRows: o.maxRows,
+          currency: o.currency,
         };
         emit(cmd, reportView(kind === "network" ? await s.networkReport(q) : await s.mediationReport(q)));
       });
@@ -267,13 +269,15 @@ export function buildProgram(io: CliIO): Command {
     .option("--to <date>", "end, YYYY-MM or YYYY-MM-DD")
     .addOption(new Option("--by <dimension>", "group by").choices([...INSIGHT_DIMENSIONS]).default("ad-unit"))
     .option("--swing <percent>", "change that counts as a swing (default 30)", positiveInt)
-    .action(async (o: { last?: number; from?: string; to?: string; by: InsightDimension; swing?: number }, cmd: Command) => {
+    .option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)")
+    .action(async (o: { last?: number; from?: string; to?: string; by: InsightDimension; swing?: number; currency?: string }, cmd: Command) => {
       const r = await insights(svc(cmd), {
         last: o.last,
         from: o.from,
         to: o.to,
         by: o.by,
         swingThreshold: o.swing === undefined ? undefined : o.swing / 100,
+        currency: o.currency,
       });
       emit(cmd, insightsView(r));
     });
