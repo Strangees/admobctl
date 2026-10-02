@@ -10825,9 +10825,51 @@ async function runDoctor(d) {
 import { randomBytes as randomBytes2 } from "node:crypto";
 
 // src/core/config.ts
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync as chmodSync2, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+
+// src/core/fs.ts
+import { chmodSync, mkdirSync, statSync } from "node:fs";
+import { basename } from "node:path";
+
+// src/core/log.ts
+var verbose = Boolean(process.env.ADMOBCTL_DEBUG);
+var log = {
+  setVerbose(v) {
+    verbose = v;
+  },
+  debug(msg) {
+    if (verbose) process.stderr.write(`[admobctl] ${msg}
+`);
+  },
+  warn(msg) {
+    process.stderr.write(`warning: ${msg}
+`);
+  }
+};
+
+// src/core/fs.ts
+function ensurePrivateDir(dir) {
+  if (mkdirSync(dir, { recursive: true, mode: 448 }) !== void 0) {
+    chmodSync(dir, 448);
+    return;
+  }
+  if (process.platform === "win32" || typeof process.getuid !== "function") return;
+  const st = statSync(dir);
+  if ((st.mode & 63) === 0) return;
+  const warning = `${dir} is accessible to other users (mode ${(st.mode & 511).toString(8)}). Fix: chmod 700 ${dir}`;
+  if (basename(dir) === ".admobctl" && st.uid === process.getuid()) {
+    try {
+      chmodSync(dir, 448);
+      return;
+    } catch {
+    }
+  }
+  log.warn(warning);
+}
+
+// src/core/config.ts
 var DEFAULT_FINANCE = {
   receivableAccount: "1509",
   revenueAccount: "3120",
@@ -10856,13 +10898,13 @@ function loadConfig(dir) {
   }
 }
 function saveConfig(dir, config2) {
-  mkdirSync(dir, { recursive: true, mode: 448 });
+  ensurePrivateDir(dir);
   const file2 = configPath(dir);
   const tmp = `${file2}.${process.pid}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(config2, null, 2)}
 `, { mode: 384 });
   renameSync(tmp, file2);
-  chmodSync(file2, 384);
+  chmodSync2(file2, 384);
 }
 function resolveProfile(config2, name) {
   const profileName = name ?? config2.defaultProfile ?? "default";
@@ -10928,7 +10970,7 @@ var exec = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
 
 // src/core/auth/oauth.ts
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync as chmodSync2, existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync as renameSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { chmodSync as chmodSync3, existsSync as existsSync2, readFileSync as readFileSync2, renameSync as renameSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
 import { createServer } from "node:http";
 import { join as join2 } from "node:path";
 var AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -10972,13 +11014,13 @@ var FileSecretStore = class {
     return existsSync2(f) ? readFileSync2(f, "utf8") : void 0;
   }
   async set(profile, value) {
-    if (mkdirSync2(this.dir, { recursive: true, mode: 448 }) !== void 0) chmodSync2(this.dir, 448);
+    ensurePrivateDir(this.dir);
     const file2 = this.file(profile);
     const tmp = `${file2}.${process.pid}.tmp`;
     rmSync(tmp, { force: true });
     writeFileSync2(tmp, value, { mode: 384, flag: "wx" });
     renameSync2(tmp, file2);
-    chmodSync2(file2, 384);
+    chmodSync3(file2, 384);
   }
   async delete(profile) {
     rmSync(this.file(profile), { force: true });
@@ -11619,22 +11661,6 @@ async function insights(svc, opts) {
     summary
   };
 }
-
-// src/core/log.ts
-var verbose = Boolean(process.env.ADMOBCTL_DEBUG);
-var log = {
-  setVerbose(v) {
-    verbose = v;
-  },
-  debug(msg) {
-    if (verbose) process.stderr.write(`[admobctl] ${msg}
-`);
-  },
-  warn(msg) {
-    process.stderr.write(`warning: ${msg}
-`);
-  }
-};
 
 // src/core/aliases.ts
 var TRANSLITERATE = { \u00E6: "ae", \u00F8: "o", \u00E5: "a", \u00DF: "ss", \u0153: "oe", \u0111: "d", \u0142: "l" };

@@ -1,7 +1,8 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { AdmobctlError, usageError } from "./errors.js";
+import { ensurePrivateDir } from "./fs.js";
 
 export type AuthMode = "auto" | "adc" | "oauth";
 
@@ -74,7 +75,7 @@ export function loadConfig(dir: string): ConfigFile {
 }
 
 export function saveConfig(dir: string, config: ConfigFile): void {
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  ensurePrivateDir(dir);
   const file = configPath(dir);
   const tmp = `${file}.${process.pid}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
