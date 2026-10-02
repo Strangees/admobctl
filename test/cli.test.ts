@@ -205,4 +205,11 @@ describe("cli", () => {
     expect(r.code).toBe(2);
     expect(r.stderr).toMatch(/one time dimension/);
   });
+
+  it("shows each app's approval state and flags apps that need action", async () => {
+    const r = await cli(["apps", "list"], { isTTY: true });
+    expect(r.stdout).toMatch(/Approval/);
+    expect(r.stdout).toMatch(/example-quiz-ios .*approved/);
+    expect(r.stdout).not.toMatch(/need action/);
+  });
 });

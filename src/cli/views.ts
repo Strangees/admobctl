@@ -1,4 +1,4 @@
-import type { AppRef } from "../core/aliases.js";
+import { appsNeedingAction, approvalLabel, type AppRef } from "../core/aliases.js";
 import type { Check } from "../core/auth/doctor.js";
 import { JOURNAL_COLUMNS, type FinanceMonth, type FinanceRange, type JournalRow } from "../core/finance.js";
 import type { InsightsResult } from "../core/insights.js";
@@ -25,6 +25,7 @@ export function accountsView(accounts: PublisherAccount[]): Output {
 }
 
 export function appsView(apps: AppRef[]): Output {
+  const blocked = appsNeedingAction(apps);
   return {
     data: apps,
     table: {
@@ -34,9 +35,13 @@ export function appsView(apps: AppRef[]): Output {
         { key: "platform", label: "Platform" },
         { key: "appId", label: "App ID" },
         { key: "storeId", label: "Store ID" },
+        { key: "approval", label: "Approval" },
       ],
-      rows: apps as unknown as Array<Record<string, unknown>>,
+      rows: apps.map((a) => ({ ...a, approval: approvalLabel(a.approval) })),
     },
+    notes: blocked.length
+      ? [`${blocked.map((a) => a.alias).join(", ")} ${blocked.length === 1 ? "needs" : "need"} action in AdMob (Apps → View all apps); ad serving may be limited until then.`]
+      : undefined,
   };
 }
 

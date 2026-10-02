@@ -165,7 +165,8 @@ export function createMcpServer(deps: McpDeps): McpServer {
     "admobctl_list_apps",
     {
       title: "List AdMob apps",
-      description: "List apps in the AdMob account with their aliases (use the alias in other tools), platform, app ID and store ID.",
+      description:
+        "List apps in the AdMob account with their aliases (use the alias in other tools), platform, app ID, store ID and approval state (ACTION_REQUIRED means the app needs the publisher's attention in AdMob review; ad serving may be limited).",
       inputSchema: { ...accountArg },
       outputSchema: loose({ apps: z.array(anyRecord) }),
       annotations,

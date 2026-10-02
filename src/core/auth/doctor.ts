@@ -1,10 +1,11 @@
+import { appsNeedingAction, type AppRef } from "../aliases.js";
 import type { PublisherAccount } from "../client.js";
 import { AdmobctlError, LOGIN_COMMAND } from "../errors.js";
 
 export type CheckStatus = "ok" | "warn" | "fail" | "skip";
 
 export interface Check {
-  id: "credentials" | "token" | "scope" | "quota-project" | "api" | "account";
+  id: "credentials" | "token" | "scope" | "quota-project" | "api" | "account" | "apps";
   status: CheckStatus;
   summary: string;
   fix?: string;
@@ -25,6 +26,8 @@ export interface DoctorDeps {
   quotaProject: string | undefined;
   listAccounts: () => Promise<PublisherAccount[]>;
   account: () => Promise<PublisherAccount>;
+  /** When given, also checks that no app is waiting on the publisher in AdMob's app review. */
+  listApps?: () => Promise<AppRef[]>;
 }
 
 const ADMOB_SCOPES = ["https://www.googleapis.com/auth/admob.readonly", "https://www.googleapis.com/auth/admob.report"];
@@ -125,6 +128,29 @@ export async function runDoctor(d: DoctorDeps): Promise<Check[]> {
     checks.push({ id: "account", status: "ok", summary: `Using ${a.publisherId} (${a.currencyCode}, ${a.reportingTimeZone})` });
   } catch (err) {
     checks.push(failed("account", err));
+    if (d.listApps) skipRest(["apps"], "skipped: no account");
+    return checks;
+  }
+
+  if (d.listApps) {
+    try {
+      const apps = await d.listApps();
+      const blocked = appsNeedingAction(apps);
+      const inReview = apps.filter((a) => a.approval === "IN_REVIEW").length;
+      const review = inReview ? `; ${inReview} in review` : "";
+      checks.push(
+        blocked.length
+          ? {
+              id: "apps",
+              status: "warn",
+              summary: `${blocked.length} of ${apps.length} app(s) need action in AdMob review: ${blocked.map((a) => a.alias).join(", ")}${review}`,
+              fix: "Open AdMob → Apps → View all apps and follow the review steps for each app marked 'Action required'.",
+            }
+          : { id: "apps", status: "ok", summary: `${apps.length} app(s), none waiting on you in AdMob review${review}` },
+      );
+    } catch (err) {
+      checks.push(failed("apps", err));
+    }
   }
   return checks;
 }

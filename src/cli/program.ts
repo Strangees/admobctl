@@ -159,6 +159,7 @@ export function buildProgram(io: CliIO): Command {
         quotaProject: s.profile.quotaProject ?? tp.quotaProject(),
         listAccounts: () => s.listAccounts(),
         account: () => s.account(),
+        listApps: () => s.apps(),
       });
       emit(cmd, doctorView(checks));
       if (checks.some((c) => c.status === "fail")) process.exitCode = 1;
