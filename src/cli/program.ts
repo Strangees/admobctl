@@ -6,6 +6,7 @@ import { defaultSecretStore } from "../core/auth/oauth.js";
 import { configDir, configPath, loadConfig, resolveProfile, saveConfig, setProfileValue } from "../core/config.js";
 import { analyzeConsent, analyzeVersions, analyzeWaterfall, VERSION_KINDS, type VersionKind } from "../core/analyze.js";
 import { checkAppAds } from "../core/app-ads.js";
+import { readAudit } from "../core/audit.js";
 import { AdmobctlError } from "../core/errors.js";
 import { financeMonth, financeRange, journalRows } from "../core/finance.js";
 import { EXPORT_FORMATS, exportJournal } from "../core/journal.js";
@@ -36,6 +37,7 @@ import {
   adUnitsView,
   appAdsView,
   appsView,
+  auditLogView,
   consentView,
   doctorView,
   financeMonthView,
@@ -610,6 +612,14 @@ export function buildProgram(io: CliIO): Command {
       // Keep running until the client closes stdin.
       await new Promise<void>((resolve) => process.stdin.on("close", resolve));
     });
+
+  // ── audit log ─────────────────────────────────────────────────────
+  program
+    .command("audit-log")
+    .description("Show the writes applied with --yes (from the local audit log), newest first")
+    .option("--last <n>", "only the newest n entries", positiveInt)
+    .option("--failed", "only writes the API rejected")
+    .action((o: { last?: number; failed?: boolean }, cmd: Command) => emit(cmd, auditLogView(readAudit(dir(), o))));
 
   // ── config ────────────────────────────────────────────────────────
   const config = program.command("config").description("Read and write ~/.admobctl/config.json (no secrets)");

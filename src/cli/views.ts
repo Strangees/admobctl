@@ -1,6 +1,7 @@
 import { appsNeedingAction, approvalLabel, type AppRef } from "../core/aliases.js";
 import type { ConsentResult, VersionsResult, WaterfallResult } from "../core/analyze.js";
 import type { AppAdsResult } from "../core/app-ads.js";
+import type { AuditLog } from "../core/audit.js";
 import type { Check } from "../core/auth/doctor.js";
 import { JOURNAL_COLUMNS, type FinanceMonth, type FinanceRange, type JournalRow } from "../core/finance.js";
 import type { InsightsResult } from "../core/insights.js";
@@ -446,5 +447,31 @@ export function writeView(plans: WritePlan[], results?: unknown[]): Output {
     data: applied ? { applied: true, plans, results } : { applied: false, plans },
     table: { columns, rows },
     notes: applied ? [] : plans.flatMap((p) => [requestLine(p), JSON.stringify(p.body, null, 2)]),
+  };
+}
+
+export function auditLogView(log: AuditLog): Output {
+  return {
+    data: log,
+    table: {
+      columns: [
+        { key: "time", label: "Time (UTC)" },
+        { key: "action", label: "Action" },
+        { key: "request", label: "Request" },
+        { key: "outcome", label: "Outcome" },
+        { key: "profile", label: "Profile" },
+      ],
+      rows: log.entries.map((e) => ({
+        time: e.time.replace("T", " ").replace(/\.\d+Z$/, ""),
+        action: e.action,
+        request: `${e.method} ${e.path}`,
+        outcome: e.ok ? (e.result ?? "ok") : `failed: ${e.error ?? "unknown"}`,
+        profile: e.profile,
+      })),
+    },
+    notes: [
+      ...(log.entries.length ? [] : [`No applied writes recorded in ${log.file}.`]),
+      ...(log.skipped ? [`Skipped ${log.skipped} unreadable ${log.skipped === 1 ? "line" : "lines"} in ${log.file}.`] : []),
+    ],
   };
 }

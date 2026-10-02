@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync } from "node:fs";
+import { appendFileSync, chmodSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ensurePrivateDir } from "./fs.js";
 
@@ -22,4 +22,39 @@ export function appendAudit(dir: string, entry: AuditEntry): void {
   const file = join(dir, "audit.log");
   appendFileSync(file, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
   chmodSync(file, 0o600);
+}
+
+export interface AuditLog {
+  file: string;
+  /** Newest first. */
+  entries: AuditEntry[];
+  /** Lines that are not audit entries (a damaged or hand-edited log). */
+  skipped: number;
+}
+
+/** Read <configDir>/audit.log back, newest first. A missing log is an empty one. */
+export function readAudit(dir: string, opts: { last?: number; failed?: boolean } = {}): AuditLog {
+  const file = join(dir, "audit.log");
+  let text = "";
+  try {
+    text = readFileSync(file, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  let skipped = 0;
+  let entries: AuditEntry[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const e = JSON.parse(line) as AuditEntry;
+      if (typeof e?.time !== "string" || typeof e.action !== "string") throw new Error("not an entry");
+      entries.push(e);
+    } catch {
+      skipped++;
+    }
+  }
+  entries.reverse();
+  if (opts.failed) entries = entries.filter((e) => !e.ok);
+  if (opts.last !== undefined) entries = entries.slice(0, opts.last);
+  return { file, entries, skipped };
 }

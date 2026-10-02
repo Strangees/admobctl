@@ -116,4 +116,40 @@ describe("cli write commands", () => {
     expect(r.stderr).toMatch(/admob\.monetization/);
     expect(r.stderr).toMatch(/fix: gcloud auth application-default login --scopes=.*admob\.monetization/);
   });
+
+  it("audit-log lists applied writes, newest first, without calling the API", async () => {
+    const applied = await cli(["ad-units", "create", "--app", "example-quiz-ios", "--name", "Level end", "--format", "interstitial", "--yes"]);
+    await cli(["mediation-groups", "set-line", "Banners", "Waterfall 3.00", "--cpm", "2.5", "--yes"], { dir: applied.dir, scopeError: true });
+    const r = await cli(["audit-log", "-o", "json"], { dir: applied.dir });
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.calls).toEqual([]);
+    const out = JSON.parse(r.stdout) as { file: string; entries: Array<{ action: string; ok: boolean; error?: string; result?: string }>; skipped: number };
+    expect(out.file).toBe(join(applied.dir, "audit.log"));
+    expect(out.entries.map((e) => e.ok)).toEqual([false, true]);
+    expect(out.entries[0]!.error).toBe("AUTH_SCOPE_MISSING");
+    expect(out.entries[1]).toMatchObject({ action: "Create ad unit", result: "accounts/pub-0000000000000001/adUnits/9000000009" });
+
+    const failed = JSON.parse((await cli(["audit-log", "--failed", "-o", "json"], { dir: applied.dir })).stdout);
+    expect(failed.entries).toHaveLength(1);
+    const last = JSON.parse((await cli(["audit-log", "--last", "1", "-o", "json"], { dir: applied.dir })).stdout);
+    expect(last.entries).toHaveLength(1);
+    expect(last.entries[0].ok).toBe(false);
+
+    const table = await cli(["audit-log"], { dir: applied.dir, isTTY: true });
+    expect(table.stdout).toMatch(/Create ad unit/);
+    expect(table.stdout).toMatch(/failed: AUTH_SCOPE_MISSING/);
+  });
+
+  it("audit-log copes with no log and with damaged lines", async () => {
+    const empty = await cli(["audit-log", "-o", "json"]);
+    expect(empty.code).toBe(0);
+    expect(JSON.parse(empty.stdout).entries).toEqual([]);
+    expect(empty.stderr).toBe("");
+
+    writeFileSync(join(empty.dir, "audit.log"), `not json\n${JSON.stringify({ time: "2026-10-01T10:00:00.000Z", profile: "default", action: "Create app", method: "POST", path: "accounts/pub-0000000000000001/apps", body: {}, ok: true })}\n`);
+    const r = await cli(["audit-log", "-o", "json"], { dir: empty.dir });
+    const out = JSON.parse(r.stdout);
+    expect(out.entries).toHaveLength(1);
+    expect(out.skipped).toBe(1);
+  });
 });

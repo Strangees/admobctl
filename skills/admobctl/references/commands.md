@@ -159,6 +159,9 @@ With `--yes` it applies them in order (JSON: `{applied: true, plans, results}`) 
 | `mediation-groups experiment start <group> --name <n> --percent <1-99> --lines <json>` | Start an A/B experiment with treatment lines |
 | `mediation-groups experiment stop <group> --keep A\|B` | Stop it, keeping the original (A) or treatment (B) lines |
 
+`admobctl audit-log [--last <n>] [--failed]` reads that log back, newest first: time, action, request, outcome
+(the created resource, or `failed: <code>`), profile. It is local and calls no API.
+
 ## Errors
 
 Every error has a message and a `fix:` line with the exact command. Exit codes: 0 ok, 1 error, 2 usage.
