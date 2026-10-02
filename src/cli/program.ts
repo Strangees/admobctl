@@ -5,6 +5,7 @@ import { login, logout } from "../core/auth/login.js";
 import { defaultSecretStore } from "../core/auth/oauth.js";
 import { configDir, configPath, loadConfig, resolveProfile, saveConfig, setProfileValue } from "../core/config.js";
 import { analyzeConsent, analyzeVersions, analyzeWaterfall, VERSION_KINDS, type VersionKind } from "../core/analyze.js";
+import { checkAppAds } from "../core/app-ads.js";
 import { AdmobctlError } from "../core/errors.js";
 import { financeMonth, financeRange, journalRows } from "../core/finance.js";
 import { INSIGHT_DIMENSIONS, insights, type InsightDimension } from "../core/insights.js";
@@ -32,6 +33,7 @@ import {
   adaptersView,
   adSourcesView,
   adUnitsView,
+  appAdsView,
   appsView,
   consentView,
   doctorView,
@@ -258,6 +260,16 @@ export function buildProgram(io: CliIO): Command {
     .command("list")
     .description("List apps with their aliases")
     .action(async (_o, cmd: Command) => emit(cmd, appsView(await svc(cmd).apps())));
+  apps
+    .command("app-ads")
+    .description("Check each app's app-ads.txt the way AdMob's crawler does; exits 1 on a problem")
+    .option("--app <alias|id>", "only this app")
+    .option("--website <url>", "developer website for apps whose store listing cannot be read (Android)")
+    .action(async (o: { app?: string; website?: string }, cmd: Command) => {
+      const r = await checkAppAds(svc(cmd), o);
+      emit(cmd, appAdsView(r));
+      if (r.problems) process.exitCode = 1;
+    });
   apps
     .command("create")
     .description("Create an app (v1beta write; needs admob.monetization and Google allowlisting)")

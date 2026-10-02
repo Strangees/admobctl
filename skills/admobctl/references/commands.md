@@ -29,6 +29,7 @@ Service accounts are not supported by the AdMob API.
 | `admobctl accounts list` | publisherId, currencyCode, reportingTimeZone |
 | `admobctl apps list` | alias, name, platform, appId, storeId, approval (JSON: APPROVED, IN_REVIEW, ACTION_REQUIRED) |
 | `admobctl ad-units list [--app <alias>]` | app alias, name, format, adUnitId |
+| `admobctl apps app-ads [--app <alias>] [--website <url>]` | per app: status (ok, missing-file, html, no-line, reseller-only, unreachable, no-website, unknown-website, not-linked), website and its source (store, flag, config), checked URLs, detail; plus expectedLine. Exits 1 on a problem. |
 
 v1beta (read-only, `admob.readonly`; Google may require allowlisting, a 403 says so):
 
@@ -42,6 +43,10 @@ v1beta (read-only, `admob.readonly`; Google may require allowlisting, a 403 says
 
 Apps take an alias (`<name>-<platform>`, e.g. `my-game-ios`), app ID, numeric ID or exact name.
 Custom alias: `admobctl config set aliases.<alias> <appId>`.
+
+app-ads.txt: iOS websites come from the App Store listing's marketing URL. Google Play listings cannot be read, so Android
+apps use `--website` (this run), then `admobctl config set websites.<alias> <url>` (per app), then `admobctl config set website <url>`
+(all apps); without one they show `unknown-website`.
 
 ## Reports
 

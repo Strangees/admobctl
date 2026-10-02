@@ -105,6 +105,8 @@ All earnings are **estimates**. Reconcile them against AdMob Payments, because t
 
 `apps list` shows each app's approval state, and `auth doctor` warns about apps marked *action required* in AdMob.
 
+`apps app-ads` checks each app's app-ads.txt the way AdMob's crawler does, because a missing or broken file quietly limits ad serving. It reads the developer website from the App Store listing's marketing URL, fetches `/app-ads.txt` from that host (without `www.`/`m.`, https then http), and looks for `google.com, pub-…, DIRECT, f08c47fec0942fa0`. Google Play listings cannot be read, so Android apps need a website from config: `admobctl config set websites.<alias> <url>` per app, or `admobctl config set website <url>` for all of them. `--website <url>` overrides both for one run. It reports a status per app, prints the exact line to add, and exits 1 when an app has a problem.
+
 ### Mediation setup and campaigns (AdMob API v1beta)
 
 ```bash
@@ -198,6 +200,7 @@ npm run eval -- --runs 3
 ```bash
 admobctl config set account pub-XXXXXXXXXXXXXXXX
 admobctl config set quotaProject my-project
+admobctl config set websites.game-android example.com   # developer website for the app-ads.txt check (Android)
 admobctl config set aliases.game ca-app-pub-XXXXXXXXXXXXXXXX~NNNNNNNNNN
 admobctl config set finance.revenueAccount 3120
 admobctl config get

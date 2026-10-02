@@ -177,6 +177,8 @@ export class AdmobService {
     readonly now: () => Date,
     /** Where config.json (and the write audit log) live. */
     readonly configDir: string,
+    /** For requests outside the AdMob API (store lookups, app-ads.txt). */
+    readonly fetch: typeof globalThis.fetch,
   ) {}
 
   static create(opts: ServiceOptions = {}, deps: ServiceDeps = {}): AdmobService {
@@ -189,7 +191,15 @@ export class AdmobService {
       fetch: deps.fetch,
       sleep: deps.sleep,
     });
-    return new AdmobService(profile, client, tokenProvider, opts.account ?? profile.account, deps.now ?? (() => new Date()), dir);
+    return new AdmobService(
+      profile,
+      client,
+      tokenProvider,
+      opts.account ?? profile.account,
+      deps.now ?? (() => new Date()),
+      dir,
+      deps.fetch ?? fetch,
+    );
   }
 
   /** The account that will be used (--account, then profile), without calling the API. Undefined means auto-detect. */
