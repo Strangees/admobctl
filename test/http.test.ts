@@ -18,6 +18,20 @@ function sequence(responses: Array<Response | Error>) {
   return { fetch, sleep, delays, count: () => i };
 }
 
+/** A fetch that never resolves on its own; it only settles by rejecting when its signal aborts. */
+function hangingFetch() {
+  const signals: AbortSignal[] = [];
+  const fetch = ((_url: string, init: RequestInit = {}) =>
+    new Promise<Response>((_resolve, reject) => {
+      const signal = init.signal;
+      if (!signal) return; // no signal: hangs forever
+      signals.push(signal);
+      if (signal.aborted) return reject(signal.reason);
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    })) as unknown as typeof globalThis.fetch;
+  return { fetch, signals, count: () => signals.length };
+}
+
 describe("requestJson", () => {
   it("returns parsed JSON on success", async () => {
     const s = sequence([jsonResponse({ ok: true })]);
@@ -57,5 +71,35 @@ describe("requestJson", () => {
     expect(err.code).toBe("API_ERROR");
     expect(err.message).toContain("bad dimension");
     expect(s.count()).toBe(1);
+  });
+
+  it("aborts a stalled request after timeoutMs, retries it, then raises a readable error", async () => {
+    const h = hangingFetch();
+    const delays: number[] = [];
+    const sleep = async (ms: number) => {
+      delays.push(ms);
+    };
+    const err = (await requestJson("https://admob.googleapis.com/v1/x", {}, {
+      fetch: h.fetch,
+      sleep,
+      retries: 2,
+      timeoutMs: 5,
+    }).catch((e) => e)) as AdmobctlError;
+    expect(h.count()).toBe(3);
+    expect(delays).toHaveLength(2);
+    expect(err).toBeInstanceOf(AdmobctlError);
+    expect(err.code).toBe("API_ERROR");
+    expect(err.message).toMatch(/timed out after 5ms/);
+    expect(err.message).toContain("admob.googleapis.com");
+    expect(err.fix).toMatch(/connection/i);
+  });
+
+  it("does not retry when the caller's own signal aborts", async () => {
+    const h = hangingFetch();
+    const caller = new AbortController();
+    const p = requestJson("https://x/y", { signal: caller.signal }, { fetch: h.fetch, sleep: async () => {}, timeoutMs: 10_000 });
+    caller.abort(new Error("cancelled by caller"));
+    await expect(p).rejects.toThrow("cancelled by caller");
+    expect(h.count()).toBe(1);
   });
 });

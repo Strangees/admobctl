@@ -7,6 +7,25 @@ export interface HttpOptions {
   /** Number of retries after the first attempt. */
   retries?: number;
   baseDelayMs?: number;
+  /** Per-attempt timeout; a stalled request is aborted and retried. Default 30s. */
+  timeoutMs?: number;
+}
+
+export const DEFAULT_TIMEOUT_MS = 30_000;
+
+/** Combine the caller's signal (if any) with the per-attempt timeout signal. */
+function combineSignals(timeout: AbortSignal, caller?: AbortSignal | null): AbortSignal {
+  if (!caller) return timeout;
+  if (typeof AbortSignal.any === "function") return AbortSignal.any([caller, timeout]);
+  // Fallback for Node < 20.3: forward both into one controller.
+  const ctl = new AbortController();
+  const forward = (s: AbortSignal) => {
+    if (s.aborted) ctl.abort(s.reason);
+    else s.addEventListener("abort", () => ctl.abort(s.reason), { once: true });
+  };
+  forward(caller);
+  forward(timeout);
+  return ctl.signal;
 }
 
 export const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -40,22 +59,41 @@ export async function requestJson<T = unknown>(url: string, init: RequestInit, o
   const sleep = opts.sleep ?? defaultSleep;
   const retries = opts.retries ?? 4;
   const base = opts.baseDelayMs ?? 500;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   for (let attempt = 0; ; attempt++) {
     const backoff = base * 2 ** attempt + Math.floor(Math.random() * base * 0.25);
+    const timer = new AbortController();
+    const timeoutId = setTimeout(
+      () => timer.abort(new Error(`Request timed out after ${timeoutMs}ms`)),
+      timeoutMs,
+    );
     let res: Response;
     try {
-      res = await doFetch(url, init);
+      res = await doFetch(url, { ...init, signal: combineSignals(timer.signal, init.signal) });
     } catch (err) {
+      // The caller cancelled: propagate as-is, never retry.
+      if (init.signal?.aborted) throw err;
+      const timedOut = timer.signal.aborted;
+      const host = new URL(url).host;
       if (attempt >= retries) {
-        throw new AdmobctlError("API_ERROR", `Network error calling ${new URL(url).host}: ${(err as Error).message}`, {
+        if (timedOut) {
+          throw new AdmobctlError(
+            "API_ERROR",
+            `Request to ${host} timed out after ${timeoutMs}ms (${attempt + 1} attempts).`,
+            { cause: err, fix: "Check your connection and retry." },
+          );
+        }
+        throw new AdmobctlError("API_ERROR", `Network error calling ${host}: ${(err as Error).message}`, {
           cause: err,
           fix: "Check your internet connection and retry.",
         });
       }
-      log.debug(`network error (${(err as Error).message}); retrying in ${backoff}ms`);
+      log.debug(`${timedOut ? `timeout after ${timeoutMs}ms` : `network error (${(err as Error).message})`}; retrying in ${backoff}ms`);
       await sleep(backoff);
       continue;
+    } finally {
+      clearTimeout(timeoutId);
     }
 
     if (res.ok) return (await readBody(res)) as T;

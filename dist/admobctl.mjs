@@ -11762,6 +11762,19 @@ function resolveTokenProvider(profile, deps) {
 }
 
 // src/core/http.ts
+var DEFAULT_TIMEOUT_MS = 3e4;
+function combineSignals(timeout, caller) {
+  if (!caller) return timeout;
+  if (typeof AbortSignal.any === "function") return AbortSignal.any([caller, timeout]);
+  const ctl = new AbortController();
+  const forward = (s) => {
+    if (s.aborted) ctl.abort(s.reason);
+    else s.addEventListener("abort", () => ctl.abort(s.reason), { once: true });
+  };
+  forward(caller);
+  forward(timeout);
+  return ctl.signal;
+}
 var defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function isRetryableStatus(status) {
   return status === 429 || status >= 500;
@@ -11788,21 +11801,39 @@ async function requestJson(url2, init, opts = {}) {
   const sleep = opts.sleep ?? defaultSleep;
   const retries = opts.retries ?? 4;
   const base = opts.baseDelayMs ?? 500;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   for (let attempt = 0; ; attempt++) {
     const backoff = base * 2 ** attempt + Math.floor(Math.random() * base * 0.25);
+    const timer = new AbortController();
+    const timeoutId = setTimeout(
+      () => timer.abort(new Error(`Request timed out after ${timeoutMs}ms`)),
+      timeoutMs
+    );
     let res;
     try {
-      res = await doFetch(url2, init);
+      res = await doFetch(url2, { ...init, signal: combineSignals(timer.signal, init.signal) });
     } catch (err) {
+      if (init.signal?.aborted) throw err;
+      const timedOut = timer.signal.aborted;
+      const host = new URL(url2).host;
       if (attempt >= retries) {
-        throw new AdmobctlError("API_ERROR", `Network error calling ${new URL(url2).host}: ${err.message}`, {
+        if (timedOut) {
+          throw new AdmobctlError(
+            "API_ERROR",
+            `Request to ${host} timed out after ${timeoutMs}ms (${attempt + 1} attempts).`,
+            { cause: err, fix: "Check your connection and retry." }
+          );
+        }
+        throw new AdmobctlError("API_ERROR", `Network error calling ${host}: ${err.message}`, {
           cause: err,
           fix: "Check your internet connection and retry."
         });
       }
-      log.debug(`network error (${err.message}); retrying in ${backoff}ms`);
+      log.debug(`${timedOut ? `timeout after ${timeoutMs}ms` : `network error (${err.message})`}; retrying in ${backoff}ms`);
       await sleep(backoff);
       continue;
+    } finally {
+      clearTimeout(timeoutId);
     }
     if (res.ok) return await readBody(res);
     if (isRetryableStatus(res.status) && attempt < retries) {
