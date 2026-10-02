@@ -12298,6 +12298,502 @@ var AdmobService = class _AdmobService {
   }
 };
 
+// src/output/format.ts
+var OUTPUT_FORMATS = ["json", "table", "csv", "markdown"];
+function defaultFormat(isTTY) {
+  return isTTY ? "table" : "json";
+}
+function cell(v) {
+  if (v === void 0 || v === null) return "";
+  if (Array.isArray(v)) return v.join(", ");
+  return String(v);
+}
+function renderTable({ columns, rows, footer = [] }, notes) {
+  const lines = [];
+  if (rows.length === 0) lines.push("(no rows)");
+  else {
+    const grid = rows.map((r) => columns.map((c) => cell(r[c.key])));
+    const foot = footer.map((r) => columns.map((c) => cell(r[c.key])));
+    const widths = columns.map((c, i) => Math.max(c.label.length, ...[...grid, ...foot].map((g) => g[i].length)));
+    const fmt = (vals) => vals.map((v, i) => columns[i].align === "right" ? v.padStart(widths[i]) : v.padEnd(widths[i])).join("  ").trimEnd();
+    lines.push(fmt(columns.map((c) => c.label)));
+    lines.push(widths.map((w) => "\u2500".repeat(w)).join("  "));
+    for (const g of grid) lines.push(fmt(g));
+    if (foot.length) {
+      lines.push(widths.map((w) => "\u2500".repeat(w)).join("  "));
+      for (const g of foot) lines.push(fmt(g));
+    }
+  }
+  if (notes.length) lines.push("", ...notes);
+  return `${lines.join("\n")}
+`;
+}
+function csvField(v) {
+  return /[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+}
+function renderCsv({ columns, rows }) {
+  const lines = [columns.map((c) => csvField(c.label)).join(",")];
+  for (const r of rows) lines.push(columns.map((c) => csvField(cell(r[c.key]))).join(","));
+  return `${lines.join("\n")}
+`;
+}
+function mdEscape(v) {
+  return v.replace(/\|/g, "\\|").replace(/\n/g, " ");
+}
+function renderMarkdown({ columns, rows, footer = [] }, notes) {
+  const bold = (v) => v ? `**${v}**` : v;
+  const lines = [
+    `| ${columns.map((c) => mdEscape(c.label)).join(" | ")} |`,
+    `| ${columns.map((c) => c.align === "right" ? "---:" : "---").join(" | ")} |`,
+    ...rows.map((r) => `| ${columns.map((c) => mdEscape(cell(r[c.key]))).join(" | ")} |`),
+    ...footer.map((r) => `| ${columns.map((c) => bold(mdEscape(cell(r[c.key])))).join(" | ")} |`)
+  ];
+  if (notes.length) lines.push("", ...notes.map((n) => `> ${n}`));
+  return `${lines.join("\n")}
+`;
+}
+function render(out, format) {
+  const notes = out.notes ?? [];
+  switch (format) {
+    case "json":
+      return `${JSON.stringify(out.data, null, 2)}
+`;
+    case "csv":
+      return renderCsv(out.table);
+    case "markdown":
+      return renderMarkdown(out.table, notes);
+    case "table":
+      return renderTable(out.table, notes);
+  }
+}
+function renderTsv({ columns, rows }) {
+  const clean = (v) => v.replace(/[\t\r\n]+/g, " ");
+  const lines = [columns.map((c) => clean(c.label)).join("	")];
+  for (const r of rows) lines.push(columns.map((c) => clean(cell(r[c.key]))).join("	"));
+  return `${lines.join("\n")}
+`;
+}
+
+// src/version.ts
+var VERSION = true ? "0.1.0" : "0.0.0-dev";
+
+// src/cli/views.ts
+var ESTIMATE_NOTE = "Estimated earnings \u2014 reconcile against AdMob Payments (finalized).";
+function accountsView(accounts) {
+  return {
+    data: accounts,
+    table: {
+      columns: [
+        { key: "publisherId", label: "Publisher ID" },
+        { key: "currencyCode", label: "Currency" },
+        { key: "reportingTimeZone", label: "Time zone" }
+      ],
+      rows: accounts
+    }
+  };
+}
+function appsView(apps) {
+  return {
+    data: apps,
+    table: {
+      columns: [
+        { key: "alias", label: "Alias" },
+        { key: "name", label: "Name" },
+        { key: "platform", label: "Platform" },
+        { key: "appId", label: "App ID" },
+        { key: "storeId", label: "Store ID" }
+      ],
+      rows: apps
+    }
+  };
+}
+function adUnitsView(units) {
+  return {
+    data: units,
+    table: {
+      columns: [
+        { key: "app", label: "App" },
+        { key: "name", label: "Ad unit" },
+        { key: "format", label: "Format" },
+        { key: "adUnitId", label: "Ad unit ID" }
+      ],
+      rows: units
+    }
+  };
+}
+var METRIC_LABELS = {
+  earnings: "Earnings",
+  requests: "Requests",
+  matched_requests: "Matched",
+  impressions: "Impressions",
+  clicks: "Clicks",
+  match_rate: "Match rate",
+  show_rate: "Show rate",
+  ctr: "CTR",
+  rpm: "RPM",
+  ecpm: "eCPM"
+};
+var MONEY_KEYS = /* @__PURE__ */ new Set(["earnings", "rpm", "ecpm"]);
+var RATE_KEYS = /* @__PURE__ */ new Set(["match_rate", "show_rate", "ctr"]);
+var METRIC_FROM_API = {
+  estimated_earnings: "earnings",
+  ad_requests: "requests",
+  matched_requests: "matched_requests",
+  impressions: "impressions",
+  clicks: "clicks",
+  match_rate: "match_rate",
+  show_rate: "show_rate",
+  impression_ctr: "ctr",
+  impression_rpm: "rpm",
+  observed_ecpm: "ecpm"
+};
+function titleCase(key) {
+  const s = key.replace(/_/g, " ");
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+function formatPercent(fraction) {
+  return `${(fraction * 100).toFixed(1)}%`;
+}
+function displayRow(row) {
+  const out = { ...row };
+  for (const k of Object.keys(row)) {
+    if (MONEY_KEYS.has(k) && typeof row[`${k}_micros`] === "number") out[k] = formatMicros(row[`${k}_micros`]);
+    else if (RATE_KEYS.has(k) && typeof row[k] === "number") out[k] = formatPercent(row[k]);
+  }
+  return out;
+}
+function reportView(r) {
+  const columns = r.dimensions.map((d) => ({ key: d, label: d === "app" ? "App" : titleCase(d) }));
+  for (const m of r.metrics) {
+    const key = METRIC_FROM_API[m] ?? m;
+    const label = METRIC_LABELS[key] ?? titleCase(key);
+    columns.push({ key, label: MONEY_KEYS.has(key) && r.currency ? `${label} (${r.currency})` : label, align: "right" });
+  }
+  const notes = [`${r.kind === "network" ? "Network" : "Mediation"} report ${r.from} \u2192 ${r.to}, ${r.timeZone ?? ""}. ${ESTIMATE_NOTE}`];
+  if (r.truncated) {
+    notes.push(`Truncated: ${shownRows(r)}. Raise --max-rows or narrow the query.`);
+  }
+  for (const w of r.warnings) notes.push(`API warning: ${w}`);
+  const footer = r.totals && r.rows.length > 1 ? [{ ...displayRow(r.totals), [columns[0].key]: "Total" }] : void 0;
+  return {
+    data: r,
+    table: { columns, rows: r.rows.map(displayRow), footer },
+    notes
+  };
+}
+var ICONS = { ok: "\u2713", warn: "!", fail: "\u2717", skip: "-" };
+function doctorView(checks) {
+  return {
+    data: { ok: checks.every((c) => c.status !== "fail"), checks },
+    table: {
+      columns: [
+        { key: "check", label: "Check" },
+        { key: "summary", label: "Result" }
+      ],
+      rows: checks.flatMap((c) => [
+        { check: `${ICONS[c.status]} ${c.id}`, summary: c.summary },
+        ...c.fix && c.status !== "ok" ? [{ check: "", summary: `\u2192 fix: ${c.fix}` }] : []
+      ])
+    }
+  };
+}
+function keyValueView(data) {
+  return {
+    data,
+    table: {
+      columns: [
+        { key: "key", label: "Key" },
+        { key: "value", label: "Value" }
+      ],
+      rows: Object.entries(data).map(([key, value]) => ({
+        key,
+        value: typeof value === "object" && value !== null ? JSON.stringify(value) : value
+      }))
+    }
+  };
+}
+function financeMonthView(m) {
+  const cur = m.currency;
+  return {
+    data: m,
+    table: {
+      columns: [
+        { key: "alias", label: "App" },
+        { key: "name", label: "Name" },
+        { key: "platform", label: "Platform" },
+        { key: "earnings", label: `Earnings (${cur})`, align: "right" }
+      ],
+      rows: m.apps.map((a) => ({ ...a, earnings: a.earnings.toFixed(2) })),
+      footer: [{ alias: "Total", earnings: m.total.toFixed(2) }]
+    },
+    notes: [`${m.month} (${m.from} \u2192 ${m.to}, ${m.timeZone}), booking date ${m.bookingDate}.`, ...m.notes]
+  };
+}
+function financeRangeView(r) {
+  return {
+    data: r,
+    table: {
+      columns: [
+        { key: "month", label: "Month" },
+        { key: "total", label: `Earnings (${r.currency})`, align: "right" },
+        { key: "complete", label: "Complete" }
+      ],
+      rows: r.months.map((m) => ({ month: m.month, total: m.total.toFixed(2), complete: m.complete ? "yes" : "no" })),
+      footer: [{ month: "Total", total: r.total.toFixed(2) }]
+    },
+    notes: r.notes
+  };
+}
+function journalView(rows, notes) {
+  return {
+    data: rows,
+    table: { columns: JOURNAL_COLUMNS.map((c) => ({ key: c, label: c })), rows },
+    notes
+  };
+}
+function insightsView(r) {
+  return {
+    data: r,
+    table: {
+      columns: [
+        { key: "label", label: r.by === "app" ? "App" : titleCase(r.by.replace(/-/g, "_")) },
+        { key: "earnings", label: `Earnings (${r.currency})`, align: "right" },
+        { key: "share", label: "Share", align: "right" },
+        { key: "change", label: "\u0394 prev", align: "right" },
+        { key: "ecpm", label: "eCPM", align: "right" },
+        { key: "match_rate", label: "Match", align: "right" },
+        { key: "show_rate", label: "Show", align: "right" },
+        { key: "requests", label: "Requests", align: "right" }
+      ],
+      rows: r.rows.map((x) => ({
+        ...x,
+        earnings: x.earnings.toFixed(2),
+        share: formatPercent(x.share),
+        change: x.change === void 0 ? "" : `${x.change >= 0 ? "+" : ""}${(x.change * 100).toFixed(1)}%`,
+        ecpm: x.ecpm.toFixed(2),
+        match_rate: formatPercent(x.match_rate),
+        show_rate: formatPercent(x.show_rate)
+      })),
+      footer: [{ label: "Total", earnings: r.totals.earnings.toFixed(2), ecpm: r.totals.ecpm.toFixed(2), requests: r.totals.requests }]
+    },
+    notes: r.summary
+  };
+}
+
+// src/cli/program.ts
+var list = (v, prev = []) => [...prev, ...v.split(",").map((s) => s.trim()).filter(Boolean)];
+function parseFilters(values = []) {
+  const out = {};
+  for (const f of values) {
+    const eq = f.indexOf("=");
+    if (eq <= 0) throw new AdmobctlError("USAGE", `--filter expects key=value[,value\u2026], got "${f}"`);
+    const key = f.slice(0, eq).trim();
+    (out[key] ??= []).push(...list(f.slice(eq + 1)));
+  }
+  return out;
+}
+function parseDays(v) {
+  const m = /^(\d+)d$/.exec(v.trim());
+  if (!m) throw new AdmobctlError("USAGE", `--last expects a number of days like 30d, got "${v}"`);
+  return Number(m[1]);
+}
+function positiveInt(v) {
+  const n = Number(v);
+  if (!Number.isInteger(n) || n <= 0) throw new AdmobctlError("USAGE", `Expected a positive integer, got "${v}"`);
+  return n;
+}
+function buildProgram(io) {
+  const program2 = new Command("admobctl");
+  const g = (cmd) => cmd.optsWithGlobals();
+  const svc = (cmd) => AdmobService.create({ profile: g(cmd).profile, account: g(cmd).account }, io.service);
+  const dir = () => io.service?.configDir ?? configDir();
+  const emit = (cmd, out) => io.stdout(render(out, g(cmd).output ?? defaultFormat(io.isTTY)));
+  program2.description("Fast CLI for the Google AdMob API (unofficial, not affiliated with Google)").version(VERSION, "-V, --version").addOption(new Option("-o, --output <format>", "output format (default: table on a TTY, json when piped)").choices(OUTPUT_FORMATS)).option("--profile <name>", "config profile to use").option("--account <pub-id>", "AdMob publisher ID (pub-\u2026)").option("-v, --verbose", "debug logging to stderr").hook("preAction", (cmd) => log.setVerbose(Boolean(cmd.opts().verbose))).showHelpAfterError("(run with --help for usage)").configureOutput({ writeOut: io.stdout, writeErr: io.stderr }).exitOverride();
+  const auth = program2.command("auth").description("Authenticate and diagnose credentials");
+  auth.command("login").description("Sign in with your own OAuth client (Desktop app) instead of gcloud ADC").option("--client-id <id>", "OAuth client ID (Desktop app) from Google Cloud Console").option("--client-secret <secret>", "OAuth client secret (or env ADMOBCTL_OAUTH_CLIENT_SECRET)").action(async (o, cmd) => {
+    const profileName = g(cmd).profile ?? loadConfig(dir()).defaultProfile ?? "default";
+    const clientId = o.clientId ?? resolveProfile(loadConfig(dir()), g(cmd).profile).oauthClientId;
+    if (!clientId) {
+      throw new AdmobctlError("USAGE", "An OAuth client ID is required.", {
+        fix: "Create a Desktop app OAuth client in Google Cloud Console (APIs & Services \u2192 Credentials), then: admobctl auth login --client-id <id> --client-secret <secret>"
+      });
+    }
+    const r = await login({
+      configDir: dir(),
+      profile: profileName,
+      clientId,
+      clientSecret: o.clientSecret ?? process.env.ADMOBCTL_OAUTH_CLIENT_SECRET,
+      store: defaultSecretStore(dir(), io.service?.exec),
+      fetch: io.service?.fetch,
+      print: io.stderr
+    });
+    io.stderr(`Signed in. Profile "${r.profile}" now uses admobctl OAuth. Run: admobctl auth doctor
+`);
+  });
+  auth.command("logout").description("Forget the saved OAuth login and go back to gcloud ADC").action(async (_o, cmd) => {
+    const profileName = g(cmd).profile ?? loadConfig(dir()).defaultProfile ?? "default";
+    await logout({ configDir: dir(), profile: profileName, store: defaultSecretStore(dir(), io.service?.exec), fetch: io.service?.fetch });
+    io.stderr(`Logged out of profile "${profileName}".
+`);
+  });
+  auth.command("status").description("Show which credentials are active").action(async (_o, cmd) => {
+    const s = svc(cmd);
+    const info = {
+      profile: s.profile.name,
+      mode: s.tokenProvider.mode,
+      quotaProject: s.profile.quotaProject ?? s.tokenProvider.quotaProject() ?? null,
+      account: s.configuredAccount ?? "(auto)"
+    };
+    try {
+      const ti = await fetchTokenInfo(await s.tokenProvider.getToken(), io.service?.fetch);
+      info.scopes = ti.scopes;
+      if (ti.email) info.email = ti.email;
+      info.tokenExpiresInSeconds = ti.expiresIn;
+    } catch (err) {
+      info.error = err instanceof AdmobctlError ? `${err.message}${err.fix ? ` (fix: ${err.fix})` : ""}` : String(err);
+    }
+    emit(cmd, keyValueView(info));
+  });
+  auth.command("doctor").description("Diagnose common setup problems and print the exact fix").action(async (_o, cmd) => {
+    const s = svc(cmd);
+    const tp = s.tokenProvider;
+    const checks = await runDoctor({
+      mode: tp.mode,
+      checkCredentials: () => tp.checkCredentials?.(),
+      getToken: () => tp.getToken(),
+      tokenInfo: (t) => fetchTokenInfo(t, io.service?.fetch),
+      quotaProject: s.profile.quotaProject ?? tp.quotaProject(),
+      listAccounts: () => s.listAccounts(),
+      account: () => s.account()
+    });
+    emit(cmd, doctorView(checks));
+    if (checks.some((c) => c.status === "fail")) process.exitCode = 1;
+  });
+  program2.command("accounts").description("AdMob publisher accounts").command("list").description("List accessible publisher accounts").action(async (_o, cmd) => emit(cmd, accountsView(await svc(cmd).listAccounts())));
+  program2.command("apps").description("Apps in the account").command("list").description("List apps with their aliases").action(async (_o, cmd) => emit(cmd, appsView(await svc(cmd).apps())));
+  program2.command("ad-units").description("Ad units in the account").command("list").description("List ad units").option("--app <alias|id>", "only ad units of this app").action(async (o, cmd) => emit(cmd, adUnitsView(await svc(cmd).adUnits({ app: o.app }))));
+  const report = program2.command("report").description("Network and mediation reports");
+  for (const kind of ["network", "mediation"]) {
+    report.command(kind).description(`Generate a ${kind} report`).requiredOption("--from <date>", "start, YYYY-MM or YYYY-MM-DD").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD (default: same as --from)").option("--by <dims>", `dimensions, comma-separated (e.g. app,country${kind === "mediation" ? ",ad-source" : ""})`, list).option("--metrics <metrics>", "metrics, comma-separated (default: all common ones)", list).option("--filter <k=v,\u2026>", "filter, repeatable (e.g. country=NO,SE or app=<alias>)", (v, p = []) => [...p, v]).option("--max-rows <n>", "cap the number of rows", positiveInt).action(async (o, cmd) => {
+      const s = svc(cmd);
+      const q = {
+        from: o.from,
+        to: o.to ?? o.from,
+        by: o.by?.length ? o.by : ["app"],
+        metrics: o.metrics,
+        filters: parseFilters(o.filter),
+        maxRows: o.maxRows
+      };
+      emit(cmd, reportView(kind === "network" ? await s.networkReport(q) : await s.mediationReport(q)));
+    });
+  }
+  const AS_FORMATS = ["summary", "journal", "csv", "json"];
+  const asOption = () => new Option("--as <kind>", "summary (default), journal (paste-ready TSV rows), csv or json").choices(AS_FORMATS).default("summary");
+  const emitFinance = (cmd, as, summary, journal) => {
+    const explicit = g(cmd).output;
+    if (as === "journal") {
+      const out = journal();
+      if (explicit) io.stdout(render(out, explicit));
+      else {
+        io.stdout(renderTsv(out.table));
+        for (const n of out.notes ?? []) io.stderr(`${n}
+`);
+      }
+      return;
+    }
+    const format = as === "csv" || as === "json" ? as : explicit ?? defaultFormat(io.isTTY);
+    io.stdout(render(summary, format));
+  };
+  const finance = program2.command("finance").description("Monthly earnings for bookkeeping (estimates)");
+  finance.command("month <YYYY-MM>").description("Estimated earnings per app for one month, optionally as journal rows").addOption(asOption()).action(async (month, o, cmd) => {
+    const s = svc(cmd);
+    const m = await financeMonth(s, month);
+    emitFinance(cmd, o.as, financeMonthView(m), () => journalView(journalRows(m, s.profile.finance), m.notes));
+  });
+  finance.command("range").description("Estimated earnings per month over a range").requiredOption("--from <YYYY-MM>", "first month").requiredOption("--to <YYYY-MM>", "last month").addOption(asOption()).action(async (o, cmd) => {
+    const s = svc(cmd);
+    const r = await financeRange(s, o.from, o.to);
+    emitFinance(
+      cmd,
+      o.as,
+      financeRangeView(r),
+      () => journalView(r.months.flatMap((m) => journalRows(m, s.profile.finance)), r.notes)
+    );
+  });
+  program2.command("insights").description("Monetization insights: top/bottom earners, low fill, swings vs the previous period").option("--last <Nd>", "the last N complete days (default 30d)", parseDays).option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD").addOption(new Option("--by <dimension>", "group by").choices([...INSIGHT_DIMENSIONS]).default("ad-unit")).option("--swing <percent>", "change that counts as a swing (default 30)", positiveInt).action(async (o, cmd) => {
+    const r = await insights(svc(cmd), {
+      last: o.last,
+      from: o.from,
+      to: o.to,
+      by: o.by,
+      swingThreshold: o.swing === void 0 ? void 0 : o.swing / 100
+    });
+    emit(cmd, insightsView(r));
+  });
+  program2.command("mcp").description("Run the MCP server over stdio (for Claude Code, Codex and other MCP clients)").action(async (_o, cmd) => {
+    if (!io.runMcp) throw new AdmobctlError("USAGE", "The mcp command is not available in this build (no MCP server wired in).");
+    const { profile, account } = g(cmd);
+    await io.runMcp({
+      service: (opts) => AdmobService.create({ profile, account: opts.account ?? account }, io.service)
+    });
+    await new Promise((resolve) => process.stdin.on("close", resolve));
+  });
+  const config2 = program2.command("config").description("Read and write ~/.admobctl/config.json (no secrets)");
+  config2.command("get [key]").description("Show the resolved profile, or one key").action((key, _o, cmd) => {
+    const p = resolveProfile(loadConfig(dir()), g(cmd).profile);
+    const all = p;
+    if (!key) return emit(cmd, keyValueView(all));
+    const value = key.split(".").reduce((acc, k) => acc?.[k], all);
+    emit(cmd, keyValueView({ [key]: value ?? null }));
+  });
+  config2.command("set <key> <value>").description("Set a key, e.g. account, quotaProject, finance.revenueAccount, aliases.<alias>").action((key, value, _o, cmd) => {
+    const cfg = loadConfig(dir());
+    setProfileValue(cfg, g(cmd).profile ?? cfg.defaultProfile ?? "default", key, value);
+    saveConfig(dir(), cfg);
+    io.stderr(`set ${key}
+`);
+  });
+  config2.command("unset <key>").description("Remove a key").action((key, _o, cmd) => {
+    const cfg = loadConfig(dir());
+    setProfileValue(cfg, g(cmd).profile ?? cfg.defaultProfile ?? "default", key, void 0);
+    saveConfig(dir(), cfg);
+    io.stderr(`unset ${key}
+`);
+  });
+  config2.command("path").description("Print the config file path").action(() => io.stdout(`${configPath(dir())}
+`));
+  return program2;
+}
+function reportError(io, err, json2) {
+  if (err instanceof AdmobctlError) {
+    if (json2) io.stderr(`${JSON.stringify({ error: err.toJSON() })}
+`);
+    else io.stderr(`error: ${err.message}
+${err.fix ? `  fix: ${err.fix}
+` : ""}`);
+    return err.code === "USAGE" ? 2 : 1;
+  }
+  io.stderr(`error: ${err?.stack ?? String(err)}
+`);
+  return 1;
+}
+async function run(argv, io) {
+  const program2 = buildProgram(io);
+  try {
+    process.exitCode = void 0;
+    await program2.parseAsync(argv);
+    const code2 = Number(process.exitCode ?? 0);
+    process.exitCode = void 0;
+    return code2;
+  } catch (err) {
+    if (err instanceof CommanderError) {
+      return err.exitCode === 0 ? 0 : 2;
+    }
+    const opts = program2.opts();
+    return reportError(io, err, (opts.output ?? defaultFormat(io.isTTY)) === "json");
+  }
+}
+
 // node_modules/zod/v3/helpers/util.js
 var util;
 (function(util2) {
@@ -41576,85 +42072,6 @@ var StdioServerTransport = class {
   }
 };
 
-// src/output/format.ts
-var OUTPUT_FORMATS = ["json", "table", "csv", "markdown"];
-function defaultFormat(isTTY) {
-  return isTTY ? "table" : "json";
-}
-function cell(v) {
-  if (v === void 0 || v === null) return "";
-  if (Array.isArray(v)) return v.join(", ");
-  return String(v);
-}
-function renderTable({ columns, rows, footer = [] }, notes) {
-  const lines = [];
-  if (rows.length === 0) lines.push("(no rows)");
-  else {
-    const grid = rows.map((r) => columns.map((c) => cell(r[c.key])));
-    const foot = footer.map((r) => columns.map((c) => cell(r[c.key])));
-    const widths = columns.map((c, i) => Math.max(c.label.length, ...[...grid, ...foot].map((g) => g[i].length)));
-    const fmt = (vals) => vals.map((v, i) => columns[i].align === "right" ? v.padStart(widths[i]) : v.padEnd(widths[i])).join("  ").trimEnd();
-    lines.push(fmt(columns.map((c) => c.label)));
-    lines.push(widths.map((w) => "\u2500".repeat(w)).join("  "));
-    for (const g of grid) lines.push(fmt(g));
-    if (foot.length) {
-      lines.push(widths.map((w) => "\u2500".repeat(w)).join("  "));
-      for (const g of foot) lines.push(fmt(g));
-    }
-  }
-  if (notes.length) lines.push("", ...notes);
-  return `${lines.join("\n")}
-`;
-}
-function csvField(v) {
-  return /[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
-}
-function renderCsv({ columns, rows }) {
-  const lines = [columns.map((c) => csvField(c.label)).join(",")];
-  for (const r of rows) lines.push(columns.map((c) => csvField(cell(r[c.key]))).join(","));
-  return `${lines.join("\n")}
-`;
-}
-function mdEscape(v) {
-  return v.replace(/\|/g, "\\|").replace(/\n/g, " ");
-}
-function renderMarkdown({ columns, rows, footer = [] }, notes) {
-  const bold = (v) => v ? `**${v}**` : v;
-  const lines = [
-    `| ${columns.map((c) => mdEscape(c.label)).join(" | ")} |`,
-    `| ${columns.map((c) => c.align === "right" ? "---:" : "---").join(" | ")} |`,
-    ...rows.map((r) => `| ${columns.map((c) => mdEscape(cell(r[c.key]))).join(" | ")} |`),
-    ...footer.map((r) => `| ${columns.map((c) => bold(mdEscape(cell(r[c.key])))).join(" | ")} |`)
-  ];
-  if (notes.length) lines.push("", ...notes.map((n) => `> ${n}`));
-  return `${lines.join("\n")}
-`;
-}
-function render(out, format) {
-  const notes = out.notes ?? [];
-  switch (format) {
-    case "json":
-      return `${JSON.stringify(out.data, null, 2)}
-`;
-    case "csv":
-      return renderCsv(out.table);
-    case "markdown":
-      return renderMarkdown(out.table, notes);
-    case "table":
-      return renderTable(out.table, notes);
-  }
-}
-function renderTsv({ columns, rows }) {
-  const clean = (v) => v.replace(/[\t\r\n]+/g, " ");
-  const lines = [columns.map((c) => clean(c.label)).join("	")];
-  for (const r of rows) lines.push(columns.map((c) => clean(cell(r[c.key]))).join("	"));
-  return `${lines.join("\n")}
-`;
-}
-
-// src/version.ts
-var VERSION = true ? "0.1.0" : "0.0.0-dev";
-
 // src/mcp/server.ts
 var MAX_TEXT_CHARS = 6e4;
 var DEFAULT_MAX_ROWS = 200;
@@ -41879,426 +42296,11 @@ async function runStdioServer(deps) {
   log.debug("MCP server ready on stdio");
 }
 
-// src/cli/views.ts
-var ESTIMATE_NOTE = "Estimated earnings \u2014 reconcile against AdMob Payments (finalized).";
-function accountsView(accounts) {
-  return {
-    data: accounts,
-    table: {
-      columns: [
-        { key: "publisherId", label: "Publisher ID" },
-        { key: "currencyCode", label: "Currency" },
-        { key: "reportingTimeZone", label: "Time zone" }
-      ],
-      rows: accounts
-    }
-  };
-}
-function appsView(apps) {
-  return {
-    data: apps,
-    table: {
-      columns: [
-        { key: "alias", label: "Alias" },
-        { key: "name", label: "Name" },
-        { key: "platform", label: "Platform" },
-        { key: "appId", label: "App ID" },
-        { key: "storeId", label: "Store ID" }
-      ],
-      rows: apps
-    }
-  };
-}
-function adUnitsView(units) {
-  return {
-    data: units,
-    table: {
-      columns: [
-        { key: "app", label: "App" },
-        { key: "name", label: "Ad unit" },
-        { key: "format", label: "Format" },
-        { key: "adUnitId", label: "Ad unit ID" }
-      ],
-      rows: units
-    }
-  };
-}
-var METRIC_LABELS = {
-  earnings: "Earnings",
-  requests: "Requests",
-  matched_requests: "Matched",
-  impressions: "Impressions",
-  clicks: "Clicks",
-  match_rate: "Match rate",
-  show_rate: "Show rate",
-  ctr: "CTR",
-  rpm: "RPM",
-  ecpm: "eCPM"
-};
-var MONEY_KEYS = /* @__PURE__ */ new Set(["earnings", "rpm", "ecpm"]);
-var RATE_KEYS = /* @__PURE__ */ new Set(["match_rate", "show_rate", "ctr"]);
-var METRIC_FROM_API = {
-  estimated_earnings: "earnings",
-  ad_requests: "requests",
-  matched_requests: "matched_requests",
-  impressions: "impressions",
-  clicks: "clicks",
-  match_rate: "match_rate",
-  show_rate: "show_rate",
-  impression_ctr: "ctr",
-  impression_rpm: "rpm",
-  observed_ecpm: "ecpm"
-};
-function titleCase(key) {
-  const s = key.replace(/_/g, " ");
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
-function formatPercent(fraction) {
-  return `${(fraction * 100).toFixed(1)}%`;
-}
-function displayRow(row) {
-  const out = { ...row };
-  for (const k of Object.keys(row)) {
-    if (MONEY_KEYS.has(k) && typeof row[`${k}_micros`] === "number") out[k] = formatMicros(row[`${k}_micros`]);
-    else if (RATE_KEYS.has(k) && typeof row[k] === "number") out[k] = formatPercent(row[k]);
-  }
-  return out;
-}
-function reportView(r) {
-  const columns = r.dimensions.map((d) => ({ key: d, label: d === "app" ? "App" : titleCase(d) }));
-  for (const m of r.metrics) {
-    const key = METRIC_FROM_API[m] ?? m;
-    const label = METRIC_LABELS[key] ?? titleCase(key);
-    columns.push({ key, label: MONEY_KEYS.has(key) && r.currency ? `${label} (${r.currency})` : label, align: "right" });
-  }
-  const notes = [`${r.kind === "network" ? "Network" : "Mediation"} report ${r.from} \u2192 ${r.to}, ${r.timeZone ?? ""}. ${ESTIMATE_NOTE}`];
-  if (r.truncated) {
-    notes.push(`Truncated: ${shownRows(r)}. Raise --max-rows or narrow the query.`);
-  }
-  for (const w of r.warnings) notes.push(`API warning: ${w}`);
-  const footer = r.totals && r.rows.length > 1 ? [{ ...displayRow(r.totals), [columns[0].key]: "Total" }] : void 0;
-  return {
-    data: r,
-    table: { columns, rows: r.rows.map(displayRow), footer },
-    notes
-  };
-}
-var ICONS = { ok: "\u2713", warn: "!", fail: "\u2717", skip: "-" };
-function doctorView(checks) {
-  return {
-    data: { ok: checks.every((c) => c.status !== "fail"), checks },
-    table: {
-      columns: [
-        { key: "check", label: "Check" },
-        { key: "summary", label: "Result" }
-      ],
-      rows: checks.flatMap((c) => [
-        { check: `${ICONS[c.status]} ${c.id}`, summary: c.summary },
-        ...c.fix && c.status !== "ok" ? [{ check: "", summary: `\u2192 fix: ${c.fix}` }] : []
-      ])
-    }
-  };
-}
-function keyValueView(data) {
-  return {
-    data,
-    table: {
-      columns: [
-        { key: "key", label: "Key" },
-        { key: "value", label: "Value" }
-      ],
-      rows: Object.entries(data).map(([key, value]) => ({
-        key,
-        value: typeof value === "object" && value !== null ? JSON.stringify(value) : value
-      }))
-    }
-  };
-}
-function financeMonthView(m) {
-  const cur = m.currency;
-  return {
-    data: m,
-    table: {
-      columns: [
-        { key: "alias", label: "App" },
-        { key: "name", label: "Name" },
-        { key: "platform", label: "Platform" },
-        { key: "earnings", label: `Earnings (${cur})`, align: "right" }
-      ],
-      rows: m.apps.map((a) => ({ ...a, earnings: a.earnings.toFixed(2) })),
-      footer: [{ alias: "Total", earnings: m.total.toFixed(2) }]
-    },
-    notes: [`${m.month} (${m.from} \u2192 ${m.to}, ${m.timeZone}), booking date ${m.bookingDate}.`, ...m.notes]
-  };
-}
-function financeRangeView(r) {
-  return {
-    data: r,
-    table: {
-      columns: [
-        { key: "month", label: "Month" },
-        { key: "total", label: `Earnings (${r.currency})`, align: "right" },
-        { key: "complete", label: "Complete" }
-      ],
-      rows: r.months.map((m) => ({ month: m.month, total: m.total.toFixed(2), complete: m.complete ? "yes" : "no" })),
-      footer: [{ month: "Total", total: r.total.toFixed(2) }]
-    },
-    notes: r.notes
-  };
-}
-function journalView(rows, notes) {
-  return {
-    data: rows,
-    table: { columns: JOURNAL_COLUMNS.map((c) => ({ key: c, label: c })), rows },
-    notes
-  };
-}
-function insightsView(r) {
-  return {
-    data: r,
-    table: {
-      columns: [
-        { key: "label", label: r.by === "app" ? "App" : titleCase(r.by.replace(/-/g, "_")) },
-        { key: "earnings", label: `Earnings (${r.currency})`, align: "right" },
-        { key: "share", label: "Share", align: "right" },
-        { key: "change", label: "\u0394 prev", align: "right" },
-        { key: "ecpm", label: "eCPM", align: "right" },
-        { key: "match_rate", label: "Match", align: "right" },
-        { key: "show_rate", label: "Show", align: "right" },
-        { key: "requests", label: "Requests", align: "right" }
-      ],
-      rows: r.rows.map((x) => ({
-        ...x,
-        earnings: x.earnings.toFixed(2),
-        share: formatPercent(x.share),
-        change: x.change === void 0 ? "" : `${x.change >= 0 ? "+" : ""}${(x.change * 100).toFixed(1)}%`,
-        ecpm: x.ecpm.toFixed(2),
-        match_rate: formatPercent(x.match_rate),
-        show_rate: formatPercent(x.show_rate)
-      })),
-      footer: [{ label: "Total", earnings: r.totals.earnings.toFixed(2), ecpm: r.totals.ecpm.toFixed(2), requests: r.totals.requests }]
-    },
-    notes: r.summary
-  };
-}
-
-// src/cli/program.ts
-var list = (v, prev = []) => [...prev, ...v.split(",").map((s) => s.trim()).filter(Boolean)];
-function parseFilters(values = []) {
-  const out = {};
-  for (const f of values) {
-    const eq = f.indexOf("=");
-    if (eq <= 0) throw new AdmobctlError("USAGE", `--filter expects key=value[,value\u2026], got "${f}"`);
-    const key = f.slice(0, eq).trim();
-    (out[key] ??= []).push(...list(f.slice(eq + 1)));
-  }
-  return out;
-}
-function parseDays(v) {
-  const m = /^(\d+)d$/.exec(v.trim());
-  if (!m) throw new AdmobctlError("USAGE", `--last expects a number of days like 30d, got "${v}"`);
-  return Number(m[1]);
-}
-function positiveInt(v) {
-  const n = Number(v);
-  if (!Number.isInteger(n) || n <= 0) throw new AdmobctlError("USAGE", `Expected a positive integer, got "${v}"`);
-  return n;
-}
-function buildProgram(io) {
-  const program2 = new Command("admobctl");
-  const g = (cmd) => cmd.optsWithGlobals();
-  const svc = (cmd) => AdmobService.create({ profile: g(cmd).profile, account: g(cmd).account }, io.service);
-  const dir = () => io.service?.configDir ?? configDir();
-  const emit = (cmd, out) => io.stdout(render(out, g(cmd).output ?? defaultFormat(io.isTTY)));
-  program2.description("Fast CLI for the Google AdMob API (unofficial, not affiliated with Google)").version(VERSION, "-V, --version").addOption(new Option("-o, --output <format>", "output format (default: table on a TTY, json when piped)").choices(OUTPUT_FORMATS)).option("--profile <name>", "config profile to use").option("--account <pub-id>", "AdMob publisher ID (pub-\u2026)").option("-v, --verbose", "debug logging to stderr").hook("preAction", (cmd) => log.setVerbose(Boolean(cmd.opts().verbose))).showHelpAfterError("(run with --help for usage)").configureOutput({ writeOut: io.stdout, writeErr: io.stderr }).exitOverride();
-  const auth = program2.command("auth").description("Authenticate and diagnose credentials");
-  auth.command("login").description("Sign in with your own OAuth client (Desktop app) instead of gcloud ADC").option("--client-id <id>", "OAuth client ID (Desktop app) from Google Cloud Console").option("--client-secret <secret>", "OAuth client secret (or env ADMOBCTL_OAUTH_CLIENT_SECRET)").action(async (o, cmd) => {
-    const profileName = g(cmd).profile ?? loadConfig(dir()).defaultProfile ?? "default";
-    const clientId = o.clientId ?? resolveProfile(loadConfig(dir()), g(cmd).profile).oauthClientId;
-    if (!clientId) {
-      throw new AdmobctlError("USAGE", "An OAuth client ID is required.", {
-        fix: "Create a Desktop app OAuth client in Google Cloud Console (APIs & Services \u2192 Credentials), then: admobctl auth login --client-id <id> --client-secret <secret>"
-      });
-    }
-    const r = await login({
-      configDir: dir(),
-      profile: profileName,
-      clientId,
-      clientSecret: o.clientSecret ?? process.env.ADMOBCTL_OAUTH_CLIENT_SECRET,
-      store: defaultSecretStore(dir(), io.service?.exec),
-      fetch: io.service?.fetch,
-      print: io.stderr
-    });
-    io.stderr(`Signed in. Profile "${r.profile}" now uses admobctl OAuth. Run: admobctl auth doctor
-`);
-  });
-  auth.command("logout").description("Forget the saved OAuth login and go back to gcloud ADC").action(async (_o, cmd) => {
-    const profileName = g(cmd).profile ?? loadConfig(dir()).defaultProfile ?? "default";
-    await logout({ configDir: dir(), profile: profileName, store: defaultSecretStore(dir(), io.service?.exec), fetch: io.service?.fetch });
-    io.stderr(`Logged out of profile "${profileName}".
-`);
-  });
-  auth.command("status").description("Show which credentials are active").action(async (_o, cmd) => {
-    const s = svc(cmd);
-    const info = {
-      profile: s.profile.name,
-      mode: s.tokenProvider.mode,
-      quotaProject: s.profile.quotaProject ?? s.tokenProvider.quotaProject() ?? null,
-      account: s.configuredAccount ?? "(auto)"
-    };
-    try {
-      const ti = await fetchTokenInfo(await s.tokenProvider.getToken(), io.service?.fetch);
-      info.scopes = ti.scopes;
-      if (ti.email) info.email = ti.email;
-      info.tokenExpiresInSeconds = ti.expiresIn;
-    } catch (err) {
-      info.error = err instanceof AdmobctlError ? `${err.message}${err.fix ? ` (fix: ${err.fix})` : ""}` : String(err);
-    }
-    emit(cmd, keyValueView(info));
-  });
-  auth.command("doctor").description("Diagnose common setup problems and print the exact fix").action(async (_o, cmd) => {
-    const s = svc(cmd);
-    const tp = s.tokenProvider;
-    const checks = await runDoctor({
-      mode: tp.mode,
-      checkCredentials: () => tp.checkCredentials?.(),
-      getToken: () => tp.getToken(),
-      tokenInfo: (t) => fetchTokenInfo(t, io.service?.fetch),
-      quotaProject: s.profile.quotaProject ?? tp.quotaProject(),
-      listAccounts: () => s.listAccounts(),
-      account: () => s.account()
-    });
-    emit(cmd, doctorView(checks));
-    if (checks.some((c) => c.status === "fail")) process.exitCode = 1;
-  });
-  program2.command("accounts").description("AdMob publisher accounts").command("list").description("List accessible publisher accounts").action(async (_o, cmd) => emit(cmd, accountsView(await svc(cmd).listAccounts())));
-  program2.command("apps").description("Apps in the account").command("list").description("List apps with their aliases").action(async (_o, cmd) => emit(cmd, appsView(await svc(cmd).apps())));
-  program2.command("ad-units").description("Ad units in the account").command("list").description("List ad units").option("--app <alias|id>", "only ad units of this app").action(async (o, cmd) => emit(cmd, adUnitsView(await svc(cmd).adUnits({ app: o.app }))));
-  const report = program2.command("report").description("Network and mediation reports");
-  for (const kind of ["network", "mediation"]) {
-    report.command(kind).description(`Generate a ${kind} report`).requiredOption("--from <date>", "start, YYYY-MM or YYYY-MM-DD").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD (default: same as --from)").option("--by <dims>", `dimensions, comma-separated (e.g. app,country${kind === "mediation" ? ",ad-source" : ""})`, list).option("--metrics <metrics>", "metrics, comma-separated (default: all common ones)", list).option("--filter <k=v,\u2026>", "filter, repeatable (e.g. country=NO,SE or app=<alias>)", (v, p = []) => [...p, v]).option("--max-rows <n>", "cap the number of rows", positiveInt).action(async (o, cmd) => {
-      const s = svc(cmd);
-      const q = {
-        from: o.from,
-        to: o.to ?? o.from,
-        by: o.by?.length ? o.by : ["app"],
-        metrics: o.metrics,
-        filters: parseFilters(o.filter),
-        maxRows: o.maxRows
-      };
-      emit(cmd, reportView(kind === "network" ? await s.networkReport(q) : await s.mediationReport(q)));
-    });
-  }
-  const AS_FORMATS = ["summary", "journal", "csv", "json"];
-  const asOption = () => new Option("--as <kind>", "summary (default), journal (paste-ready TSV rows), csv or json").choices(AS_FORMATS).default("summary");
-  const emitFinance = (cmd, as, summary, journal) => {
-    const explicit = g(cmd).output;
-    if (as === "journal") {
-      const out = journal();
-      if (explicit) io.stdout(render(out, explicit));
-      else {
-        io.stdout(renderTsv(out.table));
-        for (const n of out.notes ?? []) io.stderr(`${n}
-`);
-      }
-      return;
-    }
-    const format = as === "csv" || as === "json" ? as : explicit ?? defaultFormat(io.isTTY);
-    io.stdout(render(summary, format));
-  };
-  const finance = program2.command("finance").description("Monthly earnings for bookkeeping (estimates)");
-  finance.command("month <YYYY-MM>").description("Estimated earnings per app for one month, optionally as journal rows").addOption(asOption()).action(async (month, o, cmd) => {
-    const s = svc(cmd);
-    const m = await financeMonth(s, month);
-    emitFinance(cmd, o.as, financeMonthView(m), () => journalView(journalRows(m, s.profile.finance), m.notes));
-  });
-  finance.command("range").description("Estimated earnings per month over a range").requiredOption("--from <YYYY-MM>", "first month").requiredOption("--to <YYYY-MM>", "last month").addOption(asOption()).action(async (o, cmd) => {
-    const s = svc(cmd);
-    const r = await financeRange(s, o.from, o.to);
-    emitFinance(
-      cmd,
-      o.as,
-      financeRangeView(r),
-      () => journalView(r.months.flatMap((m) => journalRows(m, s.profile.finance)), r.notes)
-    );
-  });
-  program2.command("insights").description("Monetization insights: top/bottom earners, low fill, swings vs the previous period").option("--last <Nd>", "the last N complete days (default 30d)", parseDays).option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD").addOption(new Option("--by <dimension>", "group by").choices([...INSIGHT_DIMENSIONS]).default("ad-unit")).option("--swing <percent>", "change that counts as a swing (default 30)", positiveInt).action(async (o, cmd) => {
-    const r = await insights(svc(cmd), {
-      last: o.last,
-      from: o.from,
-      to: o.to,
-      by: o.by,
-      swingThreshold: o.swing === void 0 ? void 0 : o.swing / 100
-    });
-    emit(cmd, insightsView(r));
-  });
-  program2.command("mcp").description("Run the MCP server over stdio (for Claude Code, Codex and other MCP clients)").action(async (_o, cmd) => {
-    const { profile, account } = g(cmd);
-    await runStdioServer({
-      service: (opts) => AdmobService.create({ profile, account: opts.account ?? account }, io.service)
-    });
-    await new Promise((resolve) => process.stdin.on("close", resolve));
-  });
-  const config2 = program2.command("config").description("Read and write ~/.admobctl/config.json (no secrets)");
-  config2.command("get [key]").description("Show the resolved profile, or one key").action((key, _o, cmd) => {
-    const p = resolveProfile(loadConfig(dir()), g(cmd).profile);
-    const all = p;
-    if (!key) return emit(cmd, keyValueView(all));
-    const value = key.split(".").reduce((acc, k) => acc?.[k], all);
-    emit(cmd, keyValueView({ [key]: value ?? null }));
-  });
-  config2.command("set <key> <value>").description("Set a key, e.g. account, quotaProject, finance.revenueAccount, aliases.<alias>").action((key, value, _o, cmd) => {
-    const cfg = loadConfig(dir());
-    setProfileValue(cfg, g(cmd).profile ?? cfg.defaultProfile ?? "default", key, value);
-    saveConfig(dir(), cfg);
-    io.stderr(`set ${key}
-`);
-  });
-  config2.command("unset <key>").description("Remove a key").action((key, _o, cmd) => {
-    const cfg = loadConfig(dir());
-    setProfileValue(cfg, g(cmd).profile ?? cfg.defaultProfile ?? "default", key, void 0);
-    saveConfig(dir(), cfg);
-    io.stderr(`unset ${key}
-`);
-  });
-  config2.command("path").description("Print the config file path").action(() => io.stdout(`${configPath(dir())}
-`));
-  return program2;
-}
-function reportError(io, err, json2) {
-  if (err instanceof AdmobctlError) {
-    if (json2) io.stderr(`${JSON.stringify({ error: err.toJSON() })}
-`);
-    else io.stderr(`error: ${err.message}
-${err.fix ? `  fix: ${err.fix}
-` : ""}`);
-    return err.code === "USAGE" ? 2 : 1;
-  }
-  io.stderr(`error: ${err?.stack ?? String(err)}
-`);
-  return 1;
-}
-async function run(argv, io) {
-  const program2 = buildProgram(io);
-  try {
-    process.exitCode = void 0;
-    await program2.parseAsync(argv);
-    const code2 = Number(process.exitCode ?? 0);
-    process.exitCode = void 0;
-    return code2;
-  } catch (err) {
-    if (err instanceof CommanderError) {
-      return err.exitCode === 0 ? 0 : 2;
-    }
-    const opts = program2.opts();
-    return reportError(io, err, (opts.output ?? defaultFormat(io.isTTY)) === "json");
-  }
-}
-
 // src/bin.ts
 var code = await run(process.argv, {
   stdout: (s) => process.stdout.write(s),
   stderr: (s) => process.stderr.write(s),
-  isTTY: Boolean(process.stdout.isTTY)
+  isTTY: Boolean(process.stdout.isTTY),
+  runMcp: runStdioServer
 });
 process.exitCode = code;

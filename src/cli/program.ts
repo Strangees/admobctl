@@ -7,8 +7,7 @@ import { AdmobctlError } from "../core/errors.js";
 import { financeMonth, financeRange, journalRows } from "../core/finance.js";
 import { INSIGHT_DIMENSIONS, insights, type InsightDimension } from "../core/insights.js";
 import { log } from "../core/log.js";
-import { AdmobService, type ServiceDeps } from "../core/service.js";
-import { runStdioServer } from "../mcp/server.js";
+import { AdmobService, type ServiceDeps, type ServiceOptions } from "../core/service.js";
 import { defaultFormat, OUTPUT_FORMATS, render, renderTsv, type Output, type OutputFormat } from "../output/format.js";
 import { VERSION } from "../version.js";
 import {
@@ -29,6 +28,11 @@ export interface CliIO {
   stderr: (s: string) => void;
   isTTY: boolean;
   service?: ServiceDeps;
+  /**
+   * Starts the MCP server for `admobctl mcp`. Injected by the composition root (src/bin.ts) so that
+   * src/cli never imports src/mcp. The CLI hands over a service factory bound to the global flags.
+   */
+  runMcp?: (deps: { service: (opts: ServiceOptions) => AdmobService }) => Promise<void>;
 }
 
 interface GlobalOpts {
@@ -279,8 +283,9 @@ export function buildProgram(io: CliIO): Command {
     .command("mcp")
     .description("Run the MCP server over stdio (for Claude Code, Codex and other MCP clients)")
     .action(async (_o, cmd: Command) => {
+      if (!io.runMcp) throw new AdmobctlError("USAGE", "The mcp command is not available in this build (no MCP server wired in).");
       const { profile, account } = g(cmd);
-      await runStdioServer({
+      await io.runMcp({
         service: (opts) => AdmobService.create({ profile, account: opts.account ?? account }, io.service),
       });
       // Keep running until the client closes stdin.

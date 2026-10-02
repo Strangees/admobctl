@@ -82,6 +82,13 @@ describe("cli", () => {
     expect(r.stdout).toBe("");
   });
 
+  it("fails clearly when no MCP server is wired in", async () => {
+    const r = await cli(["mcp"]);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("mcp command is not available");
+    expect(r.stdout).toBe("");
+  });
+
   it("runs auth doctor and reports each check", async () => {
     const r = await cli(["auth", "doctor"], { isTTY: true });
     expect(r.stdout, r.stdout + r.stderr).toMatch(/✓ credentials/);
