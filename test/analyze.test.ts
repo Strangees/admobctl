@@ -58,6 +58,18 @@ describe("analyzeVersions", () => {
     expect(res.summary.join(" ")).toMatch(/ios-11\.12\.0.*38\.9%.*83\.3%/);
   });
 
+  it("marks versions with too little traffic to judge and says how many", async () => {
+    const { svc } = service({ "POST /networkReport:generate": () => jsonResponse(synthReport(rows)) });
+    const res = await analyzeVersions(svc, { by: "sdk", last: 30 });
+    expect(res.rows.map((x) => [x.version, x.enough_data])).toEqual([
+      ["ios-11.10.0", true],
+      ["ios-11.12.0", true],
+      ["afma-sdk-a-v24", true],
+      ["afma-sdk-a-v23", false],
+    ]);
+    expect(res.notices.join(" ")).toMatch(/1 of 4 SDK versions .*fewer than 1000 requests.*noise/);
+  });
+
   it("groups app versions by app and filters to one app", async () => {
     const { svc, calls } = service({
       "POST /networkReport:generate": () =>
@@ -72,27 +84,73 @@ describe("analyzeVersions", () => {
 });
 
 describe("analyzeConsent", () => {
-  const r = (value: string, label: string, earn: number, req: number, imp: number): [Dims, Metrics] => [
-    { SERVING_RESTRICTION: [value, label] },
+  const QUIZ_IOS: [string, string] = ["ca-app-pub-0000000000000001~1111111111", "Example Quiz"];
+  const QUIZ_ANDROID: [string, string] = ["ca-app-pub-0000000000000001~2222222222", "Example Quiz"];
+  const r = (app: [string, string], value: string, label: string, earn: number, req: number, imp: number): [Dims, Metrics] => [
+    { APP: app, SERVING_RESTRICTION: [value, label] },
     { ESTIMATED_EARNINGS: earn, AD_REQUESTS: req, MATCHED_REQUESTS: Math.round(req * 0.9), IMPRESSIONS: imp, CLICKS: 0 },
   ];
   const rows = [
-    r("NONE", "No restriction", 80_000_000, 60_000, 40_000),
-    r("NPA", "Non-personalized ads", 10_000_000, 30_000, 20_000),
-    r("LTD", "Limited ads", 1_000_000, 10_000, 5_000),
+    r(QUIZ_IOS, "NONE", "No restriction", 80_000_000, 60_000, 40_000),
+    r(QUIZ_IOS, "NPA", "Non-personalized ads", 10_000_000, 30_000, 20_000),
+    r(QUIZ_IOS, "LTD", "Limited ads", 1_000_000, 10_000, 5_000),
   ];
 
-  it("shows each serving restriction's share of traffic and its eCPM against unrestricted traffic", async () => {
+  it("shows each serving restriction's share of the app's traffic and its eCPM against the app's unrestricted traffic", async () => {
     const { svc, calls } = service({ "POST /networkReport:generate": () => jsonResponse(synthReport(rows)) });
     const res = await analyzeConsent(svc, { last: 30 });
-    expect(spec(calls.find((c) => c.url.includes("networkReport"))!).dimensions).toEqual(["SERVING_RESTRICTION"]);
+    expect(spec(calls.find((c) => c.url.includes("networkReport"))!).dimensions).toEqual(["APP", "SERVING_RESTRICTION"]);
     expect(res.restricted_request_share).toBeCloseTo(0.4);
     const npa = res.rows.find((x) => x.restriction === "Non-personalized ads")!;
+    expect(npa.app).toBe("example-quiz-ios");
     expect(npa.request_share).toBeCloseTo(0.3);
     expect(npa.ecpm).toBe(0.5);
     expect(npa.ecpm_vs_unrestricted).toBeCloseTo(0.25);
+    expect(res.apps).toEqual([{ app: "example-quiz-ios", requests: 100_000, restricted_request_share: 0.4 }]);
     expect(res.summary.join(" ")).toMatch(/40\.0% of ad requests.*restricted/);
-    expect(res.summary.join(" ")).toMatch(/Non-personalized ads.*eCPM 0\.50 NOK.*-75%/);
+    expect(res.summary.join(" ")).toMatch(/example-quiz-ios: Non-personalized ads.*eCPM 0\.50 NOK.*-75%/);
+  });
+
+  it("compares restricted traffic within each app, not across apps with different eCPMs", async () => {
+    // Account-wide, limited ads look 78% worse per impression; within each app they are 10% worse.
+    const mixed = [
+      r(QUIZ_IOS, "NONE", "No restriction", 9_000_000, 10_000, 9_000), // eCPM 1.00
+      r(QUIZ_IOS, "LTD", "Limited ads", 81_000_000, 100_000, 90_000), // eCPM 0.90
+      r(QUIZ_ANDROID, "NONE", "No restriction", 900_000_000, 99_000, 90_000), // eCPM 10.00
+      r(QUIZ_ANDROID, "LTD", "Limited ads", 81_000_000, 10_000, 9_000), // eCPM 9.00
+    ];
+    const { svc } = service({ "POST /networkReport:generate": () => jsonResponse(synthReport(mixed)) });
+    const res = await analyzeConsent(svc, { last: 30 });
+    expect(res.rows.map((x) => [x.app, x.restriction_id])).toEqual([
+      ["example-quiz-ios", "LTD"],
+      ["example-quiz-ios", "NONE"],
+      ["example-quiz-android", "NONE"],
+      ["example-quiz-android", "LTD"],
+    ]);
+    expect(res.highlights.map((h) => h.message)).toEqual([
+      expect.stringMatching(/^example-quiz-ios: Limited ads: 90\.9% of requests at eCPM 0\.90 NOK vs 1\.00 unrestricted \(-10%\)/),
+      expect.stringMatching(/^example-quiz-android: Limited ads: 9\.2% of requests at eCPM 9\.00 NOK vs 10\.00 unrestricted \(-10%\)/),
+    ]);
+    expect(res.apps.map((a) => [a.app, a.restricted_request_share])).toEqual([
+      ["example-quiz-ios", expect.closeTo(0.909, 3)],
+      ["example-quiz-android", expect.closeTo(0.0917, 3)],
+    ]);
+    expect(res.summary.join(" ")).not.toMatch(/-7\d%/);
+  });
+
+  it("does not judge a comparison when either side has too little traffic", async () => {
+    const thin = [
+      r(QUIZ_IOS, "NONE", "No restriction", 80_000_000, 60_000, 40_000),
+      r(QUIZ_IOS, "LTD", "Limited ads", 10_000_000, 30_000, 20_000),
+      r(QUIZ_ANDROID, "NONE", "No restriction", 50_000, 18, 10), // no usable baseline
+      r(QUIZ_ANDROID, "LTD", "Limited ads", 4_000_000, 5_000, 4_000),
+    ];
+    const { svc } = service({ "POST /networkReport:generate": () => jsonResponse(synthReport(thin)) });
+    const res = await analyzeConsent(svc, { last: 30 });
+    expect(res.highlights.map((h) => h.key)).toEqual(["example-quiz-ios/LTD"]);
+    expect(res.rows.filter((x) => x.app === "example-quiz-android").map((x) => x.enough_data)).toEqual([false, false]);
+    expect(res.rows.filter((x) => x.app === "example-quiz-ios").map((x) => x.enough_data)).toEqual([true, true]);
+    expect(res.notices.join(" ")).toMatch(/2 of 4 rows .*fewer than 1000 requests.*noise/);
   });
 
   it("notes that serving-restriction data starts in March 2021", async () => {

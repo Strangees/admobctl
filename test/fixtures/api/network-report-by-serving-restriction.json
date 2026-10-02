@@ -23,6 +23,10 @@
   {
     "row": {
       "dimensionValues": {
+        "APP": {
+          "value": "ca-app-pub-0000000000000001~1111111111",
+          "displayLabel": "Example Quiz"
+        },
         "SERVING_RESTRICTION": {
           "value": "NONE",
           "displayLabel": "No restriction"
@@ -50,6 +54,10 @@
   {
     "row": {
       "dimensionValues": {
+        "APP": {
+          "value": "ca-app-pub-0000000000000001~1111111111",
+          "displayLabel": "Example Quiz"
+        },
         "SERVING_RESTRICTION": {
           "value": "NPA",
           "displayLabel": "Non-personalized ads"
@@ -77,6 +85,10 @@
   {
     "row": {
       "dimensionValues": {
+        "APP": {
+          "value": "ca-app-pub-0000000000000001~1111111111",
+          "displayLabel": "Example Quiz"
+        },
         "SERVING_RESTRICTION": {
           "value": "LTD",
           "displayLabel": "Limited ads"

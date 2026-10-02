@@ -37,6 +37,11 @@ interface Base {
 const MIN_REQUESTS = 1000;
 const MIN_SHARE = 0.05;
 
+/** Rows stay in the output below MIN_REQUESTS, so say that their rates are not findings. */
+function thinDataNotice(thin: number, total: number, what: string, also = ""): string[] {
+  return thin ? [`${thin} of ${total} ${what} had fewer than ${MIN_REQUESTS} requests${also}; treat their rates as noise, not findings.`] : [];
+}
+
 async function fetchReport(
   svc: AdmobService,
   kind: StreamedReportKind,
@@ -92,6 +97,8 @@ export interface VersionRow {
   ctr: number;
   /** Share of the group's ad requests. */
   request_share: number;
+  /** False below MIN_REQUESTS requests: the rates are too noisy to act on. */
+  enough_data: boolean;
 }
 
 export interface VersionsResult extends Base {
@@ -140,6 +147,7 @@ export async function analyzeVersions(svc: AdmobService, opts: VersionsOptions):
       show_rate: ratio(impressions, matched),
       ctr: ratio(clicks, impressions),
       request_share: ratio(requests, groupRequests.get(group) ?? 0),
+      enough_data: requests >= MIN_REQUESTS,
     };
   });
   rows.sort((a, b) => (groupRequests.get(b.group) ?? 0) - (groupRequests.get(a.group) ?? 0) || a.group.localeCompare(b.group) || b.requests - a.requests);
@@ -198,7 +206,7 @@ export async function analyzeVersions(svc: AdmobService, opts: VersionsOptions):
     rows,
     highlights,
     summary,
-    notices: r.notices,
+    notices: [...r.notices, ...thinDataNotice(rows.filter((x) => !x.enough_data).length, rows.length, `${noun}s`)],
   };
 }
 
@@ -210,27 +218,42 @@ export interface ConsentOptions extends AnalyzeRange {
 }
 
 export interface ConsentRow {
+  /** App alias. */
+  app: string;
   restriction: string;
   restriction_id: string;
   requests: number;
+  /** Share of the app's ad requests. */
   request_share: number;
   earnings: number;
   earnings_micros: number;
+  /** Share of the app's earnings. */
   earnings_share: number;
   impressions: number;
   ecpm: number;
   request_rpm: number;
   match_rate: number;
   show_rate: number;
-  /** eCPM relative to unrestricted traffic (0.25 = a quarter of it); absent when there is none. */
+  /** eCPM relative to the same app's unrestricted traffic (0.25 = a quarter of it); absent when there is none. */
   ecpm_vs_unrestricted?: number;
+  /** False when this row, or the unrestricted traffic it is compared with, is below MIN_REQUESTS requests. */
+  enough_data: boolean;
+}
+
+export interface ConsentApp {
+  app: string;
+  requests: number;
+  /** Share of the app's ad requests served under any restriction; absent when it has no unrestricted traffic. */
+  restricted_request_share?: number;
 }
 
 export interface ConsentResult extends Base {
   currency: string;
   estimate: true;
+  /** One row per app and serving restriction, biggest app first. */
   rows: ConsentRow[];
-  /** Share of ad requests served under any restriction. */
+  apps: ConsentApp[];
+  /** Share of all ad requests served under any restriction. */
   restricted_request_share?: number;
 }
 
@@ -238,64 +261,93 @@ const SERVING_RESTRICTION_START: ApiDate = { year: 2021, month: 3, day: 13 };
 const UNRESTRICTED = /no restriction|unrestricted|^none$|restriction_none|no_restriction/i;
 
 export async function analyzeConsent(svc: AdmobService, opts: ConsentOptions): Promise<ConsentResult> {
-  const r = await fetchReport(svc, "network", {
-    ...opts,
-    by: ["SERVING_RESTRICTION"],
-    metrics: ["ESTIMATED_EARNINGS", "AD_REQUESTS", "MATCHED_REQUESTS", "IMPRESSIONS", "CLICKS"],
-    filters: opts.app ? { app: [opts.app] } : undefined,
-  });
+  // Per app: apps differ so much in eCPM that an account-wide comparison mostly measures the app mix.
+  const [r, appRefs] = await Promise.all([
+    fetchReport(svc, "network", {
+      ...opts,
+      by: ["APP", "SERVING_RESTRICTION"],
+      metrics: ["ESTIMATED_EARNINGS", "AD_REQUESTS", "MATCHED_REQUESTS", "IMPRESSIONS", "CLICKS"],
+      filters: opts.app ? { app: [opts.app] } : undefined,
+    }),
+    svc.apps(),
+  ]);
+  const alias = new Map(appRefs.map((a) => [a.appId, a.alias]));
+  const appOf = (row: Report["rows"][number]) => alias.get(row.dimensions.APP?.value ?? "") ?? label(row.dimensions.APP);
   const totalRequests = r.report.rows.reduce((s, x) => s + metric(x, "AD_REQUESTS"), 0);
   const totalEarnings = sumMicros(r.report.rows.map((x) => metric(x, "ESTIMATED_EARNINGS")));
+  const appTotals = new Map<string, { requests: number; earnings: number }>();
+  for (const row of r.report.rows) {
+    const t = appTotals.get(appOf(row)) ?? { requests: 0, earnings: 0 };
+    t.requests += metric(row, "AD_REQUESTS");
+    t.earnings += metric(row, "ESTIMATED_EARNINGS");
+    appTotals.set(appOf(row), t);
+  }
 
-  const rows: ConsentRow[] = r.report.rows
-    .map((row): ConsentRow => {
-      const v = row.dimensions.SERVING_RESTRICTION;
-      const earnings = metric(row, "ESTIMATED_EARNINGS");
-      const requests = metric(row, "AD_REQUESTS");
-      const matched = metric(row, "MATCHED_REQUESTS");
-      const impressions = metric(row, "IMPRESSIONS");
-      return {
-        restriction: label(v),
-        restriction_id: v?.value ?? "",
-        requests,
-        request_share: ratio(requests, totalRequests),
-        earnings: microsToAmount(earnings),
-        earnings_micros: earnings,
-        earnings_share: ratio(earnings, totalEarnings),
-        impressions,
-        ecpm: perMille(earnings, impressions),
-        request_rpm: perMille(earnings, requests),
-        match_rate: ratio(matched, requests),
-        show_rate: ratio(impressions, matched),
-      };
-    })
-    .sort((a, b) => b.requests - a.requests);
+  const rows: ConsentRow[] = r.report.rows.map((row): ConsentRow => {
+    const v = row.dimensions.SERVING_RESTRICTION;
+    const app = appOf(row);
+    const earnings = metric(row, "ESTIMATED_EARNINGS");
+    const requests = metric(row, "AD_REQUESTS");
+    const matched = metric(row, "MATCHED_REQUESTS");
+    const impressions = metric(row, "IMPRESSIONS");
+    return {
+      app,
+      restriction: label(v),
+      restriction_id: v?.value ?? "",
+      requests,
+      request_share: ratio(requests, appTotals.get(app)!.requests),
+      earnings: microsToAmount(earnings),
+      earnings_micros: earnings,
+      earnings_share: ratio(earnings, appTotals.get(app)!.earnings),
+      impressions,
+      ecpm: perMille(earnings, impressions),
+      request_rpm: perMille(earnings, requests),
+      match_rate: ratio(matched, requests),
+      show_rate: ratio(impressions, matched),
+      enough_data: requests >= MIN_REQUESTS,
+    };
+  });
+  const appRequests = (app: string) => appTotals.get(app)!.requests;
+  rows.sort((a, b) => appRequests(b.app) - appRequests(a.app) || a.app.localeCompare(b.app) || b.requests - a.requests);
 
   const isOpen = (x: ConsentRow) => UNRESTRICTED.test(x.restriction) || UNRESTRICTED.test(x.restriction_id);
-  const open = rows.find(isOpen);
-  const restricted = rows.filter((x) => !isOpen(x));
-  const money = (m: number) => `${formatMicros(m)} ${r.currency}`;
   const highlights: Finding[] = [];
-  if (open) {
+  const apps: ConsentApp[] = [];
+  let openRequests = 0;
+  let anyOpen = false;
+  for (const [app, t] of [...appTotals].sort((a, b) => b[1].requests - a[1].requests || a[0].localeCompare(b[0]))) {
+    const own = rows.filter((x) => x.app === app);
+    const open = own.find(isOpen);
+    apps.push({ app, requests: t.requests, ...(open ? { restricted_request_share: ratio(t.requests - open.requests, t.requests) } : {}) });
+    if (!open) {
+      for (const x of own) x.enough_data = false;
+      continue;
+    }
+    anyOpen = true;
+    openRequests += open.requests;
     const openEcpm = perMille(open.earnings_micros, open.impressions);
     // Compare earnings per impression from micros; the rounded eCPMs are for display only.
     const openPerImpression = ratio(open.earnings_micros, open.impressions);
-    for (const x of restricted) {
+    for (const x of own) {
+      if (x === open) continue;
+      if (open.requests < MIN_REQUESTS) x.enough_data = false;
       if (openPerImpression > 0) x.ecpm_vs_unrestricted = ratio(ratio(x.earnings_micros, x.impressions), openPerImpression);
-      if (x.request_share < MIN_SHARE || x.ecpm_vs_unrestricted === undefined) continue;
+      if (!x.enough_data || x.request_share < MIN_SHARE || x.ecpm_vs_unrestricted === undefined) continue;
       const diff = Math.round((x.ecpm_vs_unrestricted - 1) * 100);
       highlights.push({
         kind: "restricted",
-        key: x.restriction_id,
-        label: x.restriction,
-        message: `${x.restriction}: ${pct(x.request_share)} of requests at eCPM ${x.ecpm.toFixed(2)} ${r.currency} vs ${openEcpm.toFixed(2)} unrestricted (${diff >= 0 ? "+" : ""}${diff}%).`,
+        key: `${app}/${x.restriction_id}`,
+        label: `${app} / ${x.restriction}`,
+        message: `${app}: ${x.restriction}: ${pct(x.request_share)} of requests at eCPM ${x.ecpm.toFixed(2)} ${r.currency} vs ${openEcpm.toFixed(2)} unrestricted (${diff >= 0 ? "+" : ""}${diff}%).`,
       });
     }
   }
-  const restrictedShare = open ? ratio(totalRequests - open.requests, totalRequests) : undefined;
+  const restrictedShare = anyOpen ? ratio(totalRequests - openRequests, totalRequests) : undefined;
+  const money = (m: number) => `${formatMicros(m)} ${r.currency}`;
   const notices = [...r.notices];
   if (startsBefore(r.range, SERVING_RESTRICTION_START)) notices.push("Serving-restriction data starts 2021-03-13; earlier traffic is not broken down.");
-  if (!open && rows.length) notices.push("No unrestricted traffic found to compare against.");
+  if (!anyOpen && rows.length) notices.push("No unrestricted traffic found to compare against.");
+  notices.push(...thinDataNotice(rows.filter((x) => !x.enough_data).length, rows.length, "rows", ", or an unrestricted baseline that small"));
 
   const summary = [
     `Estimated earnings ${money(totalEarnings)} from ${totalRequests} ad requests, ${r.from} → ${r.to}.`,
@@ -310,6 +362,7 @@ export async function analyzeConsent(svc: AdmobService, opts: ConsentOptions): P
     timeZone: r.timeZone,
     estimate: true,
     rows,
+    apps,
     highlights,
     summary,
     notices,

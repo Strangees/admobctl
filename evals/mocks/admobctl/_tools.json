@@ -84,6 +84,77 @@
       }
     },
     {
+      "name": "admobctl_check_app_ads",
+      "title": "Check app-ads.txt",
+      "description": "Check each app's app-ads.txt the way AdMob's crawler does: the developer website from the App Store listing (Google Play listings cannot be read, so Android apps need `website` from the user or one saved with `admobctl config set websites.<alias> <url>`; do not guess it), https then http, and a google.com line with the publisher ID marked DIRECT. Per app: ok, missing-file, html (a web page instead of the file), no-line, reseller-only, unreachable, no-website, unknown-website or not-linked, plus the exact line to add. Fetches the store lookup and the developer websites, not just the AdMob API.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "description": "Only this app (alias, app ID or name)",
+            "type": "string"
+          },
+          "website": {
+            "description": "Developer website for apps whose store listing cannot be read (Android), e.g. example.com",
+            "type": "string"
+          },
+          "account": {
+            "description": "Publisher ID (pub-…). Defaults to the configured or only account.",
+            "type": "string"
+          }
+        },
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "publisherId": {
+            "type": "string"
+          },
+          "expectedLine": {
+            "type": "string"
+          },
+          "problems": {
+            "type": "number"
+          },
+          "apps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "summary": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "publisherId",
+          "expectedLine",
+          "problems",
+          "apps",
+          "summary"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
       "name": "admobctl_list_ad_units",
       "title": "List AdMob ad units",
       "description": "List ad units (name, format, ad unit ID) for all apps or one app.",
@@ -1004,7 +1075,7 @@
     {
       "name": "admobctl_analyze_versions",
       "title": "AdMob version health",
-      "description": "Match rate, show rate and CTR per Google Mobile Ads SDK version (by platform), app version (by app) or OS version, comparing each version with the rest of its group. Highlights versions that fill or show worse, e.g. after an SDK upgrade or app release. Traffic metrics only: the AdMob API does not split earnings by version.",
+      "description": "Match rate, show rate and CTR per Google Mobile Ads SDK version (by platform), app version (by app) or OS version, comparing each version with the rest of its group. Highlights versions that fill or show worse, e.g. after an SDK upgrade or app release. Rows with enough_data=false have too few requests to judge: do not report their rates as problems. Traffic metrics only: the AdMob API does not split earnings by version.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1116,7 +1187,7 @@
     {
       "name": "admobctl_analyze_consent",
       "title": "AdMob consent impact",
-      "description": "Ad requests, earnings and eCPM by serving restriction (no restriction, non-personalized, limited ads, RDP…), with each restricted mode's eCPM relative to unrestricted traffic and the share of traffic served under a restriction. Earnings are estimates. Data starts 2021-03-13.",
+      "description": "Ad requests, earnings and eCPM per app and serving restriction (no restriction, non-personalized, limited ads, RDP…), with each restricted mode's eCPM relative to the same app's unrestricted traffic, and the share of traffic served under a restriction per app (`apps`) and overall. One call covers every app. Rows with enough_data=false have too few requests, or too small an unrestricted baseline, to judge. Earnings are estimates. Data starts 2021-03-13.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1198,6 +1269,16 @@
             "type": "boolean",
             "const": true
           },
+          "apps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
           "restricted_request_share": {
             "type": "number"
           }
@@ -1210,7 +1291,8 @@
           "summary",
           "notices",
           "currency",
-          "estimate"
+          "estimate",
+          "apps"
         ],
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": {}

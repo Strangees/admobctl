@@ -33,7 +33,9 @@ const INSTRUCTIONS = `Read-only access to the user's Google AdMob account via ad
 - All earnings are ESTIMATES. When reporting money, say so and that they should be reconciled against AdMob Payments (finalized).
 - For "what did I earn in <month>" use admobctl_finance_month; for trends and recommendations use admobctl_insights.
 - For SDK/app-version problems, consent impact or mediation waterfalls use the admobctl_analyze_* tools.
-- For "is my app-ads.txt OK?" or unexplained "limited ad serving" use admobctl_check_app_ads.
+- For "is my app-ads.txt OK?" or unexplained "limited ad serving" use admobctl_check_app_ads. Google Play listings cannot be
+  read, so Android apps show unknown-website until their developer website is added by hand. Never guess a website: ask the
+  user for it and pass it as \`website\`, or have them save it once with: admobctl config set websites.<alias> <url>
 - Ad sources, adapters, mediation groups, ad unit mappings and campaign reports use AdMob API v1beta. Google limits some of
   these to allowlisted accounts; a "v1beta" permission error is not a setup mistake, so pass its Fix line on and move on.
 - These tools never change anything. Changes (creating apps, ad units or mappings; editing mediation groups; A/B
@@ -188,7 +190,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
     {
       title: "Check app-ads.txt",
       description:
-        "Check each app's app-ads.txt the way AdMob's crawler does: the developer website from the App Store listing (Android needs `website`, or the configured one), https then http, and a google.com line with the publisher ID marked DIRECT. Per app: ok, missing-file, html (a web page instead of the file), no-line, reseller-only, unreachable, no-website, unknown-website or not-linked, plus the exact line to add. Fetches the store lookup and the developer websites, not just the AdMob API.",
+        "Check each app's app-ads.txt the way AdMob's crawler does: the developer website from the App Store listing (Google Play listings cannot be read, so Android apps need `website` from the user or one saved with `admobctl config set websites.<alias> <url>`; do not guess it), https then http, and a google.com line with the publisher ID marked DIRECT. Per app: ok, missing-file, html (a web page instead of the file), no-line, reseller-only, unreachable, no-website, unknown-website or not-linked, plus the exact line to add. Fetches the store lookup and the developer websites, not just the AdMob API.",
       inputSchema: {
         ...appArg,
         website: z.string().optional().describe("Developer website for apps whose store listing cannot be read (Android), e.g. example.com"),
@@ -425,7 +427,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
     {
       title: "AdMob version health",
       description:
-        "Match rate, show rate and CTR per Google Mobile Ads SDK version (by platform), app version (by app) or OS version, comparing each version with the rest of its group. Highlights versions that fill or show worse, e.g. after an SDK upgrade or app release. Traffic metrics only: the AdMob API does not split earnings by version.",
+        "Match rate, show rate and CTR per Google Mobile Ads SDK version (by platform), app version (by app) or OS version, comparing each version with the rest of its group. Highlights versions that fill or show worse, e.g. after an SDK upgrade or app release. Rows with enough_data=false have too few requests to judge: do not report their rates as problems. Traffic metrics only: the AdMob API does not split earnings by version.",
       inputSchema: { by: z.enum(VERSION_KINDS).optional().describe("sdk (default), app or os"), ...appArg, ...rangeInput, ...accountArg },
       outputSchema: analysisOutput({ by: z.string(), group_by: z.string() }),
       annotations,
@@ -440,9 +442,9 @@ export function createMcpServer(deps: McpDeps): McpServer {
     {
       title: "AdMob consent impact",
       description:
-        "Ad requests, earnings and eCPM by serving restriction (no restriction, non-personalized, limited ads, RDP…), with each restricted mode's eCPM relative to unrestricted traffic and the share of traffic served under a restriction. Earnings are estimates. Data starts 2021-03-13.",
+        "Ad requests, earnings and eCPM per app and serving restriction (no restriction, non-personalized, limited ads, RDP…), with each restricted mode's eCPM relative to the same app's unrestricted traffic, and the share of traffic served under a restriction per app (`apps`) and overall. One call covers every app. Rows with enough_data=false have too few requests, or too small an unrestricted baseline, to judge. Earnings are estimates. Data starts 2021-03-13.",
       inputSchema: { ...appArg, ...rangeInput, ...currencyArg, ...accountArg },
-      outputSchema: analysisOutput({ currency: z.string(), estimate: z.literal(true), restricted_request_share: z.number().optional() }),
+      outputSchema: analysisOutput({ currency: z.string(), estimate: z.literal(true), apps: z.array(anyRecord), restricted_request_share: z.number().optional() }),
       annotations,
     },
     wrap(async (a: RangeArgs & { app?: string; currency?: string }) =>

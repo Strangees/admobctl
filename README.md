@@ -66,7 +66,7 @@ admobctl insights --last 30d --by ad-unit
 
 admobctl analyze versions --by sdk                  # match/show rate per SDK version, per platform
 admobctl analyze versions --by app --app my-game-ios
-admobctl analyze consent --last 30d                  # eCPM under consent/RDP/limited ads vs unrestricted
+admobctl analyze consent --last 30d                  # per app: eCPM under consent/RDP/limited ads vs unrestricted
 admobctl analyze waterfall --group "Banners"         # mediation lines by observed eCPM
 ```
 
@@ -103,8 +103,8 @@ All earnings are **estimates**. Reconcile them against AdMob Payments, because t
 
 ### Analyze
 
-- `analyze versions --by sdk|app|os` shows match rate, show rate and CTR per Google Mobile Ads SDK version (grouped by platform), app version (grouped by app; `--app` narrows it) or OS version, and flags versions that fill or show at least 20% worse than the rest of their group. It uses traffic metrics only, because Google documents the version dimensions as incompatible with earnings.
-- `analyze consent` breaks traffic and earnings down by serving restriction (non-personalized, limited ads, RDP…) and compares each restricted mode's eCPM with unrestricted traffic. The data starts 2021-03-13.
+- `analyze versions --by sdk|app|os` shows match rate, show rate and CTR per Google Mobile Ads SDK version (grouped by platform), app version (grouped by app; `--app` narrows it) or OS version, and flags versions that fill or show at least 20% worse than the rest of their group. Versions with fewer than 1,000 requests are marked as thin data and not judged. It uses traffic metrics only, because Google documents the version dimensions as incompatible with earnings.
+- `analyze consent` breaks traffic and earnings down per app and serving restriction (non-personalized, limited ads, RDP…) and compares each restricted mode's eCPM with the same app's unrestricted traffic, because apps differ too much in eCPM for an account-wide comparison to mean anything. Rows with too little traffic on either side are marked as thin data. The data starts 2021-03-13.
 - `analyze waterfall` lists each mediation group's lines (ad source instances) by observed eCPM, with their share of the group's earnings, and flags idle lines (requests, no impressions) and lines that rarely fill.
 
 `apps list` shows each app's approval state, and `auth doctor` warns about apps marked *action required* in AdMob.
@@ -226,6 +226,24 @@ npm run record-fixtures -- --month 2026-09 --expect <booked total> --range 2026-
 ```
 
 See [.claude/CLAUDE.md](.claude/CLAUDE.md) for code conventions.
+
+### CI and releases
+
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on every pull request and push to `main`: typecheck,
+tests, and checks that the committed bundle and eval mocks match the source. The tests also guard that the version is
+the same everywhere and that no real publisher IDs or email addresses are committed.
+
+Plugins install straight from `main`, and `claude plugin update` only notices a new version number. To release, bump
+the version and merge to `main`:
+
+```bash
+npm version <patch|minor|major> --no-git-tag-version   # package.json + lockfile
+# set the same version in .claude-plugin/plugin.json and .codex-plugin/plugin.json
+npm run check                                          # rebuilds the bundle with the new version
+```
+
+When CI passes on `main`, it tags `v<version>` and publishes a GitHub release with the bundle and its checksum.
+A push that does not change the version releases nothing.
 
 ## License
 

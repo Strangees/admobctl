@@ -1,6 +1,6 @@
 {
   "name": "admobctl",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Fast command-line tool and agent plugin for the Google AdMob API. Unofficial, not affiliated with Google.",
   "type": "module",
   "bin": {

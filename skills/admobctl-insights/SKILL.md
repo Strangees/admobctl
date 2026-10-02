@@ -13,8 +13,16 @@ question asks for it. Drill down with `admobctl_network_report` only when the in
 
 For narrower questions use the curated analyses, which follow the same highlights/summary shape:
 `admobctl_analyze_versions` (did an SDK upgrade or app release hurt match or show rate),
-`admobctl_analyze_consent` (how much traffic runs under consent/RDP/limited-ads restrictions and at what eCPM) and
-`admobctl_analyze_waterfall` (which mediation lines earn, which sit idle).
+`admobctl_analyze_consent` (how much traffic runs under consent/RDP/limited-ads restrictions and at what eCPM, per app
+in one call) and `admobctl_analyze_waterfall` (which mediation lines earn, which sit idle).
+
+Rows marked `enough_data: false` in the versions and consent analyses have too few requests to judge. Show them if
+asked, but do not report their rates as problems. Compare restricted and unrestricted eCPM within one app, never
+across apps.
+
+If `admobctl_check_app_ads` returns `unknown-website` for an Android app, the website could not be fetched from
+Google Play. Do not guess it: ask the user for the developer website and pass it as `website`, or have them save it
+with `admobctl config set websites.<alias> <url>`.
 
 ## Present it
 
