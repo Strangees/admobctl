@@ -1,7 +1,7 @@
-import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildAuthUrl,
   createPkce,
@@ -13,6 +13,7 @@ import {
   type StoredOAuth,
 } from "../src/core/auth/oauth.js";
 import type { Exec } from "../src/core/exec.js";
+import { log } from "../src/core/log.js";
 import { fakeFetch, jsonResponse } from "./helpers.js";
 
 const stored: StoredOAuth = { clientId: "cid.apps.googleusercontent.com", clientSecret: "csecret", refreshToken: "rtoken" };
@@ -121,6 +122,37 @@ describe("FileSecretStore", () => {
     await store.set("default", "n3w");
     expect(statSync(file).mode & 0o777).toBe(0o600);
     expect(readFileSync(file, "utf8")).toBe("n3w");
+  });
+
+  it.skipIf(process.platform === "win32")("creates a missing dir as 0700", async () => {
+    const dir = join(mkdtempSync(join(tmpdir(), "admobctl-sec-")), "fresh", ".admobctl");
+    await new FileSecretStore(dir).set("default", "s3cret");
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
+  });
+
+  it.skipIf(process.platform === "win32")("tightens a pre-existing loose .admobctl dir to 0700", async () => {
+    const dir = join(mkdtempSync(join(tmpdir(), "admobctl-sec-")), ".admobctl");
+    mkdirSync(dir);
+    chmodSync(dir, 0o755);
+    expect(statSync(dir).mode & 0o777).toBe(0o755);
+    await new FileSecretStore(dir).set("default", "s3cret");
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
+  });
+
+  it.skipIf(process.platform === "win32")("leaves any other loose dir alone and warns with the fix", async () => {
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
+    try {
+      const dir = join(mkdtempSync(join(tmpdir(), "admobctl-sec-")), "shared");
+      mkdirSync(dir);
+      chmodSync(dir, 0o755);
+      expect(statSync(dir).mode & 0o777).toBe(0o755);
+      await new FileSecretStore(dir).set("default", "s3cret");
+      expect(statSync(dir).mode & 0o777).toBe(0o755);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toContain(`chmod 700 ${dir}`);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

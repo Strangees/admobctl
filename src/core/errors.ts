@@ -57,8 +57,30 @@ function errorInfo(body: GoogleErrorBody): GoogleErrorDetail | undefined {
   return body.error?.details?.find((d) => d["@type"]?.endsWith("google.rpc.ErrorInfo"));
 }
 
+function plural(n: number, unit: string): string {
+  return `${n} ${unit}${n === 1 ? "" : "s"}`;
+}
+
+/**
+ * Human-friendly wait: seconds under 2 minutes, minutes under 2 hours (a whole hour reads as
+ * "1 hour"), otherwise hours. Rounds to the nearest unit, at least 1 second.
+ */
+export function formatDuration(ms: number): string {
+  const secs = Math.max(1, Math.round(ms / 1000));
+  if (secs < 120) return plural(secs, "second");
+  const mins = Math.round(ms / 60_000);
+  if (mins < 120) return mins % 60 === 0 ? plural(mins / 60, "hour") : plural(mins, "minute");
+  return plural(Math.round(ms / 3_600_000), "hour");
+}
+
+/** Optional context from the HTTP layer that sharpens the diagnosis. */
+export interface DiagnoseHints {
+  /** Server-requested wait (parsed Retry-After) from the response being diagnosed. */
+  retryAfterMs?: number;
+}
+
 /** Turn a Google API error response into an actionable AdmobctlError. */
-export function diagnoseApiError(status: number, body: unknown): AdmobctlError {
+export function diagnoseApiError(status: number, body: unknown, hints: DiagnoseHints = {}): AdmobctlError {
   const parsed: GoogleErrorBody = typeof body === "object" && body !== null ? (body as GoogleErrorBody) : {};
   const message = parsed.error?.message ?? (typeof body === "string" ? body : JSON.stringify(body));
   const info = errorInfo(parsed);
@@ -100,7 +122,10 @@ export function diagnoseApiError(status: number, body: unknown): AdmobctlError {
   if (status === 429) {
     return new AdmobctlError("RATE_LIMITED", `Rate limited by the AdMob API: ${message}`, {
       ...opts,
-      fix: "Wait a minute and retry, or narrow the report.",
+      fix:
+        hints.retryAfterMs === undefined
+          ? "Wait a minute and retry, or narrow the report."
+          : `The API asked to wait: retry in about ${formatDuration(hints.retryAfterMs)}, or narrow the report.`,
     });
   }
   return new AdmobctlError("API_ERROR", `AdMob API error ${status}: ${message}`, opts);

@@ -10681,7 +10681,17 @@ function usageError(message) {
 function errorInfo(body) {
   return body.error?.details?.find((d) => d["@type"]?.endsWith("google.rpc.ErrorInfo"));
 }
-function diagnoseApiError(status, body) {
+function plural(n, unit) {
+  return `${n} ${unit}${n === 1 ? "" : "s"}`;
+}
+function formatDuration(ms) {
+  const secs = Math.max(1, Math.round(ms / 1e3));
+  if (secs < 120) return plural(secs, "second");
+  const mins = Math.round(ms / 6e4);
+  if (mins < 120) return mins % 60 === 0 ? plural(mins / 60, "hour") : plural(mins, "minute");
+  return plural(Math.round(ms / 36e5), "hour");
+}
+function diagnoseApiError(status, body, hints = {}) {
   const parsed = typeof body === "object" && body !== null ? body : {};
   const message = parsed.error?.message ?? (typeof body === "string" ? body : JSON.stringify(body));
   const info = errorInfo(parsed);
@@ -10722,7 +10732,7 @@ function diagnoseApiError(status, body) {
   if (status === 429) {
     return new AdmobctlError("RATE_LIMITED", `Rate limited by the AdMob API: ${message}`, {
       ...opts,
-      fix: "Wait a minute and retry, or narrow the report."
+      fix: hints.retryAfterMs === void 0 ? "Wait a minute and retry, or narrow the report." : `The API asked to wait: retry in about ${formatDuration(hints.retryAfterMs)}, or narrow the report.`
     });
   }
   return new AdmobctlError("API_ERROR", `AdMob API error ${status}: ${message}`, opts);
@@ -10920,9 +10930,51 @@ async function runDoctor(d) {
 import { randomBytes as randomBytes2 } from "node:crypto";
 
 // src/core/config.ts
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync as chmodSync2, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+
+// src/core/fs.ts
+import { chmodSync, mkdirSync, statSync } from "node:fs";
+import { basename } from "node:path";
+
+// src/core/log.ts
+var verbose = Boolean(process.env.ADMOBCTL_DEBUG);
+var log = {
+  setVerbose(v) {
+    verbose = v;
+  },
+  debug(msg) {
+    if (verbose) process.stderr.write(`[admobctl] ${msg}
+`);
+  },
+  warn(msg) {
+    process.stderr.write(`warning: ${msg}
+`);
+  }
+};
+
+// src/core/fs.ts
+function ensurePrivateDir(dir) {
+  if (mkdirSync(dir, { recursive: true, mode: 448 }) !== void 0) {
+    chmodSync(dir, 448);
+    return;
+  }
+  if (process.platform === "win32" || typeof process.getuid !== "function") return;
+  const st = statSync(dir);
+  if ((st.mode & 63) === 0) return;
+  const warning = `${dir} is accessible to other users (mode ${(st.mode & 511).toString(8)}). Fix: chmod 700 ${dir}`;
+  if (basename(dir) === ".admobctl" && st.uid === process.getuid()) {
+    try {
+      chmodSync(dir, 448);
+      return;
+    } catch {
+    }
+  }
+  log.warn(warning);
+}
+
+// src/core/config.ts
 var DEFAULT_FINANCE = {
   receivableAccount: "1509",
   revenueAccount: "3120",
@@ -10951,13 +11003,13 @@ function loadConfig(dir) {
   }
 }
 function saveConfig(dir, config2) {
-  mkdirSync(dir, { recursive: true, mode: 448 });
+  ensurePrivateDir(dir);
   const file2 = configPath(dir);
   const tmp = `${file2}.${process.pid}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(config2, null, 2)}
 `, { mode: 384 });
   renameSync(tmp, file2);
-  chmodSync(file2, 384);
+  chmodSync2(file2, 384);
 }
 function resolveProfile(config2, name) {
   const profileName = name ?? config2.defaultProfile ?? "default";
@@ -11023,7 +11075,7 @@ var exec = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
 
 // src/core/auth/oauth.ts
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync as chmodSync2, existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync as renameSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { chmodSync as chmodSync3, existsSync as existsSync2, readFileSync as readFileSync2, renameSync as renameSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
 import { createServer } from "node:http";
 import { join as join2 } from "node:path";
 var AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -11067,13 +11119,13 @@ var FileSecretStore = class {
     return existsSync2(f) ? readFileSync2(f, "utf8") : void 0;
   }
   async set(profile, value) {
-    if (mkdirSync2(this.dir, { recursive: true, mode: 448 }) !== void 0) chmodSync2(this.dir, 448);
+    ensurePrivateDir(this.dir);
     const file2 = this.file(profile);
     const tmp = `${file2}.${process.pid}.tmp`;
     rmSync(tmp, { force: true });
     writeFileSync2(tmp, value, { mode: 384, flag: "wx" });
     renameSync2(tmp, file2);
-    chmodSync2(file2, 384);
+    chmodSync3(file2, 384);
   }
   async delete(profile) {
     rmSync(this.file(profile), { force: true });
@@ -12013,31 +12065,15 @@ async function analyzeWaterfall(svc, opts) {
   };
 }
 
-// src/core/log.ts
-var verbose = Boolean(process.env.ADMOBCTL_DEBUG);
-var log = {
-  setVerbose(v) {
-    verbose = v;
-  },
-  debug(msg) {
-    if (verbose) process.stderr.write(`[admobctl] ${msg}
-`);
-  },
-  warn(msg) {
-    process.stderr.write(`warning: ${msg}
-`);
-  }
-};
-
 // src/core/audit.ts
-import { appendFileSync, chmodSync as chmodSync3, mkdirSync as mkdirSync3 } from "node:fs";
+import { appendFileSync, chmodSync as chmodSync4, mkdirSync as mkdirSync2 } from "node:fs";
 import { join as join3 } from "node:path";
 function appendAudit(dir, entry) {
-  mkdirSync3(dir, { recursive: true, mode: 448 });
+  mkdirSync2(dir, { recursive: true, mode: 448 });
   const file2 = join3(dir, "audit.log");
   appendFileSync(file2, `${JSON.stringify(entry)}
 `, { mode: 384 });
-  chmodSync3(file2, 384);
+  chmodSync4(file2, 384);
 }
 
 // src/core/write.ts
@@ -12496,6 +12532,20 @@ async function readBody(res) {
     return text;
   }
 }
+async function attemptOnce(doFetch, url2, init, canRetry, backoff, maxRetryAfterMs) {
+  const res = await doFetch(url2, init);
+  if (res.ok) return { kind: "ok", body: await readBody(res) };
+  if (!isRetryableStatus(res.status)) return { kind: "fail", status: res.status, body: await readBody(res) };
+  const retryAfter = retryAfterMs(res);
+  if (!canRetry) return { kind: "fail", status: res.status, body: await readBody(res), retryAfterMs: retryAfter };
+  if (retryAfter !== void 0 && retryAfter > maxRetryAfterMs) {
+    log.debug(`HTTP ${res.status}; Retry-After ${retryAfter}ms exceeds cap ${maxRetryAfterMs}ms; not retrying`);
+    return { kind: "fail", status: res.status, body: await readBody(res), retryAfterMs: retryAfter };
+  }
+  await res.body?.cancel().catch(() => {
+  });
+  return { kind: "retry", status: res.status, wait: retryAfter ?? backoff };
+}
 async function requestJson(url2, init, opts = {}) {
   const doFetch = opts.fetch ?? fetch;
   const sleep = opts.sleep ?? defaultSleep;
@@ -12510,9 +12560,10 @@ async function requestJson(url2, init, opts = {}) {
       () => timer.abort(new Error(`Request timed out after ${timeoutMs}ms`)),
       timeoutMs
     );
-    let res;
+    let outcome;
     try {
-      res = await doFetch(url2, { ...init, signal: combineSignals(timer.signal, init.signal) });
+      const signal = combineSignals(timer.signal, init.signal);
+      outcome = await attemptOnce(doFetch, url2, { ...init, signal }, attempt < retries, backoff, maxRetryAfterMs);
     } catch (err) {
       if (init.signal?.aborted) throw err;
       const timedOut = timer.signal.aborted;
@@ -12536,21 +12587,12 @@ async function requestJson(url2, init, opts = {}) {
     } finally {
       clearTimeout(timeoutId);
     }
-    if (res.ok) return await readBody(res);
-    if (isRetryableStatus(res.status) && attempt < retries) {
-      const retryAfter = retryAfterMs(res);
-      if (retryAfter !== void 0 && retryAfter > maxRetryAfterMs) {
-        log.debug(`HTTP ${res.status}; Retry-After ${retryAfter}ms exceeds cap ${maxRetryAfterMs}ms; not retrying`);
-        throw diagnoseApiError(res.status, await readBody(res));
-      }
-      const wait = retryAfter ?? backoff;
-      log.debug(`HTTP ${res.status}; retrying in ${wait}ms`);
-      await res.body?.cancel().catch(() => {
-      });
-      await sleep(wait);
-      continue;
+    if (outcome.kind === "ok") return outcome.body;
+    if (outcome.kind === "fail") {
+      throw diagnoseApiError(outcome.status, outcome.body, { retryAfterMs: outcome.retryAfterMs });
     }
-    throw diagnoseApiError(res.status, await readBody(res));
+    log.debug(`HTTP ${outcome.status}; retrying in ${outcome.wait}ms`);
+    await sleep(outcome.wait);
   }
 }
 
@@ -28495,8 +28537,8 @@ var error43 = () => {
       case "not_multiple_of":
         return `N\xFAmero inv\xE1lido: deve ser m\xFAltiplo de ${issue2.divisor}`;
       case "unrecognized_keys": {
-        const plural2 = issue2.keys.length > 1 ? "s" : "";
-        return `Chave${plural2} inv\xE1lida${plural2}: ${joinValues(issue2.keys, ", ")}`;
+        const plural3 = issue2.keys.length > 1 ? "s" : "";
+        return `Chave${plural3} inv\xE1lida${plural3}: ${joinValues(issue2.keys, ", ")}`;
       }
       case "invalid_key":
         return `Entrada inv\xE1lida n${translateOriginWithArticle(issue2.origin, "definite")}`;
@@ -28640,8 +28682,8 @@ var error44 = () => {
       case "not_multiple_of":
         return `N\xFAmero inv\xE1lido: deve ser m\xFAltiplo de ${issue2.divisor}`;
       case "unrecognized_keys": {
-        const plural2 = issue2.keys.length > 1 ? "s" : "";
-        return `Chave${plural2} inv\xE1lida${plural2}: ${joinValues(issue2.keys, ", ")}`;
+        const plural3 = issue2.keys.length > 1 ? "s" : "";
+        return `Chave${plural3} inv\xE1lida${plural3}: ${joinValues(issue2.keys, ", ")}`;
       }
       case "invalid_key":
         return `Entrada inv\xE1lida n${translateOriginWithArticle(issue2.origin, "definite")}`;
@@ -37422,7 +37464,7 @@ function containsRef(value) {
     return Object.values(sub).some(containsRef);
   });
 }
-function plural(n) {
+function plural2(n) {
   return n === 1 ? "element" : "elements";
 }
 function checkArrayGuards(arraySchema, guards) {
@@ -37461,7 +37503,7 @@ function checkArrayGuards(arraySchema, guards) {
       if (matches < minContains) {
         payload.issues.push({
           code: "custom",
-          message: `Array must contain at least ${minContains} matching ${plural(minContains)}; found ${matches}`,
+          message: `Array must contain at least ${minContains} matching ${plural2(minContains)}; found ${matches}`,
           input: items,
           continue: true
         });
@@ -37469,7 +37511,7 @@ function checkArrayGuards(arraySchema, guards) {
       if (guards.maxContains !== void 0 && matches > guards.maxContains) {
         payload.issues.push({
           code: "custom",
-          message: `Array must contain at most ${guards.maxContains} matching ${plural(guards.maxContains)}`,
+          message: `Array must contain at most ${guards.maxContains} matching ${plural2(guards.maxContains)}`,
           input: items,
           continue: true
         });

@@ -1,9 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { AdmobctlError, ADMOB_SCOPE, MONETIZATION_SCOPE } from "../errors.js";
 import { exec as defaultExec, type Exec } from "../exec.js";
+import { ensurePrivateDir } from "../fs.js";
 import type { TokenProvider } from "./types.js";
 
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -65,8 +66,7 @@ export class FileSecretStore implements SecretStore {
   }
 
   async set(profile: string, value: string): Promise<void> {
-    // Only tighten a dir we just created; never chmod a pre-existing one (ADMOBCTL_HOME could be $HOME or /tmp).
-    if (mkdirSync(this.dir, { recursive: true, mode: 0o700 }) !== undefined) chmodSync(this.dir, 0o700);
+    ensurePrivateDir(this.dir);
     const file = this.file(profile);
     // `mode` only applies on create, so write a fresh 0600 temp file (wx: never reuse a stale one) and rename over the target.
     const tmp = `${file}.${process.pid}.tmp`;
