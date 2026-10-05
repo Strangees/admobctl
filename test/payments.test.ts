@@ -30,6 +30,11 @@ describe("parseAmount", () => {
     expect(parseAmount("EUR 7")).toEqual({ currency: "EUR", micros: 7_000_000 });
   });
 
+  it("accepts the non-breaking space the live API puts between currency and number", () => {
+    expect(parseAmount("NOK\u00a098.76")).toEqual({ currency: "NOK", micros: 98_760_000 });
+    expect(parseAmount("NOK\u202f1,234.56")).toEqual({ currency: "NOK", micros: 1_234_560_000 });
+  });
+
   it("accepts a minus sign before the currency or before the number", () => {
     expect(parseAmount("-NOK 5.00")).toEqual({ currency: "NOK", micros: -5_000_000 });
     expect(parseAmount("NOK -5.00")).toEqual({ currency: "NOK", micros: -5_000_000 });

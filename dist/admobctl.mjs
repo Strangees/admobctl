@@ -12469,7 +12469,7 @@ async function check(svc, opts = {}) {
 
 // src/core/payments.ts
 var BALANCE_NOTE = "Unpaid balance from Google payments (AdSense Management API). It includes AdMob earnings. Payment history is not available: the API leaves out AdMob payouts.";
-var AMOUNT = /^(-)?([A-Z]{3}) (-)?(\d{1,3}(?:,\d{3})*|\d+)(?:\.(\d{1,6}))?$/;
+var AMOUNT = /^(-)?([A-Z]{3})[ \u00a0\u202f](-)?(\d{1,3}(?:,\d{3})*|\d+)(?:\.(\d{1,6}))?$/;
 function parseAmount(text) {
   const m = AMOUNT.exec(text);
   const micros = m ? BigInt(m[4].replace(/,/g, "")) * 1000000n + BigInt((m[5] ?? "").padEnd(6, "0")) : void 0;

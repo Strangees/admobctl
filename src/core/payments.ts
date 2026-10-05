@@ -15,7 +15,8 @@ export interface FinanceBalance {
   notes: string[];
 }
 
-const AMOUNT = /^(-)?([A-Z]{3}) (-)?(\d{1,3}(?:,\d{3})*|\d+)(?:\.(\d{1,6}))?$/;
+/** The live API separates currency and number with a no-break space (U+00A0); accept the usual space variants. */
+const AMOUNT = /^(-)?([A-Z]{3})[ \u00a0\u202f](-)?(\d{1,3}(?:,\d{3})*|\d+)(?:\.(\d{1,6}))?$/;
 
 /** "NOK 12,345.67" → { currency: "NOK", micros: 12_345_670_000 }, with integer arithmetic only. */
 export function parseAmount(text: string): { currency: string; micros: number } {

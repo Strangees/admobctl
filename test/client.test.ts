@@ -81,7 +81,7 @@ describe("AdmobClient.listPayments (AdSense Management API)", () => {
     expect(calls[0]!.headers.authorization).toBe("Bearer test-token");
     expect(calls[0]!.headers["x-goog-user-project"]).toBe("qp");
     expect(payments).toHaveLength(2);
-    expect(payments[0]).toEqual({ name: `accounts/${PUB}/payments/unpaid`, amount: "NOK 1,234.56" });
+    expect(payments[0]).toEqual({ name: `accounts/${PUB}/payments/unpaid`, amount: "NOK\u00a01,234.56" });
   });
 
   it("returns an empty list when the response has no payments", async () => {
