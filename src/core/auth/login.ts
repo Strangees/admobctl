@@ -18,6 +18,8 @@ export interface LoginOptions {
   write?: boolean;
   /** Also ask for adsense.readonly, for finance balance. */
   payments?: boolean;
+  /** Also ask for cloud-platform, for setup project and API management. */
+  cloudPlatform?: boolean;
 }
 
 export function systemBrowser(exec: Exec = defaultExec) {
@@ -38,7 +40,7 @@ export async function login(o: LoginOptions): Promise<{ profile: string; scope?:
   const state = randomBytes(16).toString("hex");
   const wait = waitForLoopbackCode({ state });
   const { redirectUri } = await wait.ready;
-  const url = buildAuthUrl({ clientId: o.clientId, redirectUri, pkce, state, write: o.write, payments: o.payments });
+  const url = buildAuthUrl({ clientId: o.clientId, redirectUri, pkce, state, write: o.write, payments: o.payments, cloudPlatform: o.cloudPlatform });
   o.print(`Opening your browser to sign in to Google. If it does not open, visit:\n\n  ${url}\n\n`);
   await (o.openBrowser ?? systemBrowser())(url);
   const code = await wait.code;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AdmobctlError, diagnoseApiError, LOGIN_COMMAND } from "../src/core/errors.js";
+import { AdmobctlError, diagnoseApiError } from "../src/core/errors.js";
 
 // Error bodies follow the documented google.rpc.Status JSON shape.
 const scopeBody = {
@@ -77,7 +77,24 @@ describe("diagnoseApiError", () => {
   it("detects a disabled API and names the project to enable it in", () => {
     const e = diagnoseApiError(403, disabledBody);
     expect(e.code).toBe("API_NOT_ENABLED");
-    expect(e.fix).toBe("admobctl setup apis --yes");
+    expect(e.fix).toBe("admobctl setup apis --project my-project --yes");
+  });
+
+  it("targets the consumer project from ErrorInfo even when it differs from the quota project", () => {
+    const e = diagnoseApiError(403, {
+      error: {
+        code: 403,
+        message: "AdSense Management API has not been used in project consumer-project before or it is disabled.",
+        details: [
+          {
+            "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+            reason: "SERVICE_DISABLED",
+            metadata: { consumer: "projects/consumer-project", service: "adsense.googleapis.com" },
+          },
+        ],
+      },
+    });
+    expect(e.fix).toBe("admobctl setup apis --features payments --project consumer-project --yes");
   });
 
   it("names the disabled service from ErrorInfo metadata", () => {
@@ -96,7 +113,7 @@ describe("diagnoseApiError", () => {
     });
     expect(e.code).toBe("API_NOT_ENABLED");
     expect(e.message).toBe("The AdSense Management API is not enabled in project my-project.");
-    expect(e.fix).toBe("admobctl setup apis --features payments --yes");
+    expect(e.fix).toBe("admobctl setup apis --features payments --project my-project --yes");
   });
 
   it("detects a missing quota project before treating it as a disabled API", () => {

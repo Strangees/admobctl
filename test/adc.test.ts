@@ -43,12 +43,14 @@ describe("AdcTokenProvider", () => {
         runs++;
         expect(cmd).toBe("gcloud");
         expect(args).toEqual(["auth", "application-default", "print-access-token"]);
-        return { code: 0, stdout: "ya29.token\n", stderr: "" };
+        return { code: 0, stdout: `ya29.token-${runs}\n`, stderr: "" };
       },
     });
-    expect(await p.getToken()).toBe("ya29.token");
-    expect(await p.getToken()).toBe("ya29.token");
-    expect(runs).toBe(1);
+    expect(await p.getToken()).toBe("ya29.token-1");
+    expect(await p.getToken()).toBe("ya29.token-1");
+    p.resetCache();
+    expect(await p.getToken()).toBe("ya29.token-2");
+    expect(runs).toBe(2);
   });
 
   it("points gcloud at the same credentials file we inspected", async () => {

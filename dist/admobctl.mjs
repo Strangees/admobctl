@@ -10575,11 +10575,8 @@ var program = new Command();
 // src/core/errors.ts
 var ADMOB_SCOPE = "https://www.googleapis.com/auth/admob.readonly";
 var CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
-var LOGIN_COMMAND = `gcloud auth application-default login --scopes=${ADMOB_SCOPE},${CLOUD_PLATFORM_SCOPE}`;
 var MONETIZATION_SCOPE = "https://www.googleapis.com/auth/admob.monetization";
-var WRITE_LOGIN_COMMAND = `gcloud auth application-default login --scopes=${ADMOB_SCOPE},${MONETIZATION_SCOPE},${CLOUD_PLATFORM_SCOPE}`;
 var ADSENSE_SCOPE = "https://www.googleapis.com/auth/adsense.readonly";
-var PAYMENTS_LOGIN_COMMAND = `gcloud auth application-default login --scopes=${ADMOB_SCOPE},${ADSENSE_SCOPE},${CLOUD_PLATFORM_SCOPE}`;
 var AdmobctlError = class extends Error {
   code;
   /** An exact command or action that resolves the problem. */
@@ -10628,9 +10625,10 @@ function diagnoseApiError(status, body, hints = {}) {
     const project = info?.metadata?.consumer?.replace(/^projects\//, "") ?? "<PROJECT_ID>";
     const title = info?.metadata?.serviceTitle ?? "AdMob API";
     const service = info?.metadata?.service ?? "admob.googleapis.com";
+    const projectFlag = project === "<PROJECT_ID>" ? "" : ` --project ${project}`;
     return new AdmobctlError("API_NOT_ENABLED", `The ${title} is not enabled in project ${project}.`, {
       ...opts,
-      fix: `admobctl setup apis${service === "adsense.googleapis.com" ? " --features payments" : ""} --yes`
+      fix: `admobctl setup apis${service === "adsense.googleapis.com" ? " --features payments" : ""}${projectFlag} --yes`
     });
   }
   if (reason === "ACCESS_TOKEN_SCOPE_INSUFFICIENT" || /insufficient authentication scopes/i.test(message)) {
@@ -10779,6 +10777,7 @@ async function runDoctor(d) {
 }
 async function runChecks(d) {
   const checks = [];
+  const setupChecks = d.features ? ["features", "apis"] : [];
   const optional2 = [...d.listApps ? ["apps"] : [], ...d.betaProbes ? ["beta"] : []];
   const skipRest = (ids, why) => {
     for (const id of [...ids, ...optional2]) checks.push({ id, status: "skip", summary: why });
@@ -10792,7 +10791,7 @@ async function runChecks(d) {
     });
   } catch (err) {
     checks.push(failed("credentials", err));
-    skipRest(["token", "scope", "quota-project", "api", "account"], "skipped: no usable credentials");
+    skipRest(["token", "scope", ...setupChecks, "quota-project", "api", "account"], "skipped: no usable credentials");
     return checks;
   }
   let token;
@@ -10801,12 +10800,13 @@ async function runChecks(d) {
     checks.push({ id: "token", status: "ok", summary: "Access token obtained" });
   } catch (err) {
     checks.push(failed("token", err));
-    skipRest(["scope", "quota-project", "api", "account"], "skipped: no access token");
+    skipRest(["scope", ...setupChecks, "quota-project", "api", "account"], "skipped: no access token");
     return checks;
   }
   try {
     const info = await d.tokenInfo(token);
     const granted = ADMOB_SCOPES.filter((s) => info.scopes.includes(s));
+    const grantedFeatures = featuresFromScopes(info.scopes);
     checks.push(
       granted.length ? {
         id: "scope",
@@ -10820,18 +10820,21 @@ async function runChecks(d) {
       }
     );
     if (d.features) {
-      const missing = d.features.filter((f) => !featuresFromScopes(info.scopes).includes(f));
+      const missing = d.features.filter((f) => !grantedFeatures.includes(f));
+      const missingCloudPlatform = !info.scopes.includes(CLOUD_PLATFORM_SCOPE);
+      const missingScopes = [...missing, ...missingCloudPlatform ? ["cloud-platform"] : []];
       checks.push(
-        missing.length ? {
+        missingScopes.length ? {
           id: "features",
           status: "warn",
-          summary: `Your sign-in lacks the scopes for: ${missing.join(", ")}`,
-          fix: `admobctl setup login${featuresFlag(mergeFeatures(d.features, featuresFromScopes(info.scopes)))} --yes`
+          summary: missing.length ? `Your sign-in lacks the scopes for: ${missing.join(", ")}${missingCloudPlatform ? ", cloud-platform" : ""}` : "Your sign-in lacks the cloud-platform scope needed for setup.",
+          fix: `admobctl setup login${featuresFlag(mergeFeatures(d.features, grantedFeatures))} --yes`
         } : { id: "features", status: "ok", summary: `Features: ${d.features.join(", ")}` }
       );
     }
   } catch (err) {
     checks.push(failed("scope", err));
+    if (d.features) checks.push({ id: "features", status: "skip", summary: "skipped: token scopes are unavailable" });
   }
   if (d.mode === "adc") {
     checks.push(
@@ -10855,6 +10858,12 @@ async function runChecks(d) {
     } catch (err) {
       checks.push(failed("apis", err));
     }
+  } else if (d.features) {
+    checks.push({
+      id: "apis",
+      status: "skip",
+      summary: d.mode === "oauth" ? "API enablement in the OAuth client project was not checked here; actual feature API requests will report access issues." : "API enablement was not checked because no service-state lookup is available."
+    });
   }
   try {
     const accounts = await d.listAccounts();
@@ -11135,31 +11144,9 @@ var CloudClient = class {
   }
 };
 
-// src/core/setup/status.ts
-async function setupStatus(svc, deps = {}) {
-  const tp = svc.tokenProvider;
-  const features = parseFeatures(svc.profile.features);
-  const quotaProject = svc.profile.quotaProject ?? tp.quotaProject();
-  const cloud = new CloudClient({ getToken: () => tp.getToken(), fetch: deps.fetch });
-  const checks = await runDoctor({
-    mode: tp.mode,
-    checkCredentials: () => tp.checkCredentials?.(),
-    getToken: () => tp.getToken(),
-    tokenInfo: (t) => fetchTokenInfo(t, deps.fetch),
-    quotaProject,
-    features,
-    serviceStates: quotaProject ? () => cloud.serviceStates(quotaProject, apisFor(features)) : void 0,
-    listAccounts: () => svc.listAccounts(),
-    account: () => svc.account(),
-    listApps: () => svc.apps(),
-    betaProbes: { "ad sources": () => svc.adSources(), "mediation groups": () => svc.mediationGroups() }
-  });
-  const next = checks.find((c) => c.status === "fail" && c.fix_command)?.fix_command ?? checks.find((c) => c.status === "warn" && c.fix_command)?.fix_command;
-  return { ok: checks.every((c) => c.status !== "fail"), checks, ...next ? { next_command: next } : {} };
-}
-
-// src/core/audit.ts
-import { appendFileSync, chmodSync as chmodSync2, readFileSync } from "node:fs";
+// src/core/config.ts
+import { chmodSync as chmodSync2, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 // src/core/fs.ts
@@ -11184,51 +11171,7 @@ function ensurePrivateDir(dir) {
   log.warn(warning);
 }
 
-// src/core/audit.ts
-function appendAudit(dir, entry) {
-  ensurePrivateDir(dir);
-  const file2 = join(dir, "audit.log");
-  appendFileSync(file2, `${JSON.stringify(entry)}
-`, { mode: 384 });
-  chmodSync2(file2, 384);
-}
-function readAudit(dir, opts = {}) {
-  const file2 = join(dir, "audit.log");
-  let text = "";
-  try {
-    text = readFileSync(file2, "utf8");
-  } catch (err) {
-    if (err.code !== "ENOENT") {
-      throw new AdmobctlError("CONFIG", `Could not read ${file2}: ${err.message}`, {
-        fix: `ls -l ${file2}  # it must be a file you can read; move it aside to start a new log`,
-        cause: err
-      });
-    }
-  }
-  let skipped = 0;
-  let entries = [];
-  for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      const e = JSON.parse(line);
-      if (typeof e?.time !== "string" || typeof e.action !== "string" || typeof e.method !== "string" || typeof e.path !== "string") {
-        throw new Error("not an entry");
-      }
-      entries.push(e);
-    } catch {
-      skipped++;
-    }
-  }
-  entries.reverse();
-  if (opts.failed) entries = entries.filter((e) => !e.ok);
-  if (opts.last !== void 0) entries = entries.slice(0, opts.last);
-  return { file: file2, entries, skipped };
-}
-
 // src/core/config.ts
-import { chmodSync as chmodSync3, existsSync, readFileSync as readFileSync2, renameSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join as join2 } from "node:path";
 var DEFAULT_FINANCE = {
   receivableAccount: "1509",
   revenueAccount: "3120",
@@ -11239,16 +11182,16 @@ var DEFAULT_FINANCE = {
   decimalSeparator: "."
 };
 function configDir(env = process.env, home = homedir()) {
-  return env.ADMOBCTL_HOME || join2(home, ".admobctl");
+  return env.ADMOBCTL_HOME || join(home, ".admobctl");
 }
 function configPath(dir) {
-  return join2(dir, "config.json");
+  return join(dir, "config.json");
 }
 function loadConfig(dir) {
   const file2 = configPath(dir);
   if (!existsSync(file2)) return { profiles: {} };
   try {
-    const parsed = JSON.parse(readFileSync2(file2, "utf8"));
+    const parsed = JSON.parse(readFileSync(file2, "utf8"));
     return { ...parsed, profiles: parsed.profiles ?? {} };
   } catch (err) {
     throw new AdmobctlError("CONFIG", `Could not parse ${file2}: ${err.message}`, {
@@ -11263,7 +11206,7 @@ function saveConfig(dir, config2) {
   writeFileSync(tmp, `${JSON.stringify(config2, null, 2)}
 `, { mode: 384 });
   renameSync(tmp, file2);
-  chmodSync3(file2, 384);
+  chmodSync2(file2, 384);
 }
 function resolveProfile(config2, name) {
   const profileName = name ?? config2.defaultProfile ?? "default";
@@ -11317,6 +11260,85 @@ function setProfileValue(config2, profile, key, value) {
   throw usageError(`Unknown config key "${key}". Settable keys: ${SETTABLE_KEYS.join(", ")}`);
 }
 
+// src/core/setup/commands.ts
+function profileCommand(command, profile, configuredDefault = "default") {
+  if (profile === "default" && configuredDefault === "default") return command;
+  if (/--profile(?:[=\s]|$)/.test(command)) return command;
+  const quoted = /^[A-Za-z0-9._-]+$/.test(profile) ? profile : `'${profile.replace(/'/g, "'\\''")}'`;
+  return command.replace(/\badmobctl /, () => `admobctl --profile ${quoted} `);
+}
+
+// src/core/setup/status.ts
+async function setupStatus(svc, deps = {}) {
+  const tp = svc.tokenProvider;
+  const features = parseFeatures(svc.profile.features);
+  const quotaProject = svc.profile.quotaProject ?? tp.quotaProject();
+  const cloud = new CloudClient({ getToken: () => tp.getToken(), fetch: deps.fetch });
+  const checks = await runDoctor({
+    mode: tp.mode,
+    checkCredentials: () => tp.checkCredentials?.(),
+    getToken: () => tp.getToken(),
+    tokenInfo: (t) => fetchTokenInfo(t, deps.fetch),
+    quotaProject,
+    features,
+    serviceStates: quotaProject ? () => cloud.serviceStates(quotaProject, apisFor(features)) : void 0,
+    listAccounts: () => svc.listAccounts(),
+    account: () => svc.account(),
+    listApps: () => svc.apps(),
+    betaProbes: { "ad sources": () => svc.adSources(), "mediation groups": () => svc.mediationGroups() }
+  });
+  const configuredDefault = loadConfig(svc.configDir).defaultProfile;
+  for (const check3 of checks) {
+    if (check3.fix) check3.fix = profileCommand(check3.fix, svc.profile.name, configuredDefault);
+    if (check3.fix_command) check3.fix_command = profileCommand(check3.fix_command, svc.profile.name, configuredDefault);
+  }
+  const next = checks.find((c) => c.status === "fail" && c.fix_command)?.fix_command ?? checks.find((c) => c.status === "warn" && c.fix_command)?.fix_command;
+  return { ok: checks.every((c) => c.status !== "fail"), checks, ...next ? { next_command: next } : {} };
+}
+
+// src/core/audit.ts
+import { appendFileSync, chmodSync as chmodSync3, readFileSync as readFileSync2 } from "node:fs";
+import { join as join2 } from "node:path";
+function appendAudit(dir, entry) {
+  ensurePrivateDir(dir);
+  const file2 = join2(dir, "audit.log");
+  appendFileSync(file2, `${JSON.stringify(entry)}
+`, { mode: 384 });
+  chmodSync3(file2, 384);
+}
+function readAudit(dir, opts = {}) {
+  const file2 = join2(dir, "audit.log");
+  let text = "";
+  try {
+    text = readFileSync2(file2, "utf8");
+  } catch (err) {
+    if (err.code !== "ENOENT") {
+      throw new AdmobctlError("CONFIG", `Could not read ${file2}: ${err.message}`, {
+        fix: `ls -l ${file2}  # it must be a file you can read; move it aside to start a new log`,
+        cause: err
+      });
+    }
+  }
+  let skipped = 0;
+  let entries = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const e = JSON.parse(line);
+      if (typeof e?.time !== "string" || typeof e.action !== "string" || typeof e.method !== "string" || typeof e.path !== "string") {
+        throw new Error("not an entry");
+      }
+      entries.push(e);
+    } catch {
+      skipped++;
+    }
+  }
+  entries.reverse();
+  if (opts.failed) entries = entries.filter((e) => !e.ok);
+  if (opts.last !== void 0) entries = entries.slice(0, opts.last);
+  return { file: file2, entries, skipped };
+}
+
 // src/core/setup/gcloud.ts
 function loginArgs(scopes) {
   return ["auth", "application-default", "login", `--scopes=${scopes.join(",")}`];
@@ -11343,6 +11365,7 @@ async function runLogin(exec2, scopes) {
 
 // src/core/setup/steps.ts
 var profileNow = (ctx) => resolveProfile(loadConfig(ctx.svc.configDir), ctx.svc.profile.name);
+var commandFor = (ctx, command) => profileCommand(command, ctx.svc.profile.name, loadConfig(ctx.svc.configDir).defaultProfile);
 var quotaProjectNow = (ctx) => profileNow(ctx).quotaProject ?? ctx.svc.tokenProvider.quotaProject();
 function store(ctx, key, value) {
   const cfg = loadConfig(ctx.svc.configDir);
@@ -11350,6 +11373,11 @@ function store(ctx, key, value) {
   saveConfig(ctx.svc.configDir, cfg);
 }
 async function planLogin(ctx, requested) {
+  try {
+    await ctx.svc.tokenProvider.checkCredentials?.();
+  } catch (err) {
+    if (err instanceof AdmobctlError && err.code === "AUTH_SERVICE_ACCOUNT" && !err.fix?.startsWith("admobctl ")) throw err;
+  }
   let granted;
   try {
     granted = (await ctx.tokenInfo()).scopes;
@@ -11361,27 +11389,27 @@ async function planLogin(ctx, requested) {
   if (granted && scopes.every((s) => granted.includes(s))) {
     return { step: "login", status: "done", features, scopes, summary: [`Signed in with the scopes for: ${features.join(", ")}`] };
   }
-  const how = ctx.svc.tokenProvider.mode === "oauth" ? `Sign in with your own OAuth client: admobctl auth login${features.includes("write") ? " --write" : ""}${features.includes("payments") ? " --payments" : ""}` : `Sign in with gcloud (it opens your browser): ${loginCommand(scopes)}`;
+  const how = ctx.svc.tokenProvider.mode === "oauth" ? `Sign in with your own OAuth client: ${commandFor(ctx, `admobctl auth login${features.includes("write") ? " --write" : ""}${features.includes("payments") ? " --payments" : ""} --cloud-platform`)}` : `Sign in with gcloud (it opens your browser): ${loginCommand(scopes)}`;
   return {
     step: "login",
     status: "planned",
     features,
     scopes,
-    summary: [granted ? `Your sign-in lacks scopes for: ${features.filter((f) => !featuresFromScopes(granted).includes(f)).join(", ")}` : "Not signed in.", how],
-    next_command: `admobctl setup login${featuresFlag(features)} --yes`
+    summary: [granted ? `Your sign-in lacks scopes: ${scopes.filter((s) => !granted.includes(s)).map((s) => s.split("/").pop()).join(", ")}` : "Not signed in.", how, ...ctx.svc.tokenProvider.mode === "adc" ? [`Requires Google Cloud CLI (gcloud): ${GCLOUD_INSTALL_URL}`] : []],
+    next_command: commandFor(ctx, `admobctl setup login${featuresFlag(features)} --yes`)
   };
 }
 async function applyLogin(ctx, plan) {
   if (plan.status === "planned") {
+    if (!ctx.isTTY) {
+      throw new AdmobctlError("USAGE", `The Google sign-in opens a browser, so it must run in a terminal. Run this in a terminal: ${ctx.svc.tokenProvider.mode === "oauth" ? plan.next_command : loginCommand(plan.scopes)}`, {
+        fix: plan.next_command
+      });
+    }
     if (ctx.svc.tokenProvider.mode === "oauth") {
       if (!ctx.oauthLogin) throw usageError("OAuth sign-in is only available from the CLI: admobctl setup login --yes");
-      await ctx.oauthLogin({ write: plan.features.includes("write"), payments: plan.features.includes("payments") });
+      await ctx.oauthLogin({ write: plan.features.includes("write"), payments: plan.features.includes("payments"), cloudPlatform: true });
     } else {
-      if (!ctx.isTTY) {
-        throw new AdmobctlError("USAGE", `The Google sign-in opens a browser, so it must run in a terminal. Run this in a terminal: ${loginCommand(plan.scopes)}`, {
-          fix: plan.next_command
-        });
-      }
       if (!await gcloudInstalled(ctx.exec)) {
         throw new AdmobctlError("AUTH_NO_CREDENTIALS", `The Google Cloud CLI (gcloud) is needed for the sign-in. Install it from ${GCLOUD_INSTALL_URL}, then run the fix.`, {
           fix: plan.next_command
@@ -11389,6 +11417,7 @@ async function applyLogin(ctx, plan) {
       }
       await runLogin(ctx.exec, plan.scopes);
     }
+    ctx.svc.tokenProvider.resetCache?.();
   }
   store(ctx, "features", plan.features.join(","));
   return { ...plan, status: plan.status === "planned" ? "applied" : plan.status };
@@ -11396,6 +11425,9 @@ async function applyLogin(ctx, plan) {
 async function planProject(ctx, id) {
   const current = quotaProjectNow(ctx);
   if (!id) {
+    if (!current && ctx.svc.tokenProvider.mode === "oauth") {
+      return { step: "project", status: "done", summary: ["A quota project is not required for your own OAuth client."] };
+    }
     if (current) return { step: "project", status: "done", project: current, summary: [`Quota project: ${current}`] };
     const projects = await ctx.cloud.listProjects();
     return {
@@ -11403,7 +11435,7 @@ async function planProject(ctx, id) {
       status: "needs-input",
       projects,
       summary: projects.length ? ["Choose the Google Cloud project to use for API quota:", ...projects.slice(0, 10).map((p2) => `  ${p2.projectId}  (${p2.name})`)] : ["You have no Google Cloud project. Create one at https://console.cloud.google.com/projectcreate, then use its ID below."],
-      next_command: "admobctl setup project use <project-id> --yes"
+      next_command: commandFor(ctx, "admobctl setup project use <project-id> --yes")
     };
   }
   if (id === current) return { step: "project", status: "done", project: id, summary: [`Quota project: ${id}`] };
@@ -11413,7 +11445,7 @@ async function planProject(ctx, id) {
     status: "planned",
     project: p.projectId,
     summary: [`Use ${p.projectId} (${p.name}) as the quota project for this profile.`],
-    next_command: `admobctl setup project use ${p.projectId} --yes`
+    next_command: commandFor(ctx, `admobctl setup project use ${p.projectId} --yes`)
   };
 }
 async function applyProject(ctx, plan) {
@@ -11421,11 +11453,14 @@ async function applyProject(ctx, plan) {
   store(ctx, "quotaProject", plan.project);
   return { ...plan, status: "applied" };
 }
-async function planApis(ctx, requested) {
+async function planApis(ctx, requested, targetProject) {
   const features = mergeFeatures(["read"], profileNow(ctx).features ?? [], requested);
-  const project = quotaProjectNow(ctx);
+  const project = targetProject ?? quotaProjectNow(ctx);
+  if (!project && ctx.svc.tokenProvider.mode === "oauth") {
+    return { step: "apis", status: "done", services: [], summary: [`API enablement belongs to your OAuth client project. Run ${commandFor(ctx, "admobctl setup status")} to probe API access; to manage enablement explicitly, run ${commandFor(ctx, "admobctl setup apis --project <client-project-id>")}.`] };
+  }
   if (!project) {
-    return { step: "apis", status: "needs-input", services: [], summary: ["No quota project yet; choose one first."], next_command: "admobctl setup project list" };
+    return { step: "apis", status: "needs-input", services: [], summary: ["No quota project yet; choose one first."], next_command: commandFor(ctx, "admobctl setup project list") };
   }
   const states = await ctx.cloud.serviceStates(project, apisFor(features));
   const off = apisFor(features).filter((s) => states[s] !== "ENABLED");
@@ -11436,7 +11471,7 @@ async function planApis(ctx, requested) {
     project,
     services: off,
     summary: [`Enable ${off.join(", ")} in ${project}.`],
-    next_command: `admobctl setup apis${featuresFlag(features)} --yes`
+    next_command: commandFor(ctx, `admobctl setup apis${featuresFlag(features)}${targetProject ? ` --project ${targetProject}` : ""} --yes`)
   };
 }
 async function applyApis(ctx, plan) {
@@ -11464,7 +11499,7 @@ async function runSetup(ctx, o) {
   const login2 = await planLogin(ctx, o.features);
   if (login2.status === "planned") {
     if (!o.yes) return stop(login2);
-    if (!ctx.isTTY && ctx.svc.tokenProvider.mode === "adc") {
+    if (!ctx.isTTY) {
       return stop({ ...login2, status: "needs-input", summary: [...login2.summary, "The sign-in opens a browser: run the command above in a terminal."] });
     }
   }
@@ -11553,7 +11588,7 @@ function buildAuthUrl(o) {
     client_id: o.clientId,
     redirect_uri: o.redirectUri,
     response_type: "code",
-    scope: [ADMOB_SCOPE, ...o.write ? [MONETIZATION_SCOPE] : [], ...o.payments ? [ADSENSE_SCOPE] : []].join(" "),
+    scope: [ADMOB_SCOPE, ...o.write ? [MONETIZATION_SCOPE] : [], ...o.payments ? [ADSENSE_SCOPE] : [], ...o.cloudPlatform ? [CLOUD_PLATFORM_SCOPE] : []].join(" "),
     code_challenge: o.pkce.challenge,
     code_challenge_method: "S256",
     access_type: "offline",
@@ -11664,6 +11699,9 @@ var OAuthTokenProvider = class {
   async checkCredentials() {
     return this.stored();
   }
+  resetCache() {
+    this.cached = void 0;
+  }
   async getToken() {
     const now = (this.deps.now ?? Date.now)();
     if (this.cached && now < this.cached.expiresAt) return this.cached.token;
@@ -11692,7 +11730,7 @@ async function login(o) {
   const state = randomBytes2(16).toString("hex");
   const wait = waitForLoopbackCode({ state });
   const { redirectUri } = await wait.ready;
-  const url2 = buildAuthUrl({ clientId: o.clientId, redirectUri, pkce, state, write: o.write, payments: o.payments });
+  const url2 = buildAuthUrl({ clientId: o.clientId, redirectUri, pkce, state, write: o.write, payments: o.payments, cloudPlatform: o.cloudPlatform });
   o.print(`Opening your browser to sign in to Google. If it does not open, visit:
 
   ${url2}
@@ -13722,12 +13760,17 @@ var AdcTokenProvider = class {
   mode = "adc";
   cached;
   info;
+  env;
   exec;
   now;
   constructor(deps = {}) {
-    this.info = deps.info ?? (() => readAdcInfo());
+    this.env = deps.env ?? process.env;
+    this.info = deps.info ?? (() => readAdcInfo(adcPath(this.env)));
     this.exec = deps.exec ?? exec;
     this.now = deps.now ?? Date.now;
+  }
+  resetCache() {
+    this.cached = void 0;
   }
   checkCredentials() {
     const info = this.info();
@@ -13737,10 +13780,11 @@ var AdcTokenProvider = class {
       });
     }
     if (info.type && info.type !== "authorized_user") {
+      const fix = this.env.GOOGLE_APPLICATION_CREDENTIALS ? "Unset GOOGLE_APPLICATION_CREDENTIALS in the terminal that runs admobctl, then run admobctl setup login --yes." : "admobctl setup login --yes";
       throw new AdmobctlError(
         "AUTH_SERVICE_ACCOUNT",
         `Your Application Default Credentials are a ${info.type}; the AdMob API only accepts user credentials (service accounts are not supported).`,
-        { fix: "admobctl setup login --yes  (after: unset GOOGLE_APPLICATION_CREDENTIALS)" }
+        { fix }
       );
     }
     return info;
@@ -13750,7 +13794,7 @@ var AdcTokenProvider = class {
     const info = this.checkCredentials();
     let res;
     try {
-      const env = { ...process.env, GOOGLE_APPLICATION_CREDENTIALS: info.path };
+      const env = { ...this.env, GOOGLE_APPLICATION_CREDENTIALS: info.path };
       res = await this.exec("gcloud", ["auth", "application-default", "print-access-token"], { timeoutMs: 3e4, env });
     } catch (err) {
       throw new AdmobctlError("AUTH_NO_CREDENTIALS", "Could not run gcloud (is the Google Cloud CLI installed and on PATH?).", {
@@ -15722,18 +15766,28 @@ function buildProgram(io) {
         fix: "Create a Desktop app OAuth client in Google Cloud Console (APIs & Services \u2192 Credentials), then: admobctl auth login --client-id <id> --client-secret <secret>"
       });
     }
+    const store2 = defaultSecretStore(dir(), io.service?.exec);
+    let saved;
+    const raw = await store2.get(profileName);
+    if (raw) {
+      try {
+        saved = JSON.parse(raw);
+      } catch {
+      }
+    }
     const r = await login({
       configDir: dir(),
       profile: profileName,
       clientId,
-      clientSecret: o.clientSecret ?? process.env.ADMOBCTL_OAUTH_CLIENT_SECRET,
-      store: defaultSecretStore(dir(), io.service?.exec),
+      clientSecret: o.clientSecret ?? process.env.ADMOBCTL_OAUTH_CLIENT_SECRET ?? (saved?.clientId === clientId ? saved.clientSecret : void 0),
+      store: store2,
       fetch: io.service?.fetch,
       print: io.stderr,
       write: o.write,
-      payments: o.payments
+      payments: o.payments,
+      cloudPlatform: o.cloudPlatform
     });
-    io.stderr(`Signed in. Profile "${r.profile}" now uses admobctl OAuth. Run: admobctl setup status
+    io.stderr(`Signed in. Profile "${r.profile}" now uses admobctl OAuth. Run: ${profileCommand("admobctl setup status", profileName, loadConfig(dir()).defaultProfile)}
 `);
   };
   const setupCtx = (cmd) => {
@@ -15769,7 +15823,7 @@ function buildProgram(io) {
     if (!st.ok) process.exitCode = 1;
   };
   const auth = program2.command("auth").description("Authenticate and diagnose credentials");
-  auth.command("login").description("Sign in with your own OAuth client (Desktop app) instead of gcloud ADC").option("--client-id <id>", "OAuth client ID (Desktop app) from Google Cloud Console").option("--client-secret <secret>", "OAuth client secret (or env ADMOBCTL_OAUTH_CLIENT_SECRET)").option("--write", "also grant admob.monetization, needed by the write commands (create, mediation changes)").option("--payments", "also grant adsense.readonly, needed by finance balance").action(async (o, cmd) => oauthSignIn(cmd, o));
+  auth.command("login").description("Sign in with your own OAuth client (Desktop app) instead of gcloud ADC").option("--client-id <id>", "OAuth client ID (Desktop app) from Google Cloud Console").option("--client-secret <secret>", "OAuth client secret (or env ADMOBCTL_OAUTH_CLIENT_SECRET)").option("--write", "also grant admob.monetization, needed by the write commands (create, mediation changes)").option("--payments", "also grant adsense.readonly, needed by finance balance").option("--cloud-platform", "also grant cloud-platform, needed by setup project/API management").action(async (o, cmd) => oauthSignIn(cmd, o));
   auth.command("logout").description("Forget the saved OAuth login and go back to gcloud ADC").action(async (_o, cmd) => {
     const profileName = g(cmd).profile ?? loadConfig(dir()).defaultProfile ?? "default";
     await logout({ configDir: dir(), profile: profileName, store: defaultSecretStore(dir(), io.service?.exec), fetch: io.service?.fetch });
@@ -15812,10 +15866,10 @@ function buildProgram(io) {
     const ctx = setupCtx(cmd);
     await runStep(cmd, await planProject(ctx, id), setupOpts(cmd).yes, (p) => applyProject(ctx, p));
   });
-  setup.command("apis").description("Enable the Google APIs your features need in the quota project").addOption(featuresOption()).addOption(yesOption()).action(async (_o, cmd) => {
+  setup.command("apis").description("Enable the Google APIs your features need in the chosen project").option("--project <id>", "API consumer project (defaults to the quota project; does not change the profile)").addOption(featuresOption()).addOption(yesOption()).action(async (_o, cmd) => {
     const ctx = setupCtx(cmd);
     const o = setupOpts(cmd);
-    await runStep(cmd, await planApis(ctx, parseFeatures(o.features)), o.yes, (p) => applyApis(ctx, p));
+    await runStep(cmd, await planApis(ctx, parseFeatures(o.features), o.project), o.yes, (p) => applyApis(ctx, p));
   });
   program2.command("accounts").description("AdMob publisher accounts").command("list").description("List accessible publisher accounts").action(async (_o, cmd) => emit(cmd, accountsView(await svc(cmd).listAccounts())));
   const apps = program2.command("apps").description("Apps in the account");
@@ -16087,6 +16141,15 @@ async function run(argv, io) {
       return err.exitCode === 0 ? 0 : 2;
     }
     const opts = program2.opts();
+    if (err instanceof AdmobctlError && err.fix) {
+      let configuredDefault;
+      try {
+        configuredDefault = loadConfig(io.service?.configDir ?? configDir()).defaultProfile;
+      } catch {
+      }
+      const fix = profileCommand(err.fix, opts.profile ?? configuredDefault ?? "default", configuredDefault);
+      err = new AdmobctlError(err.code, err.message, { status: err.status, cause: err, fix });
+    }
     return reportError(io, err, (opts.output ?? defaultFormat(io.isTTY)) === "json");
   }
 }
@@ -45392,7 +45455,9 @@ var INSTRUCTIONS = `Read-only access to the user's Google AdMob account via admo
 - Errors include a "Fix:" line with the exact command the user should run.
 - For any sign-in, scope, quota project or API error, call admobctl_setup_status and run its next_command (an admobctl
   command) in the terminal exactly as given. Never improvise gcloud commands. Commands with --yes change the user's setup:
-  show them first. The browser sign-in (admobctl setup login --yes) must run in the user's own terminal.`;
+  show them first. The browser sign-in (admobctl setup login --yes) must run in the user's own terminal.
+  If a service-account credential override prevents sign-in, pass on the full manual fix; the user must unset
+  GOOGLE_APPLICATION_CREDENTIALS in their terminal before login. Do not repeatedly run login while it is set.`;
 var annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 var appArg = { app: external_exports.string().optional().describe("Only this app (alias, app ID or name)") };
 var accountArg = { account: external_exports.string().optional().describe("Publisher ID (pub-\u2026). Defaults to the configured or only account.") };

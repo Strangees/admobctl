@@ -12,10 +12,10 @@ const S = (n: string) => `https://www.googleapis.com/auth/${n}`;
 
 async function cli(
   args: string[],
-  o: { isTTY?: boolean; profile?: ProfileConfig; scopes?: string[]; signedOut?: boolean; adsense?: "ENABLED" | "DISABLED"; quotaProject?: string } = {},
+  o: { isTTY?: boolean; profile?: ProfileConfig; scopes?: string[]; signedOut?: boolean; adsense?: "ENABLED" | "DISABLED"; quotaProject?: string; mode?: "adc" | "oauth"; profileName?: string } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), "admobctl-setup-cli-"));
-  saveConfig(dir, { profiles: { default: o.profile ?? {} } });
+  saveConfig(dir, { profiles: { [o.profileName ?? "default"]: o.profile ?? {} } });
   const f = fakeFetch({
     "POST /tokeninfo": () =>
       o.signedOut ? new Response("", { status: 400 }) : jsonResponse({ scope: (o.scopes ?? [S("admob.readonly"), S("cloud-platform")]).join(" "), expires_in: "3000" }),
@@ -30,7 +30,7 @@ async function cli(
     "POST /services:batchEnable": () => jsonResponse({ name: "operations/x", done: true }),
   });
   const token: TokenProvider = {
-    mode: "adc",
+    mode: o.mode ?? "adc",
     getToken: async () => {
       if (o.signedOut) throw Object.assign(new Error("No gcloud Application Default Credentials found."), {});
       return "t";
@@ -50,7 +50,7 @@ async function cli(
     isTTY: o.isTTY ?? false,
     service: { configDir: dir, tokenProvider: token, fetch: f.fetch, sleep: noSleep, exec },
   });
-  return { code, stdout, stderr, calls: f.calls, execCalls, profile: () => loadConfig(dir).profiles.default! };
+  return { code, stdout, stderr, calls: f.calls, execCalls, profile: () => loadConfig(dir).profiles[o.profileName ?? "default"]! };
 }
 
 describe("admobctl setup", () => {
@@ -102,4 +102,33 @@ describe("admobctl setup", () => {
     expect(r.execCalls.at(-1)!.slice(0, 4)).toEqual(["gcloud", "auth", "application-default", "login"]);
     expect(r.profile().features).toEqual(["read", "payments"]);
   });
+});
+
+it("setup apis preserves an explicit project across parent/subcommand options", async () => {
+  const r = await cli(["setup", "apis", "--project", "example-a", "--features", "payments"], { quotaProject: "example-other" });
+  expect(r.code, r.stderr).toBe(0);
+  expect(r.calls.filter((c) => c.url.includes("serviceusage")).every((c) => c.url.includes("/projects/example-a/"))).toBe(true);
+  expect(r.stderr).toContain("--project example-a --yes");
+  expect(r.profile().quotaProject).toBeUndefined();
+});
+
+it("setup login refuses OAuth without a terminal before starting browser login", async () => {
+  const r = await cli(["setup", "login", "--features", "payments", "--yes"], { mode: "oauth", signedOut: true });
+  expect(r.code).toBe(2);
+  expect(r.stderr).toContain("must run in a terminal");
+  expect(r.execCalls).toEqual([]);
+  expect(r.profile().features).toBeUndefined();
+});
+
+it("CLI error fixes keep the selected profile", async () => {
+  const r = await cli(["--profile", "work", "setup", "login", "--yes"], { profileName: "work", signedOut: true });
+  expect(r.code).toBe(2);
+  expect(r.stderr).toContain("admobctl --profile work setup login --yes");
+});
+
+it("setup apis uses its explicit consumer project when the parent also has a project", async () => {
+  const r = await cli(["setup", "--project", "example-parent", "apis", "--project", "example-a", "--features", "payments"], { quotaProject: "example-other" });
+  expect(r.code, r.stderr).toBe(0);
+  expect(r.calls.filter((c) => c.url.includes("serviceusage")).every((c) => c.url.includes("/projects/example-a/"))).toBe(true);
+  expect(r.profile().quotaProject).toBeUndefined();
 });

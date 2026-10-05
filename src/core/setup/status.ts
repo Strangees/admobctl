@@ -1,5 +1,7 @@
 import { fetchTokenInfo, runDoctor, type Check } from "../auth/doctor.js";
 import type { AdmobService } from "../service.js";
+import { loadConfig } from "../config.js";
+import { profileCommand } from "./commands.js";
 import { CloudClient } from "./cloud.js";
 import { apisFor, parseFeatures } from "./features.js";
 
@@ -29,6 +31,11 @@ export async function setupStatus(svc: AdmobService, deps: { fetch?: typeof fetc
     listApps: () => svc.apps(),
     betaProbes: { "ad sources": () => svc.adSources(), "mediation groups": () => svc.mediationGroups() },
   });
+  const configuredDefault = loadConfig(svc.configDir).defaultProfile;
+  for (const check of checks) {
+    if (check.fix) check.fix = profileCommand(check.fix, svc.profile.name, configuredDefault);
+    if (check.fix_command) check.fix_command = profileCommand(check.fix_command, svc.profile.name, configuredDefault);
+  }
   const next =
     checks.find((c) => c.status === "fail" && c.fix_command)?.fix_command ?? checks.find((c) => c.status === "warn" && c.fix_command)?.fix_command;
   return { ok: checks.every((c) => c.status !== "fail"), checks, ...(next ? { next_command: next } : {}) };

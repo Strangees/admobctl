@@ -132,6 +132,6 @@ describe("AdmobClient.listPayments (AdSense Management API)", () => {
     const err = await client.listPayments(PUB).catch((e: unknown) => e);
     expect(err).toMatchObject({ code: "API_NOT_ENABLED" });
     const fix = (err as { fix: string }).fix;
-    expect(fix).toBe("admobctl setup apis --features payments --yes");
+    expect(fix).toBe("admobctl setup apis --features payments --project qp --yes");
   });
 });

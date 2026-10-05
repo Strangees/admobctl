@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
-import { AdmobctlError, ADMOB_SCOPE, ADSENSE_SCOPE, MONETIZATION_SCOPE } from "../errors.js";
+import { AdmobctlError, ADMOB_SCOPE, ADSENSE_SCOPE, CLOUD_PLATFORM_SCOPE, MONETIZATION_SCOPE } from "../errors.js";
 import { exec as defaultExec, type Exec } from "../exec.js";
 import { ensurePrivateDir } from "../fs.js";
 import type { TokenProvider } from "./types.js";
@@ -106,13 +106,14 @@ export function buildAuthUrl(o: {
   state: string;
   write?: boolean;
   payments?: boolean;
+  cloudPlatform?: boolean;
 }): string {
   const url = new URL(AUTH_ENDPOINT);
   url.search = new URLSearchParams({
     client_id: o.clientId,
     redirect_uri: o.redirectUri,
     response_type: "code",
-    scope: [ADMOB_SCOPE, ...(o.write ? [MONETIZATION_SCOPE] : []), ...(o.payments ? [ADSENSE_SCOPE] : [])].join(" "),
+    scope: [ADMOB_SCOPE, ...(o.write ? [MONETIZATION_SCOPE] : []), ...(o.payments ? [ADSENSE_SCOPE] : []), ...(o.cloudPlatform ? [CLOUD_PLATFORM_SCOPE] : [])].join(" "),
     code_challenge: o.pkce.challenge,
     code_challenge_method: "S256",
     access_type: "offline",
@@ -251,6 +252,10 @@ export class OAuthTokenProvider implements TokenProvider {
 
   async checkCredentials(): Promise<StoredOAuth> {
     return this.stored();
+  }
+
+  resetCache(): void {
+    this.cached = undefined;
   }
 
   async getToken(): Promise<string> {

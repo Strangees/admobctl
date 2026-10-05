@@ -61,7 +61,7 @@ Every error ends with `Fix: <command>`. Show the user that exact command; do not
 For anything about sign-in, scopes, the quota project or APIs, call `admobctl_setup_status` (CLI: `admobctl setup
 status`) and run its `next_command` exactly. These are always `admobctl setup …` commands; never improvise gcloud
 commands. Commands with `--yes` change the user's setup, so show them first. The browser sign-in
-(`admobctl setup login --yes`) must run in the user's own terminal. Service accounts are not supported by the AdMob API.
+(`admobctl setup login --yes`) must run in the user's own terminal. Service accounts are not supported by the AdMob API. If `GOOGLE_APPLICATION_CREDENTIALS` selects one, show the full manual fix: the user must unset it in their terminal before login. There is no automated `next_command` for this prerequisite.
 
 Ad sources, adapters, mediation groups, ad unit mappings and campaign reports use AdMob API v1beta, which Google
 limits to allowlisted accounts for some methods. A "v1beta" permission error means the account lacks that access,

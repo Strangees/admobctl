@@ -5,6 +5,7 @@ import { exec as defaultExec } from "../core/exec.js";
 import { CloudClient } from "../core/setup/cloud.js";
 import { parseFeatures } from "../core/setup/features.js";
 import { setupStatus } from "../core/setup/status.js";
+import { profileCommand } from "../core/setup/commands.js";
 import {
   applyApis,
   applyLogin,
@@ -18,7 +19,7 @@ import {
   type StepResult,
 } from "../core/setup/steps.js";
 import { login, logout } from "../core/auth/login.js";
-import { defaultSecretStore } from "../core/auth/oauth.js";
+import { defaultSecretStore, type StoredOAuth } from "../core/auth/oauth.js";
 import { configDir, configPath, loadConfig, resolveProfile, saveConfig, setProfileValue } from "../core/config.js";
 import { analyzeConsent, analyzeVersions, analyzeWaterfall, VERSION_KINDS, type VersionKind } from "../core/analyze.js";
 import { checkAppAds } from "../core/app-ads.js";
@@ -199,7 +200,7 @@ export function buildProgram(io: CliIO): Command {
     .exitOverride();
 
   /** Own-OAuth-client sign-in, shared by auth login and setup login in OAuth mode. */
-  const oauthSignIn = async (cmd: Command, o: { clientId?: string; clientSecret?: string; write?: boolean; payments?: boolean }) => {
+  const oauthSignIn = async (cmd: Command, o: { clientId?: string; clientSecret?: string; write?: boolean; payments?: boolean; cloudPlatform?: boolean }) => {
     const profileName = g(cmd).profile ?? loadConfig(dir()).defaultProfile ?? "default";
     const clientId = o.clientId ?? resolveProfile(loadConfig(dir()), g(cmd).profile).oauthClientId;
     if (!clientId) {
@@ -207,18 +208,25 @@ export function buildProgram(io: CliIO): Command {
         fix: "Create a Desktop app OAuth client in Google Cloud Console (APIs & Services → Credentials), then: admobctl auth login --client-id <id> --client-secret <secret>",
       });
     }
+    const store = defaultSecretStore(dir(), io.service?.exec);
+    let saved: StoredOAuth | undefined;
+    const raw = await store.get(profileName);
+    if (raw) {
+      try { saved = JSON.parse(raw) as StoredOAuth; } catch { /* A new sign-in can repair corrupt credentials. */ }
+    }
     const r = await login({
       configDir: dir(),
       profile: profileName,
       clientId,
-      clientSecret: o.clientSecret ?? process.env.ADMOBCTL_OAUTH_CLIENT_SECRET,
-      store: defaultSecretStore(dir(), io.service?.exec),
+      clientSecret: o.clientSecret ?? process.env.ADMOBCTL_OAUTH_CLIENT_SECRET ?? (saved?.clientId === clientId ? saved.clientSecret : undefined),
+      store,
       fetch: io.service?.fetch,
       print: io.stderr,
       write: o.write,
       payments: o.payments,
+      cloudPlatform: o.cloudPlatform,
     });
-    io.stderr(`Signed in. Profile "${r.profile}" now uses admobctl OAuth. Run: admobctl setup status\n`);
+    io.stderr(`Signed in. Profile "${r.profile}" now uses admobctl OAuth. Run: ${profileCommand("admobctl setup status", profileName, loadConfig(dir()).defaultProfile)}\n`);
   };
   const setupCtx = (cmd: Command): SetupContext => {
     const s = svc(cmd);
@@ -261,7 +269,8 @@ export function buildProgram(io: CliIO): Command {
     .option("--client-secret <secret>", "OAuth client secret (or env ADMOBCTL_OAUTH_CLIENT_SECRET)")
     .option("--write", "also grant admob.monetization, needed by the write commands (create, mediation changes)")
     .option("--payments", "also grant adsense.readonly, needed by finance balance")
-    .action(async (o: { clientId?: string; clientSecret?: string; write?: boolean; payments?: boolean }, cmd: Command) => oauthSignIn(cmd, o));
+    .option("--cloud-platform", "also grant cloud-platform, needed by setup project/API management")
+    .action(async (o: { clientId?: string; clientSecret?: string; write?: boolean; payments?: boolean; cloudPlatform?: boolean }, cmd: Command) => oauthSignIn(cmd, o));
 
   auth
     .command("logout")
@@ -301,7 +310,7 @@ export function buildProgram(io: CliIO): Command {
 
   // ── setup ─────────────────────────────────────────────────────────
   /** setup and its subcommands share --features/--yes; commander may hand them to either, so read both. */
-  const setupOpts = (cmd: Command) => cmd.optsWithGlobals<{ features?: string; yes?: boolean }>();
+  const setupOpts = (cmd: Command) => cmd.optsWithGlobals<{ features?: string; project?: string; yes?: boolean }>();
   const featuresOption = () => new Option("--features <list>", "extra features: write (write commands), payments (finance balance); read is always on");
   const setup = program
     .command("setup")
@@ -341,13 +350,14 @@ export function buildProgram(io: CliIO): Command {
     });
   setup
     .command("apis")
-    .description("Enable the Google APIs your features need in the quota project")
+    .description("Enable the Google APIs your features need in the chosen project")
+    .option("--project <id>", "API consumer project (defaults to the quota project; does not change the profile)")
     .addOption(featuresOption())
     .addOption(yesOption())
     .action(async (_o, cmd: Command) => {
       const ctx = setupCtx(cmd);
       const o = setupOpts(cmd);
-      await runStep(cmd, await planApis(ctx, parseFeatures(o.features)), o.yes, (p) => applyApis(ctx, p));
+      await runStep(cmd, await planApis(ctx, parseFeatures(o.features), o.project), o.yes, (p) => applyApis(ctx, p));
     });
 
   // ── accounts / apps / ad-units ────────────────────────────────────
@@ -868,6 +878,12 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       return err.exitCode === 0 ? 0 : 2;
     }
     const opts = program.opts<GlobalOpts>();
+    if (err instanceof AdmobctlError && err.fix) {
+      let configuredDefault: string | undefined;
+      try { configuredDefault = loadConfig(io.service?.configDir ?? configDir()).defaultProfile; } catch { /* Preserve the original config error. */ }
+      const fix = profileCommand(err.fix, opts.profile ?? configuredDefault ?? "default", configuredDefault);
+      err = new AdmobctlError(err.code, err.message, { status: err.status, cause: err, fix });
+    }
     return reportError(io, err, (opts.output ?? defaultFormat(io.isTTY)) === "json");
   }
 }

@@ -43,6 +43,7 @@ const TOKEN_TTL_MS = 45 * 60 * 1000;
 
 export interface AdcDeps {
   info?: () => AdcInfo | undefined;
+  env?: NodeJS.ProcessEnv;
   exec?: Exec;
   now?: () => number;
 }
@@ -55,13 +56,19 @@ export class AdcTokenProvider implements TokenProvider {
   readonly mode = "adc" as const;
   private cached?: { token: string; at: number };
   private readonly info: () => AdcInfo | undefined;
+  private readonly env: NodeJS.ProcessEnv;
   private readonly exec: Exec;
   private readonly now: () => number;
 
   constructor(deps: AdcDeps = {}) {
-    this.info = deps.info ?? (() => readAdcInfo());
+    this.env = deps.env ?? process.env;
+    this.info = deps.info ?? (() => readAdcInfo(adcPath(this.env)));
     this.exec = deps.exec ?? defaultExec;
     this.now = deps.now ?? Date.now;
+  }
+
+  resetCache(): void {
+    this.cached = undefined;
   }
 
   checkCredentials(): AdcInfo {
@@ -72,10 +79,13 @@ export class AdcTokenProvider implements TokenProvider {
       });
     }
     if (info.type && info.type !== "authorized_user") {
+      const fix = this.env.GOOGLE_APPLICATION_CREDENTIALS
+        ? "Unset GOOGLE_APPLICATION_CREDENTIALS in the terminal that runs admobctl, then run admobctl setup login --yes."
+        : "admobctl setup login --yes";
       throw new AdmobctlError(
         "AUTH_SERVICE_ACCOUNT",
         `Your Application Default Credentials are a ${info.type}; the AdMob API only accepts user credentials (service accounts are not supported).`,
-        { fix: "admobctl setup login --yes  (after: unset GOOGLE_APPLICATION_CREDENTIALS)" },
+        { fix },
       );
     }
     return info;
@@ -88,7 +98,7 @@ export class AdcTokenProvider implements TokenProvider {
     try {
       // Pin gcloud to the exact file we just inspected, so the credential-type
       // check, the quota project and the token all describe the same identity.
-      const env = { ...process.env, GOOGLE_APPLICATION_CREDENTIALS: info.path };
+      const env = { ...this.env, GOOGLE_APPLICATION_CREDENTIALS: info.path };
       res = await this.exec("gcloud", ["auth", "application-default", "print-access-token"], { timeoutMs: 30_000, env });
     } catch (err) {
       throw new AdmobctlError("AUTH_NO_CREDENTIALS", "Could not run gcloud (is the Google Cloud CLI installed and on PATH?).", {

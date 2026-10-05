@@ -23,8 +23,8 @@ npm link   # puts `admobctl` on your PATH
 
 ## Authenticate
 
-Run the guided setup. It signs you in, picks the Google Cloud project used for API quota, enables the APIs, and stops
-with exactly one next command whenever it needs you:
+Run setup to sign in, choose the Google Cloud project used for API quota, and enable the APIs. It never prompts
+for project, account, aliases or finance settings, even at a terminal: it prints the next command and available choices.
 
 ```bash
 admobctl setup                      # shows what it would do; nothing changes without --yes
@@ -45,9 +45,12 @@ admobctl setup --features write,payments --yes
 ```
 
 Setup never drops a feature you already have. The steps also run on their own:
-`setup login [--features …]`, `setup project list`, `setup project use <id>`, `setup apis [--features …]`
-(each is a dry run without `--yes`). Every sign-in, scope, quota-project or API error elsewhere in admobctl names the
-`admobctl setup …` command that fixes it, and `auth doctor` is the same report as `setup status`.
+`setup login [--features …]`, `setup project list`, `setup project use <id>`, `setup apis [--features …] [--project <id>]`
+(change commands are dry runs without `--yes`; `project list` is read-only). Sign-in, scope, quota-project and API errors
+name the `admobctl setup …` command to run, and `auth doctor` is the same report as `setup status`. If
+`GOOGLE_APPLICATION_CREDENTIALS` selects a service account, first unset it in the terminal running admobctl;
+setup reports this manual prerequisite and refuses to open a login that would leave the override in place.
+Account, aliases and finance settings use the existing `admobctl config set` commands below.
 
 Sign-in uses gcloud **Application Default Credentials** (setup tells you how to install gcloud if it is missing). The
 project and API steps call Google's APIs with your own user token, so they work even when gcloud's active account is a
@@ -58,11 +61,16 @@ the AdMob account.
 project with the AdMob API enabled, then:
 
 ```bash
-admobctl auth login --client-id <id> --client-secret <secret> [--write] [--payments]
+admobctl auth login --client-id <id> --client-secret <secret> --cloud-platform [--write] [--payments]
 ```
 
 The refresh token is stored in the macOS Keychain (on other OSes, a `0600` file in `~/.admobctl/`). `admobctl auth logout` revokes it.
-After that, `admobctl setup login` uses this OAuth client too.
+After that, `admobctl setup login` uses this OAuth client and its saved secret, including `cloud-platform` for the
+setup APIs. Browser sign-in requires a terminal in both modes. A quota project is optional for your own OAuth
+client: without one, setup leaves API enablement to the client project and `setup status` probes actual API access.
+To enable APIs in a specific project without changing your profile, use
+`admobctl setup apis --project <client-project-id> --features payments --yes`. Google errors that name an API
+consumer project include that project in the fix command, so the fix targets the failing consumer.
 
 ### Optional: unpaid balance (`finance balance`)
 

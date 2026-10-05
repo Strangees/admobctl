@@ -10,9 +10,9 @@ import { fakeFetch, fixture, jsonResponse, noSleep } from "./helpers.js";
 
 const token: TokenProvider = { mode: "adc", getToken: async () => "t", quotaProject: () => "example-project", checkCredentials: () => ({}) };
 
-function service(adsense: "ENABLED" | "DISABLED", scopes: string) {
+function service(adsense: "ENABLED" | "DISABLED", scopes: string, profileName = "default") {
   const dir = mkdtempSync(join(tmpdir(), "admobctl-status-"));
-  saveConfig(dir, { profiles: { default: { features: ["read", "payments"] } } });
+  saveConfig(dir, { profiles: { [profileName]: { features: ["read", "payments"] } } });
   const f = fakeFetch({
     "POST /tokeninfo": () => jsonResponse({ scope: scopes, expires_in: "3000" }),
     "GET /v1/accounts?": () => jsonResponse(fixture("accounts.json")),
@@ -22,7 +22,7 @@ function service(adsense: "ENABLED" | "DISABLED", scopes: string) {
     "GET /services/admob.googleapis.com": () => jsonResponse({ state: "ENABLED" }),
     "GET /services/adsense.googleapis.com": () => jsonResponse({ state: adsense }),
   });
-  return { svc: AdmobService.create({}, { configDir: dir, tokenProvider: token, fetch: f.fetch, sleep: noSleep }), fetch: f.fetch, calls: f.calls };
+  return { svc: AdmobService.create({ profile: profileName }, { configDir: dir, tokenProvider: token, fetch: f.fetch, sleep: noSleep }), fetch: f.fetch, calls: f.calls };
 }
 
 const ALL = "https://www.googleapis.com/auth/admob.readonly https://www.googleapis.com/auth/adsense.readonly https://www.googleapis.com/auth/cloud-platform";
@@ -50,4 +50,11 @@ describe("setupStatus", () => {
     expect(s.checks.find((c) => c.id === "apis")!.status).toBe("ok");
     expect(s.next_command).toBeUndefined();
   });
+});
+
+it("fix commands preserve a named profile instead of modifying default", async () => {
+  const { svc, fetch } = service("DISABLED", ALL, "work");
+  const s = await setupStatus(svc, { fetch });
+  expect(s.next_command).toBe("admobctl --profile work setup apis --features payments --yes");
+  expect(s.checks.find((c) => c.id === "apis")!.fix_command).toBe(s.next_command);
 });

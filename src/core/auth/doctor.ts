@@ -1,6 +1,6 @@
 import { appsNeedingAction, type AppRef } from "../aliases.js";
 import type { PublisherAccount } from "../client.js";
-import { AdmobctlError, ADSENSE_SCOPE, MONETIZATION_SCOPE } from "../errors.js";
+import { AdmobctlError, ADSENSE_SCOPE, CLOUD_PLATFORM_SCOPE, MONETIZATION_SCOPE } from "../errors.js";
 import { apisFor, featuresFlag, featuresFromScopes, mergeFeatures, type Feature } from "../setup/features.js";
 
 export type CheckStatus = "ok" | "warn" | "fail" | "skip";
@@ -71,6 +71,7 @@ export async function runDoctor(d: DoctorDeps): Promise<Check[]> {
 async function runChecks(d: DoctorDeps): Promise<Check[]> {
   const checks: Check[] = [];
   // The optional checks run last, so any early stop skips them too and the check list stays stable.
+  const setupChecks: Check["id"][] = d.features ? ["features", "apis"] : [];
   const optional: Check["id"][] = [...(d.listApps ? (["apps"] as const) : []), ...(d.betaProbes ? (["beta"] as const) : [])];
   const skipRest = (ids: Check["id"][], why: string) => {
     for (const id of [...ids, ...optional]) checks.push({ id, status: "skip", summary: why });
@@ -85,7 +86,7 @@ async function runChecks(d: DoctorDeps): Promise<Check[]> {
     });
   } catch (err) {
     checks.push(failed("credentials", err));
-    skipRest(["token", "scope", "quota-project", "api", "account"], "skipped: no usable credentials");
+    skipRest(["token", "scope", ...setupChecks, "quota-project", "api", "account"], "skipped: no usable credentials");
     return checks;
   }
 
@@ -95,13 +96,14 @@ async function runChecks(d: DoctorDeps): Promise<Check[]> {
     checks.push({ id: "token", status: "ok", summary: "Access token obtained" });
   } catch (err) {
     checks.push(failed("token", err));
-    skipRest(["scope", "quota-project", "api", "account"], "skipped: no access token");
+    skipRest(["scope", ...setupChecks, "quota-project", "api", "account"], "skipped: no access token");
     return checks;
   }
 
   try {
     const info = await d.tokenInfo(token);
     const granted = ADMOB_SCOPES.filter((s) => info.scopes.includes(s));
+    const grantedFeatures = featuresFromScopes(info.scopes);
     checks.push(
       granted.length
         ? {
@@ -119,20 +121,25 @@ async function runChecks(d: DoctorDeps): Promise<Check[]> {
           },
     );
     if (d.features) {
-      const missing = d.features.filter((f) => !featuresFromScopes(info.scopes).includes(f));
+      const missing = d.features.filter((f) => !grantedFeatures.includes(f));
+      const missingCloudPlatform = !info.scopes.includes(CLOUD_PLATFORM_SCOPE);
+      const missingScopes = [...missing, ...(missingCloudPlatform ? ["cloud-platform"] : [])];
       checks.push(
-        missing.length
+        missingScopes.length
           ? {
               id: "features",
               status: "warn",
-              summary: `Your sign-in lacks the scopes for: ${missing.join(", ")}`,
-              fix: `admobctl setup login${featuresFlag(mergeFeatures(d.features, featuresFromScopes(info.scopes)))} --yes`,
+              summary: missing.length
+                ? `Your sign-in lacks the scopes for: ${missing.join(", ")}${missingCloudPlatform ? ", cloud-platform" : ""}`
+                : "Your sign-in lacks the cloud-platform scope needed for setup.",
+              fix: `admobctl setup login${featuresFlag(mergeFeatures(d.features, grantedFeatures))} --yes`,
             }
           : { id: "features", status: "ok", summary: `Features: ${d.features.join(", ")}` },
       );
     }
   } catch (err) {
     checks.push(failed("scope", err));
+    if (d.features) checks.push({ id: "features", status: "skip", summary: "skipped: token scopes are unavailable" });
   }
 
   if (d.mode === "adc") {
@@ -162,6 +169,15 @@ async function runChecks(d: DoctorDeps): Promise<Check[]> {
     } catch (err) {
       checks.push(failed("apis", err));
     }
+  } else if (d.features) {
+    checks.push({
+      id: "apis",
+        status: "skip",
+        summary:
+        d.mode === "oauth"
+          ? "API enablement in the OAuth client project was not checked here; actual feature API requests will report access issues."
+          : "API enablement was not checked because no service-state lookup is available.",
+    });
   }
 
   try {

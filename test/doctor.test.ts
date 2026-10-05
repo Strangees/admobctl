@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runDoctor, type DoctorDeps } from "../src/core/auth/doctor.js";
-import { AdmobctlError } from "../src/core/errors.js";
+import { AdmobctlError, CLOUD_PLATFORM_SCOPE } from "../src/core/errors.js";
 import { fixture } from "./helpers.js";
 
 const okDeps = (): DoctorDeps => ({
@@ -138,8 +138,35 @@ describe("runDoctor setup checks", () => {
   });
 
   it("is ok when every stored feature's scope is granted", async () => {
-    const checks = byId(await runDoctor({ ...okDeps(), features: ["read", "payments"], tokenInfo: async () => ({ scopes: [READ, ADSENSE] }) }));
+    const checks = byId(await runDoctor({ ...okDeps(), features: ["read", "payments"], tokenInfo: async () => ({ scopes: [READ, ADSENSE, CLOUD_PLATFORM_SCOPE] }) }));
     expect(checks.features!.status).toBe("ok");
+  });
+
+  it("warns when setup's cloud-platform scope is missing even when feature scopes are granted", async () => {
+    const checks = byId(await runDoctor({ ...okDeps(), mode: "oauth", features: ["read", "payments"], tokenInfo: async () => ({ scopes: [READ, ADSENSE] }) }));
+    expect(checks.features!.status).toBe("warn");
+    expect(checks.features!.summary).toMatch(/cloud-platform/);
+    expect(checks.features!.fix).toBe("admobctl setup login --features payments --yes");
+  });
+
+  it("does not claim OAuth client APIs are enabled when Service Usage state is unavailable", async () => {
+    const checks = byId(await runDoctor({ ...okDeps(), mode: "oauth", features: ["read", "payments"] }));
+    expect(checks.apis!.status).toBe("skip");
+    expect(checks.apis!.summary).toMatch(/actual feature API requests/);
+  });
+
+  it("preserves the service-account prerequisite without exposing a repeatable fix command", async () => {
+    const fix = "Unset GOOGLE_APPLICATION_CREDENTIALS in the terminal that runs admobctl, then run admobctl setup login --yes.";
+    const checks = byId(
+      await runDoctor({
+        ...okDeps(),
+        checkCredentials: () => {
+          throw new AdmobctlError("AUTH_SERVICE_ACCOUNT", "AdMob does not support service accounts.", { fix });
+        },
+      }),
+    );
+    expect(checks.credentials!.fix).toBe(fix);
+    expect(checks.credentials!.fix_command).toBeUndefined();
   });
 
   it("fails when a needed API is disabled, with the setup apis fix", async () => {

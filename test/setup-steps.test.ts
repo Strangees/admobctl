@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { TokenProvider } from "../src/core/auth/types.js";
 import { loadConfig, saveConfig, type ProfileConfig } from "../src/core/config.js";
 import type { Exec } from "../src/core/exec.js";
+import { AdmobctlError } from "../src/core/errors.js";
 import { AdmobService } from "../src/core/service.js";
 import { CloudClient } from "../src/core/setup/cloud.js";
 import { applyApis, applyLogin, applyProject, planApis, planLogin, planProject, runSetup, type SetupContext } from "../src/core/setup/steps.js";
@@ -42,7 +43,7 @@ function world(w: World = {}) {
     if (cmd === "gcloud" && args[0] === "--version" && w.gcloud === false) throw new Error("ENOENT");
     return { code: 0, stdout: "", stderr: "" };
   };
-  const oauthLogins: Array<{ write: boolean; payments: boolean }> = [];
+  const oauthLogins: Array<{ write: boolean; payments: boolean; cloudPlatform?: boolean }> = [];
   const ctx: SetupContext = {
     svc,
     cloud: new CloudClient({ getToken: async () => "t", fetch: f.fetch, sleep: noSleep }),
@@ -115,7 +116,7 @@ describe("applyLogin", () => {
   it("uses admobctl OAuth in OAuth mode", async () => {
     const w = world({ mode: "oauth", scopes: [S("admob.readonly")] });
     await applyLogin(w.ctx, await planLogin(w.ctx, ["payments"]));
-    expect(w.oauthLogins).toEqual([{ write: false, payments: true }]);
+    expect(w.oauthLogins).toEqual([{ write: false, payments: true, cloudPlatform: true }]);
   });
 });
 
@@ -200,4 +201,114 @@ describe("runSetup", () => {
     ]);
     expect(r.next_command).toBe("admobctl setup project use <project-id> --yes");
   });
+});
+
+
+describe("setup review regressions", () => {
+  it("never starts OAuth browser login without a terminal", async () => {
+    const w = world({ mode: "oauth", scopes: "signed-out", isTTY: false });
+    const plan = await planLogin(w.ctx, ["payments"]);
+    await expect(applyLogin(w.ctx, plan)).rejects.toMatchObject({ code: "USAGE" });
+    expect(w.oauthLogins).toEqual([]);
+    const r = await runSetup(w.ctx, { features: ["payments"], yes: true });
+    expect(r.steps[0]!.status).toBe("needs-input");
+    expect(r.next_command).toBe("admobctl setup login --features payments --yes");
+    expect(w.oauthLogins).toEqual([]);
+    expect(w.profile().features).toBeUndefined();
+  });
+
+  it("names cloud-platform when feature scopes are already granted", async () => {
+    const w = world({ scopes: [S("admob.readonly")] });
+    const plan = await planLogin(w.ctx, []);
+    expect(plan.summary[0]).toContain("cloud-platform");
+    expect(plan.summary.join("\n")).toContain("cloud.google.com/sdk/docs/install");
+  });
+
+  it("OAuth setup does not require a quota project", async () => {
+    const w = world({ mode: "oauth" });
+    const r = await runSetup(w.ctx, { features: ["read"], yes: false });
+    expect(r.next_command).toBeUndefined();
+    expect(r.steps.map((s) => s.status)).toEqual(["done", "done", "done"]);
+    expect(w.calls).toEqual([]);
+    expect(r.steps[2]!.summary.join(" ")).toContain("OAuth client");
+    expect(w.profile().quotaProject).toBeUndefined();
+  });
+
+  it("invalidates the cached token before the next setup API call", async () => {
+    const w = world({ scopes: "signed-out", quotaProject: "example-a" });
+    let current = "old-token";
+    let resets = 0;
+    w.ctx.svc.tokenProvider.getToken = async () => current;
+    w.ctx.svc.tokenProvider.resetCache = () => { current = "new-token"; resets++; };
+    w.ctx.cloud = new CloudClient({ getToken: () => w.ctx.svc.tokenProvider.getToken(), fetch: fakeFetch({
+      "GET /services/admob.googleapis.com": (c) => {
+        expect(c.headers.authorization).toBe("Bearer new-token");
+        return jsonResponse({ state: "ENABLED" });
+      },
+    }).fetch });
+    await runSetup(w.ctx, { features: ["read"], yes: true });
+    expect(resets).toBe(1);
+  });
+
+  it("targets an explicit API consumer without overwriting the quota project", async () => {
+    const w = world({ quotaProject: "example-b" });
+    const p = await planApis(w.ctx, ["payments"], "example-a");
+    expect(p.project).toBe("example-a");
+    expect(p.next_command).toBe("admobctl setup apis --features payments --project example-a --yes");
+    await applyApis(w.ctx, p);
+    expect(w.calls.find((c) => c.method === "POST")!.url).toContain("/projects/example-a/services:batchEnable");
+    expect(w.profile().quotaProject).toBeUndefined();
+  });
+});
+
+it("service-account override is surfaced before attempting browser sign-in", async () => {
+  const w = world({ scopes: "signed-out" });
+  w.ctx.svc.tokenProvider.checkCredentials = () => {
+    throw new AdmobctlError("AUTH_SERVICE_ACCOUNT", "Unset GOOGLE_APPLICATION_CREDENTIALS in your terminal.", { fix: "Unset GOOGLE_APPLICATION_CREDENTIALS, then run admobctl setup login --yes." });
+  };
+  await expect(runSetup(w.ctx, { features: ["read"], yes: true })).rejects.toMatchObject({ code: "AUTH_SERVICE_ACCOUNT", message: expect.stringContaining("GOOGLE_APPLICATION_CREDENTIALS") });
+  expect(w.execCalls).toEqual([]);
+  expect(w.profile().features).toBeUndefined();
+});
+
+it("gcloud can replace unsupported default ADC when no environment override is active", async () => {
+  const w = world({ scopes: "signed-out" });
+  w.ctx.svc.tokenProvider.checkCredentials = () => {
+    throw new AdmobctlError("AUTH_SERVICE_ACCOUNT", "Default ADC is not a user credential.", { fix: "admobctl setup login --yes" });
+  };
+  await applyLogin(w.ctx, await planLogin(w.ctx, ["read"]));
+  expect(w.execCalls.at(-1)!.args.slice(0, 3)).toEqual(["auth", "application-default", "login"]);
+});
+
+it("a named-profile login plan keeps the selected identity in its next command", async () => {
+  const w = world({ scopes: "signed-out" });
+  const cfg = loadConfig(w.dir);
+  cfg.profiles.work = {};
+  saveConfig(w.dir, cfg);
+  w.ctx.svc = AdmobService.create({ profile: "work" }, { configDir: w.dir, tokenProvider: w.ctx.svc.tokenProvider });
+  const p = await planLogin(w.ctx, ["payments"]);
+  expect(p.next_command).toBe("admobctl --profile work setup login --features payments --yes");
+});
+
+it("explicit default profile is kept when the configured default is another profile", async () => {
+  const w = world({ scopes: "signed-out" });
+  const cfg = loadConfig(w.dir);
+  cfg.profiles.work = {};
+  cfg.defaultProfile = "work";
+  saveConfig(w.dir, cfg);
+  const p = await planLogin(w.ctx, ["read"]);
+  expect(p.next_command).toBe("admobctl --profile default setup login --yes");
+});
+
+it("manual OAuth hints also keep the named profile", async () => {
+  const w = world({ mode: "oauth", scopes: "signed-out" });
+  const cfg = loadConfig(w.dir);
+  cfg.profiles.work = {};
+  saveConfig(w.dir, cfg);
+  w.ctx.svc = AdmobService.create({ profile: "work" }, { configDir: w.dir, tokenProvider: w.ctx.svc.tokenProvider });
+  const login = await planLogin(w.ctx, ["payments"]);
+  expect(login.summary.join(" ")).toContain("admobctl --profile work auth login --payments --cloud-platform");
+  const apis = await planApis(w.ctx, ["read"]);
+  expect(apis.summary.join(" ")).toContain("admobctl --profile work setup status");
+  expect(apis.summary.join(" ")).toContain("admobctl --profile work setup apis --project");
 });

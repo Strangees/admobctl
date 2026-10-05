@@ -1,12 +1,9 @@
 export const ADMOB_SCOPE = "https://www.googleapis.com/auth/admob.readonly";
 export const CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
-export const LOGIN_COMMAND = `gcloud auth application-default login --scopes=${ADMOB_SCOPE},${CLOUD_PLATFORM_SCOPE}`;
 /** Needed only for the write commands (create apps, ad units, mappings; change mediation). */
 export const MONETIZATION_SCOPE = "https://www.googleapis.com/auth/admob.monetization";
-export const WRITE_LOGIN_COMMAND = `gcloud auth application-default login --scopes=${ADMOB_SCOPE},${MONETIZATION_SCOPE},${CLOUD_PLATFORM_SCOPE}`;
 /** Needed only for `finance balance` (AdSense Management API payments). */
 export const ADSENSE_SCOPE = "https://www.googleapis.com/auth/adsense.readonly";
-export const PAYMENTS_LOGIN_COMMAND = `gcloud auth application-default login --scopes=${ADMOB_SCOPE},${ADSENSE_SCOPE},${CLOUD_PLATFORM_SCOPE}`;
 
 export type ErrorCode =
   | "USAGE"
@@ -102,9 +99,10 @@ export function diagnoseApiError(status: number, body: unknown, hints: DiagnoseH
     const project = info?.metadata?.consumer?.replace(/^projects\//, "") ?? "<PROJECT_ID>";
     const title = info?.metadata?.serviceTitle ?? "AdMob API";
     const service = info?.metadata?.service ?? "admob.googleapis.com";
+    const projectFlag = project === "<PROJECT_ID>" ? "" : ` --project ${project}`;
     return new AdmobctlError("API_NOT_ENABLED", `The ${title} is not enabled in project ${project}.`, {
       ...opts,
-      fix: `admobctl setup apis${service === "adsense.googleapis.com" ? " --features payments" : ""} --yes`,
+      fix: `admobctl setup apis${service === "adsense.googleapis.com" ? " --features payments" : ""}${projectFlag} --yes`,
     });
   }
   if (reason === "ACCESS_TOKEN_SCOPE_INSUFFICIENT" || /insufficient authentication scopes/i.test(message)) {
