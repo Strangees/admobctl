@@ -10621,7 +10621,7 @@ function diagnoseApiError(status, body, hints = {}) {
   if (/quota project/i.test(message)) {
     return new AdmobctlError("AUTH_QUOTA_PROJECT_MISSING", "No quota project is set for your Application Default Credentials.", {
       ...opts,
-      fix: "gcloud auth application-default set-quota-project <PROJECT_ID>  (a project where the AdMob API is enabled)"
+      fix: "admobctl setup project list"
     });
   }
   if (reason === "SERVICE_DISABLED" || /has not been used in project|is disabled/i.test(message)) {
@@ -10630,19 +10630,19 @@ function diagnoseApiError(status, body, hints = {}) {
     const service = info?.metadata?.service ?? "admob.googleapis.com";
     return new AdmobctlError("API_NOT_ENABLED", `The ${title} is not enabled in project ${project}.`, {
       ...opts,
-      fix: `gcloud services enable ${service} --project ${project}`
+      fix: `admobctl setup apis${service === "adsense.googleapis.com" ? " --features payments" : ""} --yes`
     });
   }
   if (reason === "ACCESS_TOKEN_SCOPE_INSUFFICIENT" || /insufficient authentication scopes/i.test(message)) {
     return new AdmobctlError("AUTH_SCOPE_MISSING", "Your credentials do not include the AdMob scope.", {
       ...opts,
-      fix: `${LOGIN_COMMAND}  (or: admobctl auth login --client-id <id>)`
+      fix: "admobctl setup login --yes"
     });
   }
   if (status === 401) {
     return new AdmobctlError("AUTH_TOKEN_EXPIRED", "Your credentials are expired or invalid.", {
       ...opts,
-      fix: `${LOGIN_COMMAND}  (or: admobctl auth login)`
+      fix: "admobctl setup login --yes"
     });
   }
   if (status === 403) {
@@ -10718,6 +10718,41 @@ function resolveApp(input2, index) {
   throw usageError(`Unknown app "${input2}". Known apps: ${index.map((a) => a.alias).join(", ") || "(none)"}`);
 }
 
+// src/core/setup/features.ts
+var FEATURE_ORDER = ["read", "write", "payments"];
+var FEATURES = {
+  read: { scopes: [ADMOB_SCOPE], apis: ["admob.googleapis.com"] },
+  write: { scopes: [MONETIZATION_SCOPE], apis: [] },
+  payments: { scopes: [ADSENSE_SCOPE], apis: ["adsense.googleapis.com"] }
+};
+var sorted = (fs2) => {
+  const set2 = new Set(fs2);
+  return FEATURE_ORDER.filter((f) => set2.has(f));
+};
+function parseFeatures(input2) {
+  const names = (Array.isArray(input2) ? input2 : (input2 ?? "").split(",")).map((s) => s.trim()).filter(Boolean);
+  for (const n of names) {
+    if (!FEATURE_ORDER.includes(n)) throw usageError(`Unknown feature "${n}". Features: ${FEATURE_ORDER.join(", ")}.`);
+  }
+  return sorted(["read", ...names]);
+}
+function featuresFromScopes(scopes) {
+  return FEATURE_ORDER.filter((f) => FEATURES[f].scopes.every((s) => scopes.includes(s)));
+}
+function mergeFeatures(...lists) {
+  return sorted(lists.flat());
+}
+function scopesFor(features) {
+  return [...sorted(features).flatMap((f) => FEATURES[f].scopes), CLOUD_PLATFORM_SCOPE];
+}
+function apisFor(features) {
+  return sorted(features).flatMap((f) => FEATURES[f].apis);
+}
+function featuresFlag(features) {
+  const extra = sorted(features).filter((f) => f !== "read");
+  return extra.length ? ` --features ${extra.join(",")}` : "";
+}
+
 // src/core/auth/doctor.ts
 var ADMOB_SCOPES = ["https://www.googleapis.com/auth/admob.readonly", "https://www.googleapis.com/auth/admob.report"];
 function failed(id, err) {
@@ -10730,7 +10765,7 @@ async function fetchTokenInfo(token, doFetch = fetch) {
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ access_token: token }).toString()
   });
-  if (!res.ok) throw new AdmobctlError("AUTH_TOKEN_EXPIRED", "Google rejected the access token.", { fix: LOGIN_COMMAND });
+  if (!res.ok) throw new AdmobctlError("AUTH_TOKEN_EXPIRED", "Google rejected the access token.", { fix: "admobctl setup login --yes" });
   const j = await res.json();
   const info = { scopes: (j.scope ?? "").split(/\s+/).filter(Boolean) };
   if (j.email) info.email = j.email;
@@ -10738,6 +10773,11 @@ async function fetchTokenInfo(token, doFetch = fetch) {
   return info;
 }
 async function runDoctor(d) {
+  const checks = await runChecks(d);
+  for (const c of checks) if (c.fix?.startsWith("admobctl ")) c.fix_command = c.fix.split("  (")[0];
+  return checks;
+}
+async function runChecks(d) {
   const checks = [];
   const optional2 = [...d.listApps ? ["apps"] : [], ...d.betaProbes ? ["beta"] : []];
   const skipRest = (ids, why) => {
@@ -10776,9 +10816,20 @@ async function runDoctor(d) {
         id: "scope",
         status: "fail",
         summary: `Token lacks the AdMob scope (has: ${info.scopes.join(" ") || "none"})`,
-        fix: d.mode === "adc" ? LOGIN_COMMAND : "admobctl auth login"
+        fix: "admobctl setup login --yes"
       }
     );
+    if (d.features) {
+      const missing = d.features.filter((f) => !featuresFromScopes(info.scopes).includes(f));
+      checks.push(
+        missing.length ? {
+          id: "features",
+          status: "warn",
+          summary: `Your sign-in lacks the scopes for: ${missing.join(", ")}`,
+          fix: `admobctl setup login${featuresFlag(mergeFeatures(d.features, featuresFromScopes(info.scopes)))} --yes`
+        } : { id: "features", status: "ok", summary: `Features: ${d.features.join(", ")}` }
+      );
+    }
   } catch (err) {
     checks.push(failed("scope", err));
   }
@@ -10788,11 +10839,22 @@ async function runDoctor(d) {
         id: "quota-project",
         status: "warn",
         summary: "No quota project set; ADC requests to the AdMob API usually need one.",
-        fix: "gcloud auth application-default set-quota-project <PROJECT_ID>  (or: admobctl config set quotaProject <PROJECT_ID>)"
+        fix: "admobctl setup project list"
       }
     );
   } else {
     checks.push({ id: "quota-project", status: "ok", summary: "Not needed for your own OAuth client" });
+  }
+  if (d.serviceStates) {
+    try {
+      const states = await d.serviceStates();
+      const off = apisFor(d.features ?? ["read"]).filter((s) => states[s] !== "ENABLED");
+      checks.push(
+        off.length ? { id: "apis", status: "fail", summary: `Not enabled in the quota project: ${off.join(", ")}`, fix: `admobctl setup apis${featuresFlag(d.features ?? ["read"])} --yes` } : { id: "apis", status: "ok", summary: `APIs enabled: ${apisFor(d.features ?? ["read"]).join(", ")}` }
+      );
+    } catch (err) {
+      checks.push(failed("apis", err));
+    }
   }
   try {
     const accounts = await d.listAccounts();
@@ -10850,17 +10912,25 @@ async function runDoctor(d) {
   return checks;
 }
 
-// src/core/auth/login.ts
-import { randomBytes as randomBytes2 } from "node:crypto";
-
-// src/core/config.ts
-import { chmodSync as chmodSync2, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-
-// src/core/fs.ts
-import { chmodSync, mkdirSync, statSync } from "node:fs";
-import { basename } from "node:path";
+// src/core/exec.ts
+import { spawn } from "node:child_process";
+var exec = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
+  const child = spawn(cmd, args, { stdio: opts.interactive ? "inherit" : ["pipe", "pipe", "pipe"], shell: false, env: opts.env ?? process.env });
+  let stdout = "";
+  let stderr = "";
+  const timer = opts.timeoutMs ? setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs) : void 0;
+  child.stdout?.on("data", (d) => stdout += d);
+  child.stderr?.on("data", (d) => stderr += d);
+  child.on("error", (err) => {
+    if (timer) clearTimeout(timer);
+    reject(err);
+  });
+  child.on("close", (code2) => {
+    if (timer) clearTimeout(timer);
+    resolve({ code: code2 ?? 1, stdout, stderr });
+  });
+  child.stdin?.end(opts.input ?? "");
+});
 
 // src/core/log.ts
 var verbose = Boolean(process.env.ADMOBCTL_DEBUG);
@@ -10878,7 +10948,223 @@ var log = {
   }
 };
 
+// src/core/http.ts
+var DEFAULT_TIMEOUT_MS = 3e4;
+var DEFAULT_MAX_RETRY_AFTER_MS = 6e4;
+function combineSignals(timeout, caller) {
+  if (!caller) return timeout;
+  if (typeof AbortSignal.any === "function") return AbortSignal.any([caller, timeout]);
+  const ctl = new AbortController();
+  const forward = (s) => {
+    if (s.aborted) ctl.abort(s.reason);
+    else s.addEventListener("abort", () => ctl.abort(s.reason), { once: true });
+  };
+  forward(caller);
+  forward(timeout);
+  return ctl.signal;
+}
+var defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function isRetryableStatus(status) {
+  return status === 429 || status >= 500;
+}
+function retryAfterMs(res) {
+  const h = res.headers.get("retry-after");
+  if (!h) return void 0;
+  const secs = Number(h);
+  if (Number.isFinite(secs)) return secs * 1e3;
+  const at = Date.parse(h);
+  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : void 0;
+}
+async function readBody(res) {
+  const text = await res.text();
+  if (!text) return void 0;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+async function attemptOnce(doFetch, url2, init, canRetry, backoff, maxRetryAfterMs) {
+  const res = await doFetch(url2, init);
+  if (res.ok) return { kind: "ok", status: res.status, body: await readBody(res) };
+  if (!isRetryableStatus(res.status)) return { kind: "fail", status: res.status, body: await readBody(res) };
+  const retryAfter = retryAfterMs(res);
+  if (!canRetry) return { kind: "fail", status: res.status, body: await readBody(res), retryAfterMs: retryAfter };
+  if (retryAfter !== void 0 && retryAfter > maxRetryAfterMs) {
+    log.debug(`HTTP ${res.status}; Retry-After ${retryAfter}ms exceeds cap ${maxRetryAfterMs}ms; not retrying`);
+    return { kind: "fail", status: res.status, body: await readBody(res), retryAfterMs: retryAfter };
+  }
+  await res.body?.cancel().catch(() => {
+  });
+  return { kind: "retry", status: res.status, wait: retryAfter ?? backoff };
+}
+async function requestJson(url2, init, opts = {}) {
+  const doFetch = opts.fetch ?? fetch;
+  const sleep = opts.sleep ?? defaultSleep;
+  const retries = opts.retries ?? 4;
+  const base = opts.baseDelayMs ?? 500;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const maxRetryAfterMs = opts.maxRetryAfterMs ?? DEFAULT_MAX_RETRY_AFTER_MS;
+  for (let attempt = 0; ; attempt++) {
+    await opts.beforeAttempt?.();
+    const backoff = base * 2 ** attempt + Math.floor(Math.random() * base * 0.25);
+    const timer = new AbortController();
+    const timeoutId = setTimeout(
+      () => timer.abort(new Error(`Request timed out after ${timeoutMs}ms`)),
+      timeoutMs
+    );
+    let outcome;
+    const started = Date.now();
+    try {
+      const signal = combineSignals(timer.signal, init.signal);
+      outcome = await attemptOnce(doFetch, url2, { ...init, signal }, attempt < retries, backoff, maxRetryAfterMs);
+    } catch (err) {
+      if (init.signal?.aborted) throw err;
+      const timedOut = timer.signal.aborted;
+      const host = new URL(url2).host;
+      if (attempt >= retries) {
+        if (timedOut) {
+          throw new AdmobctlError(
+            "API_ERROR",
+            `Request to ${host} timed out after ${timeoutMs}ms (${attempt + 1} attempts).`,
+            { cause: err, fix: "Check your connection and retry." }
+          );
+        }
+        throw new AdmobctlError("API_ERROR", `Network error calling ${host}: ${err.message}`, {
+          cause: err,
+          fix: "Check your internet connection and retry."
+        });
+      }
+      log.debug(`${timedOut ? `timeout after ${timeoutMs}ms` : `network error (${err.message})`}; retrying in ${backoff}ms`);
+      await sleep(backoff);
+      continue;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    log.debug(`${init.method ?? "GET"} ${url2} \u2192 ${outcome.status} (${Date.now() - started}ms)`);
+    if (outcome.kind === "ok") return outcome.body;
+    if (outcome.kind === "fail") {
+      log.debug(`response: ${(typeof outcome.body === "string" ? outcome.body : JSON.stringify(outcome.body) ?? "").slice(0, 2e3)}`);
+      throw diagnoseApiError(outcome.status, outcome.body, { retryAfterMs: outcome.retryAfterMs });
+    }
+    log.debug(`HTTP ${outcome.status}; retrying in ${outcome.wait}ms`);
+    await sleep(outcome.wait);
+  }
+}
+
+// src/core/setup/cloud.ts
+var CRM = "https://cloudresourcemanager.googleapis.com/v3";
+var SU = "https://serviceusage.googleapis.com/v1";
+var POLL_MS = 2e3;
+var OPERATION_TIMEOUT_MS = 12e4;
+var CloudClient = class {
+  constructor(o) {
+    this.o = o;
+  }
+  o;
+  async call(method, url2, body) {
+    const headers = { authorization: `Bearer ${await this.o.getToken()}`, accept: "application/json" };
+    if (body !== void 0) headers["content-type"] = "application/json";
+    return requestJson(
+      url2,
+      { method, headers, body: body === void 0 ? void 0 : JSON.stringify(body) },
+      // Enabling is not idempotent-safe to blind-retry mid-operation; reads may retry.
+      { fetch: this.o.fetch, sleep: this.o.sleep, retries: method === "GET" ? 2 : 0 }
+    );
+  }
+  async listProjects() {
+    const out = [];
+    let pageToken;
+    do {
+      const qs = new URLSearchParams({ pageSize: "100", ...pageToken ? { pageToken } : {} });
+      const page = await this.call(
+        "GET",
+        `${CRM}/projects:search?${qs}`
+      );
+      for (const p of page?.projects ?? []) {
+        if (!p.state || p.state === "ACTIVE") out.push({ projectId: p.projectId, name: p.displayName ?? p.projectId });
+      }
+      pageToken = page?.nextPageToken || void 0;
+    } while (pageToken);
+    return out;
+  }
+  async getProject(id) {
+    try {
+      const p = await this.call("GET", `${CRM}/projects/${encodeURIComponent(id)}`);
+      return { projectId: p.projectId, name: p.displayName ?? p.projectId };
+    } catch (err) {
+      if (err instanceof AdmobctlError && (err.code === "PERMISSION_DENIED" || err.code === "NOT_FOUND")) {
+        throw new AdmobctlError("NOT_FOUND", `Google Cloud project "${id}" was not found, or your account cannot access it.`, {
+          status: err.status,
+          cause: err,
+          fix: "admobctl setup project list"
+        });
+      }
+      throw err;
+    }
+  }
+  async serviceStates(project, services) {
+    const entries = await Promise.all(
+      services.map(async (s) => {
+        const r = await this.call("GET", `${SU}/projects/${encodeURIComponent(project)}/services/${s}`);
+        return [s, r?.state === "ENABLED" ? "ENABLED" : "DISABLED"];
+      })
+    );
+    return Object.fromEntries(entries);
+  }
+  /** Enable services and wait for the long-running operation to finish. */
+  async enableServices(project, services) {
+    let op = await this.call("POST", `${SU}/projects/${encodeURIComponent(project)}/services:batchEnable`, { serviceIds: services });
+    const sleep = this.o.sleep ?? defaultSleep;
+    const now = this.o.now ?? Date.now;
+    const start = now();
+    while (!op.done) {
+      if (now() - start >= OPERATION_TIMEOUT_MS) {
+        throw new AdmobctlError("API_ERROR", `Enabling ${services.join(", ")} in ${project} is still running after ${OPERATION_TIMEOUT_MS / 1e3} seconds.`, {
+          fix: "admobctl setup status"
+        });
+      }
+      await sleep(POLL_MS);
+      op = await this.call("GET", `${SU}/${op.name}`);
+    }
+    if (op.error) {
+      throw new AdmobctlError("API_ERROR", `Google could not enable ${services.join(", ")} in ${project}: ${op.error.message ?? "unknown error"}`, {
+        fix: "admobctl setup status"
+      });
+    }
+  }
+};
+
+// src/core/setup/status.ts
+async function setupStatus(svc, deps = {}) {
+  const tp = svc.tokenProvider;
+  const features = parseFeatures(svc.profile.features);
+  const quotaProject = svc.profile.quotaProject ?? tp.quotaProject();
+  const cloud = new CloudClient({ getToken: () => tp.getToken(), fetch: deps.fetch });
+  const checks = await runDoctor({
+    mode: tp.mode,
+    checkCredentials: () => tp.checkCredentials?.(),
+    getToken: () => tp.getToken(),
+    tokenInfo: (t) => fetchTokenInfo(t, deps.fetch),
+    quotaProject,
+    features,
+    serviceStates: quotaProject ? () => cloud.serviceStates(quotaProject, apisFor(features)) : void 0,
+    listAccounts: () => svc.listAccounts(),
+    account: () => svc.account(),
+    listApps: () => svc.apps(),
+    betaProbes: { "ad sources": () => svc.adSources(), "mediation groups": () => svc.mediationGroups() }
+  });
+  const next = checks.find((c) => c.status === "fail" && c.fix_command)?.fix_command ?? checks.find((c) => c.status === "warn" && c.fix_command)?.fix_command;
+  return { ok: checks.every((c) => c.status !== "fail"), checks, ...next ? { next_command: next } : {} };
+}
+
+// src/core/audit.ts
+import { appendFileSync, chmodSync as chmodSync2, readFileSync } from "node:fs";
+import { join } from "node:path";
+
 // src/core/fs.ts
+import { chmodSync, mkdirSync, statSync } from "node:fs";
+import { basename } from "node:path";
 function ensurePrivateDir(dir) {
   if (mkdirSync(dir, { recursive: true, mode: 448 }) !== void 0) {
     chmodSync(dir, 448);
@@ -10898,7 +11184,51 @@ function ensurePrivateDir(dir) {
   log.warn(warning);
 }
 
+// src/core/audit.ts
+function appendAudit(dir, entry) {
+  ensurePrivateDir(dir);
+  const file2 = join(dir, "audit.log");
+  appendFileSync(file2, `${JSON.stringify(entry)}
+`, { mode: 384 });
+  chmodSync2(file2, 384);
+}
+function readAudit(dir, opts = {}) {
+  const file2 = join(dir, "audit.log");
+  let text = "";
+  try {
+    text = readFileSync(file2, "utf8");
+  } catch (err) {
+    if (err.code !== "ENOENT") {
+      throw new AdmobctlError("CONFIG", `Could not read ${file2}: ${err.message}`, {
+        fix: `ls -l ${file2}  # it must be a file you can read; move it aside to start a new log`,
+        cause: err
+      });
+    }
+  }
+  let skipped = 0;
+  let entries = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const e = JSON.parse(line);
+      if (typeof e?.time !== "string" || typeof e.action !== "string" || typeof e.method !== "string" || typeof e.path !== "string") {
+        throw new Error("not an entry");
+      }
+      entries.push(e);
+    } catch {
+      skipped++;
+    }
+  }
+  entries.reverse();
+  if (opts.failed) entries = entries.filter((e) => !e.ok);
+  if (opts.last !== void 0) entries = entries.slice(0, opts.last);
+  return { file: file2, entries, skipped };
+}
+
 // src/core/config.ts
+import { chmodSync as chmodSync3, existsSync, readFileSync as readFileSync2, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join as join2 } from "node:path";
 var DEFAULT_FINANCE = {
   receivableAccount: "1509",
   revenueAccount: "3120",
@@ -10909,16 +11239,16 @@ var DEFAULT_FINANCE = {
   decimalSeparator: "."
 };
 function configDir(env = process.env, home = homedir()) {
-  return env.ADMOBCTL_HOME || join(home, ".admobctl");
+  return env.ADMOBCTL_HOME || join2(home, ".admobctl");
 }
 function configPath(dir) {
-  return join(dir, "config.json");
+  return join2(dir, "config.json");
 }
 function loadConfig(dir) {
   const file2 = configPath(dir);
   if (!existsSync(file2)) return { profiles: {} };
   try {
-    const parsed = JSON.parse(readFileSync(file2, "utf8"));
+    const parsed = JSON.parse(readFileSync2(file2, "utf8"));
     return { ...parsed, profiles: parsed.profiles ?? {} };
   } catch (err) {
     throw new AdmobctlError("CONFIG", `Could not parse ${file2}: ${err.message}`, {
@@ -10933,7 +11263,7 @@ function saveConfig(dir, config2) {
   writeFileSync(tmp, `${JSON.stringify(config2, null, 2)}
 `, { mode: 384 });
   renameSync(tmp, file2);
-  chmodSync2(file2, 384);
+  chmodSync3(file2, 384);
 }
 function resolveProfile(config2, name) {
   const profileName = name ?? config2.defaultProfile ?? "default";
@@ -10955,9 +11285,14 @@ var SCALAR_KEYS = /* @__PURE__ */ new Set(["account", "quotaProject", "authMode"
 var CHECK_KEYS = ["check.window", "check.baseline", "check.drop", "check.minRequests"];
 var MAP_KEYS = /* @__PURE__ */ new Set([...Object.keys(DEFAULT_FINANCE).map((k) => `finance.${k}`), ...CHECK_KEYS]);
 var AUTH_MODES = ["auto", "adc", "oauth"];
-var SETTABLE_KEYS = [...SCALAR_KEYS, ...MAP_KEYS, "aliases.<alias>", "websites.<alias>"];
+var SETTABLE_KEYS = [...SCALAR_KEYS, "features", ...MAP_KEYS, "aliases.<alias>", "websites.<alias>"];
 function setProfileValue(config2, profile, key, value) {
   const p = config2.profiles[profile] ??= {};
+  if (key === "features") {
+    if (value === void 0) delete p.features;
+    else p.features = parseFeatures(value);
+    return;
+  }
   if (SCALAR_KEYS.has(key)) {
     if (key === "authMode" && value !== void 0 && !AUTH_MODES.includes(value)) {
       throw usageError(`authMode must be one of ${AUTH_MODES.join(", ")}`);
@@ -10982,31 +11317,175 @@ function setProfileValue(config2, profile, key, value) {
   throw usageError(`Unknown config key "${key}". Settable keys: ${SETTABLE_KEYS.join(", ")}`);
 }
 
-// src/core/exec.ts
-import { spawn } from "node:child_process";
-var exec = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
-  const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"], shell: false, env: opts.env ?? process.env });
-  let stdout = "";
-  let stderr = "";
-  const timer = opts.timeoutMs ? setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs) : void 0;
-  child.stdout.on("data", (d) => stdout += d);
-  child.stderr.on("data", (d) => stderr += d);
-  child.on("error", (err) => {
-    if (timer) clearTimeout(timer);
-    reject(err);
-  });
-  child.on("close", (code2) => {
-    if (timer) clearTimeout(timer);
-    resolve({ code: code2 ?? 1, stdout, stderr });
-  });
-  child.stdin.end(opts.input ?? "");
-});
+// src/core/setup/gcloud.ts
+function loginArgs(scopes) {
+  return ["auth", "application-default", "login", `--scopes=${scopes.join(",")}`];
+}
+function loginCommand(scopes) {
+  return `gcloud ${loginArgs(scopes).join(" ")}`;
+}
+var GCLOUD_INSTALL_URL = "https://cloud.google.com/sdk/docs/install";
+async function gcloudInstalled(exec2) {
+  try {
+    return (await exec2("gcloud", ["--version"], { timeoutMs: 3e4 })).code === 0;
+  } catch {
+    return false;
+  }
+}
+async function runLogin(exec2, scopes) {
+  const r = await exec2("gcloud", loginArgs(scopes), { interactive: true });
+  if (r.code !== 0) {
+    throw new AdmobctlError("AUTH_NO_CREDENTIALS", `The gcloud sign-in did not complete (exit code ${r.code}).`, {
+      fix: "admobctl setup login --yes"
+    });
+  }
+}
+
+// src/core/setup/steps.ts
+var profileNow = (ctx) => resolveProfile(loadConfig(ctx.svc.configDir), ctx.svc.profile.name);
+var quotaProjectNow = (ctx) => profileNow(ctx).quotaProject ?? ctx.svc.tokenProvider.quotaProject();
+function store(ctx, key, value) {
+  const cfg = loadConfig(ctx.svc.configDir);
+  setProfileValue(cfg, ctx.svc.profile.name, key, value);
+  saveConfig(ctx.svc.configDir, cfg);
+}
+async function planLogin(ctx, requested) {
+  let granted;
+  try {
+    granted = (await ctx.tokenInfo()).scopes;
+  } catch {
+    granted = void 0;
+  }
+  const features = mergeFeatures(["read"], profileNow(ctx).features ?? [], granted ? featuresFromScopes(granted) : [], requested);
+  const scopes = scopesFor(features);
+  if (granted && scopes.every((s) => granted.includes(s))) {
+    return { step: "login", status: "done", features, scopes, summary: [`Signed in with the scopes for: ${features.join(", ")}`] };
+  }
+  const how = ctx.svc.tokenProvider.mode === "oauth" ? `Sign in with your own OAuth client: admobctl auth login${features.includes("write") ? " --write" : ""}${features.includes("payments") ? " --payments" : ""}` : `Sign in with gcloud (it opens your browser): ${loginCommand(scopes)}`;
+  return {
+    step: "login",
+    status: "planned",
+    features,
+    scopes,
+    summary: [granted ? `Your sign-in lacks scopes for: ${features.filter((f) => !featuresFromScopes(granted).includes(f)).join(", ")}` : "Not signed in.", how],
+    next_command: `admobctl setup login${featuresFlag(features)} --yes`
+  };
+}
+async function applyLogin(ctx, plan) {
+  if (plan.status === "planned") {
+    if (ctx.svc.tokenProvider.mode === "oauth") {
+      if (!ctx.oauthLogin) throw usageError("OAuth sign-in is only available from the CLI: admobctl setup login --yes");
+      await ctx.oauthLogin({ write: plan.features.includes("write"), payments: plan.features.includes("payments") });
+    } else {
+      if (!ctx.isTTY) {
+        throw new AdmobctlError("USAGE", `The Google sign-in opens a browser, so it must run in a terminal. Run this in a terminal: ${loginCommand(plan.scopes)}`, {
+          fix: plan.next_command
+        });
+      }
+      if (!await gcloudInstalled(ctx.exec)) {
+        throw new AdmobctlError("AUTH_NO_CREDENTIALS", `The Google Cloud CLI (gcloud) is needed for the sign-in. Install it from ${GCLOUD_INSTALL_URL}, then run the fix.`, {
+          fix: plan.next_command
+        });
+      }
+      await runLogin(ctx.exec, plan.scopes);
+    }
+  }
+  store(ctx, "features", plan.features.join(","));
+  return { ...plan, status: plan.status === "planned" ? "applied" : plan.status };
+}
+async function planProject(ctx, id) {
+  const current = quotaProjectNow(ctx);
+  if (!id) {
+    if (current) return { step: "project", status: "done", project: current, summary: [`Quota project: ${current}`] };
+    const projects = await ctx.cloud.listProjects();
+    return {
+      step: "project",
+      status: "needs-input",
+      projects,
+      summary: projects.length ? ["Choose the Google Cloud project to use for API quota:", ...projects.slice(0, 10).map((p2) => `  ${p2.projectId}  (${p2.name})`)] : ["You have no Google Cloud project. Create one at https://console.cloud.google.com/projectcreate, then use its ID below."],
+      next_command: "admobctl setup project use <project-id> --yes"
+    };
+  }
+  if (id === current) return { step: "project", status: "done", project: id, summary: [`Quota project: ${id}`] };
+  const p = await ctx.cloud.getProject(id);
+  return {
+    step: "project",
+    status: "planned",
+    project: p.projectId,
+    summary: [`Use ${p.projectId} (${p.name}) as the quota project for this profile.`],
+    next_command: `admobctl setup project use ${p.projectId} --yes`
+  };
+}
+async function applyProject(ctx, plan) {
+  if (plan.status !== "planned" || !plan.project) return plan;
+  store(ctx, "quotaProject", plan.project);
+  return { ...plan, status: "applied" };
+}
+async function planApis(ctx, requested) {
+  const features = mergeFeatures(["read"], profileNow(ctx).features ?? [], requested);
+  const project = quotaProjectNow(ctx);
+  if (!project) {
+    return { step: "apis", status: "needs-input", services: [], summary: ["No quota project yet; choose one first."], next_command: "admobctl setup project list" };
+  }
+  const states = await ctx.cloud.serviceStates(project, apisFor(features));
+  const off = apisFor(features).filter((s) => states[s] !== "ENABLED");
+  if (!off.length) return { step: "apis", status: "done", project, services: [], summary: [`Enabled in ${project}: ${apisFor(features).join(", ")}`] };
+  return {
+    step: "apis",
+    status: "planned",
+    project,
+    services: off,
+    summary: [`Enable ${off.join(", ")} in ${project}.`],
+    next_command: `admobctl setup apis${featuresFlag(features)} --yes`
+  };
+}
+async function applyApis(ctx, plan) {
+  if (plan.status !== "planned" || !plan.project) return plan;
+  const entry = {
+    time: (/* @__PURE__ */ new Date()).toISOString(),
+    profile: ctx.svc.profile.name,
+    action: "Enable APIs",
+    method: "POST",
+    path: `projects/${plan.project}/services:batchEnable`,
+    body: { serviceIds: plan.services }
+  };
+  try {
+    await ctx.cloud.enableServices(plan.project, plan.services);
+  } catch (err) {
+    appendAudit(ctx.svc.configDir, { ...entry, ok: false, error: err.message });
+    throw err;
+  }
+  appendAudit(ctx.svc.configDir, { ...entry, ok: true });
+  return { ...plan, status: "applied", summary: [...plan.summary, "Enabled. Google may take a minute to apply it everywhere."] };
+}
+async function runSetup(ctx, o) {
+  const steps = [];
+  const stop = (s) => ({ steps: [...steps, s], ...s.next_command ? { next_command: s.next_command } : {} });
+  const login2 = await planLogin(ctx, o.features);
+  if (login2.status === "planned") {
+    if (!o.yes) return stop(login2);
+    if (!ctx.isTTY && ctx.svc.tokenProvider.mode === "adc") {
+      return stop({ ...login2, status: "needs-input", summary: [...login2.summary, "The sign-in opens a browser: run the command above in a terminal."] });
+    }
+  }
+  steps.push(o.yes ? await applyLogin(ctx, login2) : login2);
+  const project = await planProject(ctx, o.project);
+  if (project.status === "needs-input" || project.status === "planned" && !o.yes) return stop(project);
+  steps.push(await applyProject(ctx, project));
+  const apis = await planApis(ctx, login2.features);
+  if (apis.status === "needs-input" || apis.status === "planned" && !o.yes) return stop(apis);
+  steps.push(await applyApis(ctx, apis));
+  return { steps };
+}
+
+// src/core/auth/login.ts
+import { randomBytes as randomBytes2 } from "node:crypto";
 
 // src/core/auth/oauth.ts
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync as chmodSync3, existsSync as existsSync2, readFileSync as readFileSync2, renameSync as renameSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { chmodSync as chmodSync4, existsSync as existsSync2, readFileSync as readFileSync3, renameSync as renameSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
 import { createServer } from "node:http";
-import { join as join2 } from "node:path";
+import { join as join3 } from "node:path";
 var AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 var TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 var REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke";
@@ -11041,11 +11520,11 @@ var FileSecretStore = class {
   dir;
   file(profile) {
     if (!/^[A-Za-z0-9._-]+$/.test(profile)) throw new AdmobctlError("USAGE", `Invalid profile name "${profile}"`);
-    return join2(this.dir, `credentials-${profile}.json`);
+    return join3(this.dir, `credentials-${profile}.json`);
   }
   async get(profile) {
     const f = this.file(profile);
-    return existsSync2(f) ? readFileSync2(f, "utf8") : void 0;
+    return existsSync2(f) ? readFileSync3(f, "utf8") : void 0;
   }
   async set(profile, value) {
     ensurePrivateDir(this.dir);
@@ -11054,7 +11533,7 @@ var FileSecretStore = class {
     rmSync(tmp, { force: true });
     writeFileSync2(tmp, value, { mode: 384, flag: "wx" });
     renameSync2(tmp, file2);
-    chmodSync3(file2, 384);
+    chmodSync4(file2, 384);
   }
   async delete(profile) {
     rmSync(this.file(profile), { force: true });
@@ -12291,49 +12770,6 @@ async function checkAppAds(svc, opts) {
   return { account: account.name, publisherId: account.publisherId, expectedLine, apps: results, ...summarize(results, expectedLine) };
 }
 
-// src/core/audit.ts
-import { appendFileSync, chmodSync as chmodSync4, readFileSync as readFileSync3 } from "node:fs";
-import { join as join3 } from "node:path";
-function appendAudit(dir, entry) {
-  ensurePrivateDir(dir);
-  const file2 = join3(dir, "audit.log");
-  appendFileSync(file2, `${JSON.stringify(entry)}
-`, { mode: 384 });
-  chmodSync4(file2, 384);
-}
-function readAudit(dir, opts = {}) {
-  const file2 = join3(dir, "audit.log");
-  let text = "";
-  try {
-    text = readFileSync3(file2, "utf8");
-  } catch (err) {
-    if (err.code !== "ENOENT") {
-      throw new AdmobctlError("CONFIG", `Could not read ${file2}: ${err.message}`, {
-        fix: `ls -l ${file2}  # it must be a file you can read; move it aside to start a new log`,
-        cause: err
-      });
-    }
-  }
-  let skipped = 0;
-  let entries = [];
-  for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      const e = JSON.parse(line);
-      if (typeof e?.time !== "string" || typeof e.action !== "string" || typeof e.method !== "string" || typeof e.path !== "string") {
-        throw new Error("not an entry");
-      }
-      entries.push(e);
-    } catch {
-      skipped++;
-    }
-  }
-  entries.reverse();
-  if (opts.failed) entries = entries.filter((e) => !e.ok);
-  if (opts.last !== void 0) entries = entries.slice(0, opts.last);
-  return { file: file2, entries, skipped };
-}
-
 // src/core/check.ts
 var CHECK_DEFAULTS = { window: 1, baseline: 7, drop: 0.3, minRequests: 1e3 };
 var ZERO = { earnings: 0, requests: 0, matched: 0, impressions: 0 };
@@ -13297,14 +13733,14 @@ var AdcTokenProvider = class {
     const info = this.info();
     if (!info) {
       throw new AdmobctlError("AUTH_NO_CREDENTIALS", "No gcloud Application Default Credentials found.", {
-        fix: `${LOGIN_COMMAND}  (or: admobctl auth login --client-id <id>)`
+        fix: "admobctl setup login --yes"
       });
     }
     if (info.type && info.type !== "authorized_user") {
       throw new AdmobctlError(
         "AUTH_SERVICE_ACCOUNT",
         `Your Application Default Credentials are a ${info.type}; the AdMob API only accepts user credentials (service accounts are not supported).`,
-        { fix: `unset GOOGLE_APPLICATION_CREDENTIALS, then: ${LOGIN_COMMAND}` }
+        { fix: "admobctl setup login --yes  (after: unset GOOGLE_APPLICATION_CREDENTIALS)" }
       );
     }
     return info;
@@ -13319,16 +13755,16 @@ var AdcTokenProvider = class {
     } catch (err) {
       throw new AdmobctlError("AUTH_NO_CREDENTIALS", "Could not run gcloud (is the Google Cloud CLI installed and on PATH?).", {
         cause: err,
-        fix: "Install the Google Cloud CLI (https://cloud.google.com/sdk/docs/install), or use: admobctl auth login --client-id <id>"
+        fix: "admobctl setup login --yes"
       });
     }
     const token = res.stdout.trim();
     if (res.code !== 0 || !token) {
       const detail = res.stderr.trim().split("\n").pop() ?? "";
       if (/reauth|invalid_grant|refresh|expired/i.test(res.stderr)) {
-        throw new AdmobctlError("AUTH_TOKEN_EXPIRED", `gcloud could not refresh your credentials: ${detail}`, { fix: LOGIN_COMMAND });
+        throw new AdmobctlError("AUTH_TOKEN_EXPIRED", `gcloud could not refresh your credentials: ${detail}`, { fix: "admobctl setup login --yes" });
       }
-      throw new AdmobctlError("AUTH_NO_CREDENTIALS", `gcloud failed to print an access token: ${detail}`, { fix: LOGIN_COMMAND });
+      throw new AdmobctlError("AUTH_NO_CREDENTIALS", `gcloud failed to print an access token: ${detail}`, { fix: "admobctl setup login --yes" });
     }
     this.cached = { token, at: this.now() };
     return token;
@@ -13378,110 +13814,6 @@ function mergeCampaignChunks(chunks, dimensions) {
     if ("AVERAGE_CPI" in m) m.AVERAGE_CPI = m.INSTALLS ? Math.round((m.ESTIMATED_COST ?? 0) / m.INSTALLS) : 0;
   }
   return { rows, warnings: chunks.flatMap((c) => c.warnings) };
-}
-
-// src/core/http.ts
-var DEFAULT_TIMEOUT_MS = 3e4;
-var DEFAULT_MAX_RETRY_AFTER_MS = 6e4;
-function combineSignals(timeout, caller) {
-  if (!caller) return timeout;
-  if (typeof AbortSignal.any === "function") return AbortSignal.any([caller, timeout]);
-  const ctl = new AbortController();
-  const forward = (s) => {
-    if (s.aborted) ctl.abort(s.reason);
-    else s.addEventListener("abort", () => ctl.abort(s.reason), { once: true });
-  };
-  forward(caller);
-  forward(timeout);
-  return ctl.signal;
-}
-var defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
-function isRetryableStatus(status) {
-  return status === 429 || status >= 500;
-}
-function retryAfterMs(res) {
-  const h = res.headers.get("retry-after");
-  if (!h) return void 0;
-  const secs = Number(h);
-  if (Number.isFinite(secs)) return secs * 1e3;
-  const at = Date.parse(h);
-  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : void 0;
-}
-async function readBody(res) {
-  const text = await res.text();
-  if (!text) return void 0;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
-}
-async function attemptOnce(doFetch, url2, init, canRetry, backoff, maxRetryAfterMs) {
-  const res = await doFetch(url2, init);
-  if (res.ok) return { kind: "ok", status: res.status, body: await readBody(res) };
-  if (!isRetryableStatus(res.status)) return { kind: "fail", status: res.status, body: await readBody(res) };
-  const retryAfter = retryAfterMs(res);
-  if (!canRetry) return { kind: "fail", status: res.status, body: await readBody(res), retryAfterMs: retryAfter };
-  if (retryAfter !== void 0 && retryAfter > maxRetryAfterMs) {
-    log.debug(`HTTP ${res.status}; Retry-After ${retryAfter}ms exceeds cap ${maxRetryAfterMs}ms; not retrying`);
-    return { kind: "fail", status: res.status, body: await readBody(res), retryAfterMs: retryAfter };
-  }
-  await res.body?.cancel().catch(() => {
-  });
-  return { kind: "retry", status: res.status, wait: retryAfter ?? backoff };
-}
-async function requestJson(url2, init, opts = {}) {
-  const doFetch = opts.fetch ?? fetch;
-  const sleep = opts.sleep ?? defaultSleep;
-  const retries = opts.retries ?? 4;
-  const base = opts.baseDelayMs ?? 500;
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const maxRetryAfterMs = opts.maxRetryAfterMs ?? DEFAULT_MAX_RETRY_AFTER_MS;
-  for (let attempt = 0; ; attempt++) {
-    await opts.beforeAttempt?.();
-    const backoff = base * 2 ** attempt + Math.floor(Math.random() * base * 0.25);
-    const timer = new AbortController();
-    const timeoutId = setTimeout(
-      () => timer.abort(new Error(`Request timed out after ${timeoutMs}ms`)),
-      timeoutMs
-    );
-    let outcome;
-    const started = Date.now();
-    try {
-      const signal = combineSignals(timer.signal, init.signal);
-      outcome = await attemptOnce(doFetch, url2, { ...init, signal }, attempt < retries, backoff, maxRetryAfterMs);
-    } catch (err) {
-      if (init.signal?.aborted) throw err;
-      const timedOut = timer.signal.aborted;
-      const host = new URL(url2).host;
-      if (attempt >= retries) {
-        if (timedOut) {
-          throw new AdmobctlError(
-            "API_ERROR",
-            `Request to ${host} timed out after ${timeoutMs}ms (${attempt + 1} attempts).`,
-            { cause: err, fix: "Check your connection and retry." }
-          );
-        }
-        throw new AdmobctlError("API_ERROR", `Network error calling ${host}: ${err.message}`, {
-          cause: err,
-          fix: "Check your internet connection and retry."
-        });
-      }
-      log.debug(`${timedOut ? `timeout after ${timeoutMs}ms` : `network error (${err.message})`}; retrying in ${backoff}ms`);
-      await sleep(backoff);
-      continue;
-    } finally {
-      clearTimeout(timeoutId);
-    }
-    log.debug(`${init.method ?? "GET"} ${url2} \u2192 ${outcome.status} (${Date.now() - started}ms)`);
-    if (outcome.kind === "ok") return outcome.body;
-    if (outcome.kind === "fail") {
-      log.debug(`response: ${(typeof outcome.body === "string" ? outcome.body : JSON.stringify(outcome.body) ?? "").slice(0, 2e3)}`);
-      throw diagnoseApiError(outcome.status, outcome.body, { retryAfterMs: outcome.retryAfterMs });
-    }
-    log.debug(`HTTP ${outcome.status}; retrying in ${outcome.wait}ms`);
-    await sleep(outcome.wait);
-  }
 }
 
 // src/core/ratelimit.ts
@@ -13847,7 +14179,7 @@ var AdmobClient = class {
         throw new AdmobctlError("AUTH_SCOPE_MISSING", "Write commands need the admob.monetization scope, which your credentials do not include.", {
           status: err.status,
           cause: err,
-          fix: `${WRITE_LOGIN_COMMAND}  (or: admobctl auth login --write)`
+          fix: "admobctl setup login --features write --yes"
         });
       }
       throw err;
@@ -13909,12 +14241,7 @@ function paymentsError(err, publisherId) {
     case "AUTH_SCOPE_MISSING":
       return new AdmobctlError("AUTH_SCOPE_MISSING", "finance balance needs the adsense.readonly scope, which your credentials do not include.", {
         ...opts,
-        fix: `${PAYMENTS_LOGIN_COMMAND}  (add ,${MONETIZATION_SCOPE} to --scopes if you use the write commands; or: admobctl auth login --payments, plus --write if you use the write commands)`
-      });
-    case "API_NOT_ENABLED":
-      return new AdmobctlError("API_NOT_ENABLED", err.message, {
-        ...opts,
-        fix: `${err.fix}  (run it as a project owner: if gcloud is signed in as a service account, add --account <your Google account>; allow a minute to take effect)`
+        fix: "admobctl setup login --features payments --yes"
       });
     case "PERMISSION_DENIED":
     case "NOT_FOUND":
@@ -14813,6 +15140,34 @@ function reportView(r) {
   };
 }
 var ICONS = { ok: "\u2713", warn: "!", fail: "\u2717", skip: "-" };
+function setupStatusView(s) {
+  return { ...doctorView(s.checks), data: s };
+}
+function setupStepsView(r) {
+  return {
+    data: r,
+    table: {
+      columns: [
+        { key: "step", label: "Step" },
+        { key: "status", label: "Status" },
+        { key: "summary", label: "Details" }
+      ],
+      rows: r.steps.flatMap((s) => s.summary.map((line, i) => i === 0 ? { step: s.step, status: s.status, summary: line } : { step: "", status: "", summary: line }))
+    }
+  };
+}
+function projectsView(projects) {
+  return {
+    data: projects,
+    table: {
+      columns: [
+        { key: "projectId", label: "Project ID" },
+        { key: "name", label: "Name" }
+      ],
+      rows: projects.map((p) => ({ ...p }))
+    }
+  };
+}
 function doctorView(checks) {
   return {
     data: { ok: checks.every((c) => c.status !== "fail"), checks },
@@ -15359,8 +15714,7 @@ function buildProgram(io) {
   };
   const yesOption = () => new Option("--yes", "apply the change (without it, only print what would be sent)");
   program2.description("Fast CLI for the Google AdMob API (unofficial, not affiliated with Google)").version(VERSION, "-V, --version").addOption(new Option("-o, --output <format>", "output format (default: table on a TTY, json when piped)").choices(OUTPUT_FORMATS)).option("--profile <name>", "config profile to use").option("--account <pub-id>", "AdMob publisher ID (pub-\u2026)").option("-v, --verbose", "debug logging to stderr").hook("preAction", (cmd) => log.setVerbose(Boolean(cmd.opts().verbose))).showHelpAfterError("(run with --help for usage)").configureOutput({ writeOut: io.stdout, writeErr: io.stderr }).exitOverride();
-  const auth = program2.command("auth").description("Authenticate and diagnose credentials");
-  auth.command("login").description("Sign in with your own OAuth client (Desktop app) instead of gcloud ADC").option("--client-id <id>", "OAuth client ID (Desktop app) from Google Cloud Console").option("--client-secret <secret>", "OAuth client secret (or env ADMOBCTL_OAUTH_CLIENT_SECRET)").option("--write", "also grant admob.monetization, needed by the write commands (create, mediation changes)").option("--payments", "also grant adsense.readonly, needed by finance balance").action(async (o, cmd) => {
+  const oauthSignIn = async (cmd, o) => {
     const profileName = g(cmd).profile ?? loadConfig(dir()).defaultProfile ?? "default";
     const clientId = o.clientId ?? resolveProfile(loadConfig(dir()), g(cmd).profile).oauthClientId;
     if (!clientId) {
@@ -15379,9 +15733,43 @@ function buildProgram(io) {
       write: o.write,
       payments: o.payments
     });
-    io.stderr(`Signed in. Profile "${r.profile}" now uses admobctl OAuth. Run: admobctl auth doctor
+    io.stderr(`Signed in. Profile "${r.profile}" now uses admobctl OAuth. Run: admobctl setup status
 `);
-  });
+  };
+  const setupCtx = (cmd) => {
+    const s = svc(cmd);
+    const tp = s.tokenProvider;
+    return {
+      svc: s,
+      cloud: new CloudClient({ getToken: () => tp.getToken(), fetch: io.service?.fetch, sleep: io.service?.sleep }),
+      exec: io.service?.exec ?? exec,
+      isTTY: io.isTTY,
+      tokenInfo: async () => fetchTokenInfo(await tp.getToken(), io.service?.fetch),
+      oauthLogin: (o) => oauthSignIn(cmd, o)
+    };
+  };
+  const emitSetup = (cmd, r) => {
+    emit(cmd, setupStepsView(r));
+    const last = r.steps[r.steps.length - 1];
+    if (last?.status === "planned") io.stderr("Dry run: nothing changed.\n");
+    if (r.next_command) io.stderr(`Next: ${r.next_command}
+`);
+    else if (r.steps.every((x) => x.status === "done" || x.status === "applied")) io.stderr("Setup steps complete. Check everything with: admobctl setup status\n");
+  };
+  const runStep = async (cmd, plan, yes, apply) => {
+    const r = yes ? await apply(plan) : plan;
+    const pending = r.status === "planned" || r.status === "needs-input";
+    emitSetup(cmd, { steps: [r], ...pending && r.next_command ? { next_command: r.next_command } : {} });
+  };
+  const emitStatus = async (cmd) => {
+    const st = await setupStatus(svc(cmd), { fetch: io.service?.fetch });
+    emit(cmd, setupStatusView(st));
+    if (st.next_command) io.stderr(`Next: ${st.next_command}
+`);
+    if (!st.ok) process.exitCode = 1;
+  };
+  const auth = program2.command("auth").description("Authenticate and diagnose credentials");
+  auth.command("login").description("Sign in with your own OAuth client (Desktop app) instead of gcloud ADC").option("--client-id <id>", "OAuth client ID (Desktop app) from Google Cloud Console").option("--client-secret <secret>", "OAuth client secret (or env ADMOBCTL_OAUTH_CLIENT_SECRET)").option("--write", "also grant admob.monetization, needed by the write commands (create, mediation changes)").option("--payments", "also grant adsense.readonly, needed by finance balance").action(async (o, cmd) => oauthSignIn(cmd, o));
   auth.command("logout").description("Forget the saved OAuth login and go back to gcloud ADC").action(async (_o, cmd) => {
     const profileName = g(cmd).profile ?? loadConfig(dir()).defaultProfile ?? "default";
     await logout({ configDir: dir(), profile: profileName, store: defaultSecretStore(dir(), io.service?.exec), fetch: io.service?.fetch });
@@ -15406,22 +15794,28 @@ function buildProgram(io) {
     }
     emit(cmd, keyValueView(info));
   });
-  auth.command("doctor").description("Diagnose common setup problems and print the exact fix").action(async (_o, cmd) => {
-    const s = svc(cmd);
-    const tp = s.tokenProvider;
-    const checks = await runDoctor({
-      mode: tp.mode,
-      checkCredentials: () => tp.checkCredentials?.(),
-      getToken: () => tp.getToken(),
-      tokenInfo: (t) => fetchTokenInfo(t, io.service?.fetch),
-      quotaProject: s.profile.quotaProject ?? tp.quotaProject(),
-      listAccounts: () => s.listAccounts(),
-      account: () => s.account(),
-      listApps: () => s.apps(),
-      betaProbes: { "ad sources": () => s.adSources(), "mediation groups": () => s.mediationGroups() }
-    });
-    emit(cmd, doctorView(checks));
-    if (checks.some((c) => c.status === "fail")) process.exitCode = 1;
+  auth.command("doctor").description("Diagnose setup problems and print the exact admobctl command that fixes each (same as setup status)").action(async (_o, cmd) => emitStatus(cmd));
+  const setupOpts = (cmd) => cmd.optsWithGlobals();
+  const featuresOption = () => new Option("--features <list>", "extra features: write (write commands), payments (finance balance); read is always on");
+  const setup = program2.command("setup").description("Set up admobctl step by step: sign-in, Cloud project, APIs. Prints the one next command when it needs you").addOption(featuresOption()).option("--project <id>", "Google Cloud project to use for API quota").addOption(yesOption()).action(
+    async (o, cmd) => emitSetup(cmd, await runSetup(setupCtx(cmd), { features: parseFeatures(o.features), project: o.project, yes: !!o.yes }))
+  );
+  setup.command("status").description("Every setup check, with the admobctl command that fixes each gap; exits 1 on a failure").action(async (_o, cmd) => emitStatus(cmd));
+  setup.command("login").description("Sign in with the scopes your features need (gcloud opens the browser); keeps scopes you already have").addOption(featuresOption()).addOption(yesOption()).action(async (_o, cmd) => {
+    const ctx = setupCtx(cmd);
+    const o = setupOpts(cmd);
+    await runStep(cmd, await planLogin(ctx, parseFeatures(o.features)), o.yes, (p) => applyLogin(ctx, p));
+  });
+  const project = setup.command("project").description("The Google Cloud project used for API quota");
+  project.command("list").description("Google Cloud projects you can use").action(async (_o, cmd) => emit(cmd, projectsView(await setupCtx(cmd).cloud.listProjects())));
+  project.command("use <id>").description("Use this project for API quota (stored in the profile)").addOption(yesOption()).action(async (id, _o, cmd) => {
+    const ctx = setupCtx(cmd);
+    await runStep(cmd, await planProject(ctx, id), setupOpts(cmd).yes, (p) => applyProject(ctx, p));
+  });
+  setup.command("apis").description("Enable the Google APIs your features need in the quota project").addOption(featuresOption()).addOption(yesOption()).action(async (_o, cmd) => {
+    const ctx = setupCtx(cmd);
+    const o = setupOpts(cmd);
+    await runStep(cmd, await planApis(ctx, parseFeatures(o.features)), o.yes, (p) => applyApis(ctx, p));
   });
   program2.command("accounts").description("AdMob publisher accounts").command("list").description("List accessible publisher accounts").action(async (_o, cmd) => emit(cmd, accountsView(await svc(cmd).listAccounts())));
   const apps = program2.command("apps").description("Apps in the account");
@@ -21942,7 +22336,7 @@ var $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
       inst._zod.run = inst._zod.parse;
     });
   } else {
-    const runChecks = (payload, checks2, ctx) => {
+    const runChecks2 = (payload, checks2, ctx) => {
       if (payload.memo)
         return payload;
       let isAborted2 = aborted(payload);
@@ -21993,7 +22387,7 @@ var $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
         canary.aborted = true;
         return canary;
       }
-      const checkResult = runChecks(payload, checks, ctx);
+      const checkResult = runChecks2(payload, checks, ctx);
       if (checkResult instanceof Promise) {
         if (ctx.async === false)
           throw new $ZodAsyncError();
@@ -22018,9 +22412,9 @@ var $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
       if (result instanceof Promise) {
         if (ctx.async === false)
           throw new $ZodAsyncError();
-        return result.then((result2) => runChecks(result2, checks, ctx));
+        return result.then((result2) => runChecks2(result2, checks, ctx));
       }
-      return runChecks(result, checks, ctx);
+      return runChecks2(result, checks, ctx);
     };
   }
 }, {
@@ -44995,7 +45389,10 @@ var INSTRUCTIONS = `Read-only access to the user's Google AdMob account via admo
   these to allowlisted accounts; a "v1beta" permission error is not a setup mistake, so pass its Fix line on and move on.
 - These tools never change anything. Changes (creating apps, ad units or mappings; editing mediation groups; A/B
   experiments) exist only as admobctl CLI commands, which print a plan and send nothing unless the user adds --yes.
-- Errors include a "Fix:" line with the exact command the user should run.`;
+- Errors include a "Fix:" line with the exact command the user should run.
+- For any sign-in, scope, quota project or API error, call admobctl_setup_status and run its next_command (an admobctl
+  command) in the terminal exactly as given. Never improvise gcloud commands. Commands with --yes change the user's setup:
+  show them first. The browser sign-in (admobctl setup login --yes) must run in the user's own terminal.`;
 var annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 var appArg = { app: external_exports.string().optional().describe("Only this app (alias, app ID or name)") };
 var accountArg = { account: external_exports.string().optional().describe("Publisher ID (pub-\u2026). Defaults to the configured or only account.") };
@@ -45236,6 +45633,20 @@ function createMcpServer(deps) {
       annotations
     },
     wrap(async (a) => ({ ...await financeForecast(svc(a), a.month) }))
+  );
+  server.registerTool(
+    "admobctl_setup_status",
+    {
+      title: "admobctl setup status",
+      description: "Checks the admobctl setup (credentials, scopes per feature, quota project, enabled APIs, AdMob account, app review, v1beta access). Each failing check has fix_command, a runnable admobctl command; next_command is the one to run first. Read-only: run the commands in the CLI.",
+      inputSchema: { ...accountArg },
+      outputSchema: loose({ ok: external_exports.boolean(), checks: external_exports.array(anyRecord), next_command: external_exports.string().optional() }),
+      annotations
+    },
+    wrap(async (a) => {
+      const s = svc(a);
+      return { ...await setupStatus(s, { fetch: s.fetch }) };
+    })
   );
   server.registerTool(
     "admobctl_finance_balance",

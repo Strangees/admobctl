@@ -769,6 +769,57 @@
       }
     },
     {
+      "name": "admobctl_setup_status",
+      "title": "admobctl setup status",
+      "description": "Checks the admobctl setup (credentials, scopes per feature, quota project, enabled APIs, AdMob account, app review, v1beta access). Each failing check has fix_command, a runnable admobctl command; next_command is the one to run first. Read-only: run the commands in the CLI.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "description": "Publisher ID (pub-…). Defaults to the configured or only account.",
+            "type": "string"
+          }
+        },
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "next_command": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "checks"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
       "name": "admobctl_finance_balance",
       "title": "AdMob unpaid balance",
       "description": "Current unpaid balance Google will pay out (AdSense Management API; includes AdMob earnings), in the account's payment currency. Not a monthly figure and not payment history. Needs a one-time extra sign-in scope; if it fails, pass the Fix line on.",

@@ -88,6 +88,9 @@ it.skipIf(!process.env.GEN_MOCKS)("generate eval mocks", async () => {
     "GET /v1/accounts?": () => jsonResponse(fixture("accounts.json")),
     "GET /apps": (c) => jsonResponse(fixture(c.url.includes("pageToken=page2") ? "apps-page2.json" : "apps-page1.json")),
     "GET /v2/accounts/": () => jsonResponse(fixture("adsense-payments.json")),
+    "POST /tokeninfo": () =>
+      jsonResponse({ scope: "https://www.googleapis.com/auth/admob.readonly https://www.googleapis.com/auth/cloud-platform", expires_in: "3000" }),
+    "GET serviceusage.googleapis.com/v1/projects/": () => jsonResponse({ state: "ENABLED" }),
     "GET /adUnits": () => jsonResponse(fixture("ad-units.json")),
     "POST /networkReport:generate": (c: RecordedCall) => {
       const spec = (c.body as { reportSpec: { dimensions: string[]; dateRange: { startDate: { month: number } } } }).reportSpec;
@@ -134,6 +137,7 @@ it.skipIf(!process.env.GEN_MOCKS)("generate eval mocks", async () => {
     admobctl_finance_export: { month: "2026-09" },
     admobctl_finance_forecast: {},
     admobctl_finance_balance: {},
+    admobctl_setup_status: {},
     admobctl_insights: { last_days: 30, by: "ad-unit" },
     admobctl_check: {},
     admobctl_lint: {},

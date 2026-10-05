@@ -7,6 +7,7 @@ import { check } from "../core/check.js";
 import { AdmobctlError } from "../core/errors.js";
 import { financeForecast, financeMonth, financeRange, JOURNAL_COLUMNS, journalRows } from "../core/finance.js";
 import { financeBalance } from "../core/payments.js";
+import { setupStatus } from "../core/setup/status.js";
 import { exportJournal } from "../core/journal.js";
 import { analyzeGeo } from "../core/geo.js";
 import { INSIGHT_DIMENSIONS, insights } from "../core/insights.js";
@@ -49,7 +50,10 @@ const INSTRUCTIONS = `Read-only access to the user's Google AdMob account via ad
   these to allowlisted accounts; a "v1beta" permission error is not a setup mistake, so pass its Fix line on and move on.
 - These tools never change anything. Changes (creating apps, ad units or mappings; editing mediation groups; A/B
   experiments) exist only as admobctl CLI commands, which print a plan and send nothing unless the user adds --yes.
-- Errors include a "Fix:" line with the exact command the user should run.`;
+- Errors include a "Fix:" line with the exact command the user should run.
+- For any sign-in, scope, quota project or API error, call admobctl_setup_status and run its next_command (an admobctl
+  command) in the terminal exactly as given. Never improvise gcloud commands. Commands with --yes change the user's setup:
+  show them first. The browser sign-in (admobctl setup login --yes) must run in the user's own terminal.`;
 
 const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } as const;
 
@@ -345,6 +349,22 @@ export function createMcpServer(deps: McpDeps): McpServer {
       annotations,
     },
     wrap(async (a: { month?: string; account?: string }) => ({ ...(await financeForecast(svc(a), a.month)) })),
+  );
+
+  server.registerTool(
+    "admobctl_setup_status",
+    {
+      title: "admobctl setup status",
+      description:
+        "Checks the admobctl setup (credentials, scopes per feature, quota project, enabled APIs, AdMob account, app review, v1beta access). Each failing check has fix_command, a runnable admobctl command; next_command is the one to run first. Read-only: run the commands in the CLI.",
+      inputSchema: { ...accountArg },
+      outputSchema: loose({ ok: z.boolean(), checks: z.array(anyRecord), next_command: z.string().optional() }),
+      annotations,
+    },
+    wrap(async (a: { account?: string }) => {
+      const s = svc(a);
+      return { ...(await setupStatus(s, { fetch: s.fetch })) };
+    }),
   );
 
   server.registerTool(

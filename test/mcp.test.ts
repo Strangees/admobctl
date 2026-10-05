@@ -91,6 +91,7 @@ describe("mcp server", () => {
         "admobctl_list_apps",
         "admobctl_mediation_report",
         "admobctl_network_report",
+        "admobctl_setup_status",
       ].sort(),
     );
     for (const t of tools) {
@@ -114,6 +115,18 @@ describe("mcp server", () => {
     const sc = r.structuredContent as { problems: number; apps: Array<{ status: string; websiteSource: string }> };
     expect(sc.problems).toBe(0);
     expect(sc.apps).toEqual([expect.objectContaining({ status: "ok", websiteSource: "flag" })]);
+  });
+
+  it("reports setup checks with fix_command and next_command", async () => {
+    const { client } = await connect({
+      "POST /tokeninfo": () => jsonResponse({ scope: "https://www.googleapis.com/auth/admob.readonly https://www.googleapis.com/auth/cloud-platform" }),
+      "GET serviceusage.googleapis.com/v1/projects/": () => jsonResponse({ state: "DISABLED" }),
+      "GET /adSources": () => jsonResponse(fixture("ad-sources.json")),
+      "GET /mediationGroups": () => jsonResponse(fixture("mediation-groups.json")),
+    });
+    const r = (await client.callTool({ name: "admobctl_setup_status", arguments: {} })) as ToolResult;
+    expect(r.isError).toBeFalsy();
+    expect(r.structuredContent).toMatchObject({ ok: false, next_command: "admobctl setup apis --yes" });
   });
 
   it("returns the unpaid balance from admobctl_finance_balance", async () => {
