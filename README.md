@@ -45,6 +45,25 @@ admobctl auth login --client-id <id> --client-secret <secret>
 
 The refresh token is stored in the macOS Keychain (on other OSes, a `0600` file in `~/.admobctl/`). `admobctl auth logout` revokes it.
 
+### Optional: unpaid balance (`finance balance`)
+
+`finance balance` reads your current unpaid balance from the AdSense Management API, which serves the Google payments
+account that AdMob pays out from. It needs one extra scope and API; everything else works without them.
+
+```bash
+# 1. Sign in again with the adsense.readonly scope (keep admob.monetization only if you use the write commands)
+gcloud auth application-default login \
+  --scopes=https://www.googleapis.com/auth/admob.readonly,https://www.googleapis.com/auth/admob.monetization,https://www.googleapis.com/auth/adsense.readonly,https://www.googleapis.com/auth/cloud-platform
+# 2. Enable the AdSense API in your quota project, as a project owner
+#    (add --account <your Google account> if gcloud is signed in as a service account)
+gcloud services enable adsense.googleapis.com --project <PROJECT_ID>
+# 3. Check
+admobctl finance balance
+```
+
+With your own OAuth client, use `admobctl auth login --payments` (combine with `--write` if needed) instead of step 1.
+`auth doctor` shows whether the scope is granted.
+
 ## Usage
 
 ```bash
@@ -60,6 +79,7 @@ admobctl finance month 2026-09                       # per app + total
 admobctl finance month 2026-09 --as journal          # paste-ready journal rows (TSV)
 admobctl finance range --from 2026-01 --to 2026-09
 admobctl finance forecast                             # this month so far + month-end projection
+admobctl finance balance                              # current unpaid balance (optional setup below)
 admobctl finance export --month 2026-09               # Revenue Journal JSON for accounting imports
 admobctl finance export --from 2026-01 --to 2026-09 --as revenue-journal-csv
 
@@ -93,7 +113,7 @@ Dates are `YYYY-MM` (whole month) or `YYYY-MM-DD`. Dimensions and metrics accept
 (`app`, `ad-unit`, `country`, `format`, `platform`, `date`, `month`; `earnings`, `requests`, `impressions`,
 `match-rate`, `show-rate`, `ctr`, `rpm`, `ecpm`).
 
-All earnings are **estimates**. Reconcile them against AdMob Payments, because the API does not expose finalized earnings.
+All earnings are **estimates**. Reconcile them against AdMob Payments, because the API does not expose finalized earnings. `finance balance` shows the current unpaid balance; payment history is not available from any API.
 
 ### Finance
 
@@ -188,7 +208,7 @@ The MCP server stays read-only: no write is exposed as an MCP tool.
 
 ## MCP server
 
-`admobctl mcp` serves read-only tools over stdio: `admobctl_list_accounts`, `admobctl_list_apps`, `admobctl_list_ad_units`, `admobctl_network_report`, `admobctl_mediation_report`, `admobctl_finance_month`, `admobctl_finance_range`, `admobctl_finance_export`, `admobctl_finance_forecast`, `admobctl_insights`, `admobctl_check`, `admobctl_lint`, `admobctl_analyze_versions`, `admobctl_analyze_consent`, `admobctl_analyze_waterfall`, `admobctl_analyze_geo`, `admobctl_analyze_trend`, `admobctl_campaign_report`, `admobctl_list_ad_sources`, `admobctl_list_adapters`, `admobctl_list_mediation_groups`, `admobctl_list_ad_unit_mappings` and `admobctl_check_app_ads`. Reports default to 200 rows and are trimmed with a notice to stay within roughly 25k tokens.
+`admobctl mcp` serves read-only tools over stdio: `admobctl_list_accounts`, `admobctl_list_apps`, `admobctl_list_ad_units`, `admobctl_network_report`, `admobctl_mediation_report`, `admobctl_finance_month`, `admobctl_finance_range`, `admobctl_finance_export`, `admobctl_finance_forecast`, `admobctl_finance_balance`, `admobctl_insights`, `admobctl_check`, `admobctl_lint`, `admobctl_analyze_versions`, `admobctl_analyze_consent`, `admobctl_analyze_waterfall`, `admobctl_analyze_geo`, `admobctl_analyze_trend`, `admobctl_campaign_report`, `admobctl_list_ad_sources`, `admobctl_list_adapters`, `admobctl_list_mediation_groups`, `admobctl_list_ad_unit_mappings` and `admobctl_check_app_ads`. Reports default to 200 rows and are trimmed with a notice to stay within roughly 25k tokens.
 
 ## Agent plugin (Claude Code and Codex)
 

@@ -9,7 +9,7 @@ Global flags (any command): `-o json|table|csv|markdown` (default: table on a TT
 |---|---|
 | `admobctl auth doctor` | Checks credentials → token → scope → quota project → API → account → apps (warns about apps marked action required) → beta (which v1beta reads the account can use; warning only); prints `fix:` for each failure. Exit 1 if any check fails. |
 | `admobctl auth status` | Active mode (adc/oauth), quota project, scopes, account |
-| `admobctl auth login --client-id <id> --client-secret <s> [--write]` | Own Desktop OAuth client; refresh token goes to the macOS Keychain. Switches the profile to `oauth`. `--write` also grants admob.monetization. |
+| `admobctl auth login --client-id <id> --client-secret <s> [--write]` | Own Desktop OAuth client; refresh token goes to the macOS Keychain. Switches the profile to `oauth`. `--write` also grants admob.monetization; `--payments` grants adsense.readonly (for `finance balance`). |
 | `admobctl auth logout` | Revoke and forget the OAuth login; back to gcloud ADC |
 
 gcloud ADC setup (the default):
@@ -104,6 +104,7 @@ admobctl report campaign --from YYYY-MM[-DD] [--to …] [--by campaign,country] 
 admobctl finance month YYYY-MM [--as summary|journal|csv|json]
 admobctl finance range --from YYYY-MM --to YYYY-MM [--as …]
 admobctl finance forecast [YYYY-MM]                    # month to date + month-end projection (default: this month)
+admobctl finance balance [--as summary|csv|json]       # current unpaid balance (AdSense Management API)
 admobctl finance export (--month YYYY-MM | --from YYYY-MM --to YYYY-MM) [--as revenue-journal-json|revenue-journal-csv]
                         [--integer-amounts [--scale 0-6]] [--out file]   # Revenue Journal (spec/SPEC.md)
 ```
@@ -113,6 +114,9 @@ admobctl finance export (--month YYYY-MM | --from YYYY-MM --to YYYY-MM) [--as re
 - `forecast`: per app `month_to_date` and `projected` (the daily average of the month's complete days carried to
   month-end), plus `days_elapsed`, `days_in_month`, `daily_average`. `projection: false` for a month that has ended.
   Pacing only, never a booking figure. Takes `--as summary|csv|json`.
+- `balance`: `account`, `currency`, `unpaid` (+ `unpaidMicros`) from the AdSense Management API; it includes AdMob
+  earnings. Not a monthly figure, and no payment history (the API leaves out AdMob payouts). Needs the
+  adsense.readonly scope and `adsense.googleapis.com` enabled in the quota project; errors carry the exact fix.
 - `--as journal` prints tab-separated Bilagsjournal rows (Bilag, Dato, Kilde, Beskrivelse, Konto, Kontonavn,
   Debet, Kredit, MVA-behandling, Motpart, Status, Merknad), dated at month-end: debit the receivable (default 1509),
   credit revenue (default 3120) per app.
@@ -201,7 +205,7 @@ admobctl analyze trend     [--by total|app|format|country|platform] [--app <alia
 ## MCP tools (`admobctl mcp`)
 
 admobctl_list_accounts, admobctl_list_apps, admobctl_list_ad_units, admobctl_network_report,
-admobctl_mediation_report, admobctl_finance_month, admobctl_finance_range, admobctl_finance_export, admobctl_finance_forecast,
+admobctl_mediation_report, admobctl_finance_month, admobctl_finance_range, admobctl_finance_export, admobctl_finance_forecast, admobctl_finance_balance,
 admobctl_insights, admobctl_check, admobctl_lint,
 admobctl_analyze_versions, admobctl_analyze_consent, admobctl_analyze_waterfall, admobctl_analyze_geo, admobctl_analyze_trend (`include_days` for the daily rows), admobctl_campaign_report,
 admobctl_list_ad_sources, admobctl_list_adapters (`ad_source`), admobctl_list_mediation_groups,

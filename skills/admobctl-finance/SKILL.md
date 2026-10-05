@@ -25,6 +25,13 @@ For "how is this month going" or "what will this month end at", call `admobctl_f
 `admobctl finance forecast`). Report `month_to_date` as the estimate so far and `projected` as a projection, with the
 days it is based on (`days_elapsed` of `days_in_month`). Never put the projection in journal rows or call it earnings.
 
+## Current balance
+
+For "what is my balance" or "what will Google pay me", call `admobctl_finance_balance` (CLI: `admobctl finance
+balance`). `unpaid` is the balance in the payments currency and includes AdMob earnings. It is not a month's earnings,
+so never book it as one. Payment history is not available from any API: send the user to AdMob → Payments for it. The
+tool needs a one-time extra scope; if it fails, pass its Fix line on.
+
 ## A file for an accounting import
 
 When the user wants a file their accounting system can import (not rows to paste), call `admobctl_finance_export` with

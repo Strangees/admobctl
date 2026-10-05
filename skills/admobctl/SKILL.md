@@ -14,6 +14,7 @@ Read-only access to the user's AdMob account through the `admobctl` MCP tools (p
 | Earnings for a month, per app, for bookkeeping | `admobctl_finance_month` (then follow admobctl-finance) | `admobctl finance month YYYY-MM` |
 | Earnings over several months / year to date | `admobctl_finance_range` | `admobctl finance range --from … --to …` |
 | How is this month pacing, where will it end | `admobctl_finance_forecast` | `admobctl finance forecast` |
+| What is my balance, what will Google pay me | `admobctl_finance_balance` | `admobctl finance balance` |
 | A file for an accounting import (Revenue Journal JSON/CSV) | `admobctl_finance_export` | `admobctl finance export --month YYYY-MM` |
 | Is everything OK, did revenue or fill drop since yesterday | `admobctl_check` | `admobctl check` (exits 1 on a drop) |
 | Is the setup sound: unused ad units, broken mediation groups, apps needing action | `admobctl_lint` | `admobctl lint` (exits 1 on a problem) |
