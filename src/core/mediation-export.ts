@@ -1,4 +1,4 @@
-import type { MediationGroup } from "./client.js";
+import type { AdSource, MediationGroup } from "./client.js";
 import { usageError } from "./errors.js";
 import type { AdmobService } from "./service.js";
 
@@ -15,9 +15,14 @@ export interface ExportGroupsOptions {
 
 const ADMOB_NETWORK = "admob network";
 
+/** IDs of the ad sources titled "AdMob Network" (a new mediation group gets that line on its own). */
+export function admobNetworkSourceIds(sources: AdSource[]): Set<string> {
+  return new Set(sources.filter((s) => s.title.trim().toLowerCase() === ADMOB_NETWORK).map((s) => s.adSourceId));
+}
+
 export async function exportMediationGroups(svc: AdmobService, opts: ExportGroupsOptions = {}): Promise<{ groups: unknown[]; notes: string[] }> {
   if (opts.name !== undefined && !opts.group) throw usageError("--name needs a group: it renames one exported copy.");
-  const [all, sources] = await Promise.all([svc.rawMediationGroups(), svc.adSources().catch(() => [])]);
+  const [all, sources] = await Promise.all([svc.rawMediationGroups(), svc.adSources().catch((): AdSource[] | null => null)]);
   let picked = all;
   if (opts.group) {
     const q = opts.group.trim().toLowerCase();
@@ -25,9 +30,9 @@ export async function exportMediationGroups(svc: AdmobService, opts: ExportGroup
     if (!picked.length) throw usageError(`Unknown mediation group "${opts.group}". Groups: ${all.map((g) => g.displayName).join(", ") || "(none)"}`);
     if (picked.length > 1) throw usageError(`Mediation group name "${opts.group}" is ambiguous; use the ID: ${picked.map((g) => g.mediationGroupId).join(", ")}`);
   }
-  const admob = new Set(sources.filter((s) => s.title.trim().toLowerCase() === ADMOB_NETWORK).map((s) => s.adSourceId));
+  const admob = admobNetworkSourceIds(sources ?? []);
   const notes: string[] = [];
-  let droppedAdmob = 0;
+  let droppedAdmob = 0; // groups, not lines
 
   const groups = picked.map((g: MediationGroup) => {
     const lines = Object.values(g.mediationGroupLines ?? {}).filter((l) => l.state !== "REMOVED");
@@ -35,14 +40,8 @@ export async function exportMediationGroups(svc: AdmobService, opts: ExportGroup
     if (treatment.length) {
       notes.push(`${g.displayName} has a running A/B experiment; its ${treatment.length} treatment ${treatment.length === 1 ? "line" : "lines"} (variant B) ${treatment.length === 1 ? "was" : "were"} left out.`);
     }
-    const kept = lines.filter((l) => {
-      if (l.experimentVariant === "VARIANT_B") return false;
-      if (!opts.admobLine && admob.has(l.adSourceId)) {
-        droppedAdmob++;
-        return false;
-      }
-      return true;
-    });
+    const kept = lines.filter((l) => l.experimentVariant !== "VARIANT_B" && (opts.admobLine || !admob.has(l.adSourceId)));
+    if (kept.length < lines.length - treatment.length) droppedAdmob++;
     // New lines are keyed by distinct negative placeholders; IDs and output-only fields are dropped.
     const exported: Record<string, Record<string, unknown>> = {};
     kept.forEach((l, i) => {
@@ -64,8 +63,10 @@ export async function exportMediationGroups(svc: AdmobService, opts: ExportGroup
 
   if (droppedAdmob) {
     notes.push(`The AdMob Network line of ${droppedAdmob === 1 ? "1 group" : `${droppedAdmob} groups`} was left out: a new group gets its own. Pass --with-admob-line to keep it.`);
-  } else if (!opts.admobLine && !admob.size) {
+  } else if (!opts.admobLine && !sources) {
     notes.push("Ad sources could not be read, so the AdMob Network line could not be recognised and every line was kept.");
+  } else if (!opts.admobLine && !admob.size) {
+    notes.push('No ad source is titled "AdMob Network", so that line could not be recognised and every line was kept.');
   }
   notes.push("To create a copy: edit displayName (it must be unique), targeting.adUnitIds and each line's adUnitMappings for the target ad units, then admobctl mediation-groups create --file <file>.");
   return { groups, notes };

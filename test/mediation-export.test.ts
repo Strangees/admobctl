@@ -12,13 +12,20 @@ import { fakeFetch, fixture, jsonResponse, noSleep } from "./helpers.js";
 const token: TokenProvider = { mode: "adc", getToken: async () => "t", quotaProject: () => "qp" };
 const UNIT = "ca-app-pub-0000000000000001/9000000001";
 
-function setup() {
+type Groups = { mediationGroups: Array<{ displayName: string; mediationGroupLines: Record<string, Record<string, unknown>> }> };
+type Sources = { adSources: Array<{ title: string }> };
+
+function setup(opts: { groups?: (g: Groups) => unknown; sources?: (s: Sources) => unknown; sourcesDenied?: boolean } = {}) {
   const f = fakeFetch({
     "GET /v1/accounts?": () => jsonResponse(fixture("accounts.json")),
     "GET /apps": (c) => jsonResponse(fixture(c.url.includes("pageToken=page2") ? "apps-page2.json" : "apps-page1.json")),
     "GET /adUnits": () => jsonResponse(fixture("ad-units.json")),
-    "GET /v1beta/accounts/pub-0000000000000001/adSources?": () => jsonResponse(fixture("ad-sources.json")),
-    "GET /v1beta/accounts/pub-0000000000000001/mediationGroups": () => jsonResponse(fixture("mediation-groups.json")),
+    "GET /v1beta/accounts/pub-0000000000000001/adSources?": () =>
+      opts.sourcesDenied
+        ? jsonResponse({ error: { code: 403, message: "The caller does not have permission", status: "PERMISSION_DENIED" } }, 403)
+        : jsonResponse(opts.sources ? opts.sources(fixture<Sources>("ad-sources.json")) : fixture("ad-sources.json")),
+    "GET /v1beta/accounts/pub-0000000000000001/mediationGroups": () =>
+      jsonResponse(opts.groups ? opts.groups(fixture<Groups>("mediation-groups.json")) : fixture("mediation-groups.json")),
   });
   const dir = mkdtempSync(join(tmpdir(), "admobctl-export-"));
   const deps = { configDir: dir, tokenProvider: token, fetch: f.fetch, sleep: noSleep, now: () => new Date("2026-10-02T08:00:00Z") };
@@ -65,6 +72,37 @@ describe("exportMediationGroups", () => {
     const g = groups[0] as { displayName: string; mediationGroupLines: Record<string, { displayName: string }> };
     expect(g.displayName).toBe("Banners (copy)");
     expect(Object.values(g.mediationGroupLines).map((l) => l.displayName)).toEqual(["AdMob Network", "Bidder floor 1", "Waterfall 3.00"]);
+  });
+
+  it("warns in the create plan when the file brings its own AdMob Network line", async () => {
+    const { svc } = setup();
+    const { groups } = await exportMediationGroups(svc, { group: "Banners", admobLine: true });
+    const plan = await planCreateMediationGroup(svc, groups[0]);
+    expect(plan.summary[0]).toMatch(/with 2 line\(s\) besides the AdMob Network line/);
+    expect(plan.summary[1]).toMatch(/includes an AdMob Network line/);
+    const without = await planCreateMediationGroup(svc, (await exportMediationGroups(svc, { group: "Banners" })).groups[0]);
+    expect(without.summary).toHaveLength(1);
+  });
+
+  it("counts groups, not lines, when it leaves AdMob Network lines out", async () => {
+    const { svc } = setup({
+      groups: (g) => {
+        const lines = g.mediationGroups[0]!.mediationGroupLines;
+        const admob = Object.values(lines).find((l) => l.displayName === "AdMob Network")!;
+        lines["9"] = { ...admob, id: "9", displayName: "AdMob Network (second)" };
+        g.mediationGroups.length = 1;
+        return g;
+      },
+    });
+    const { notes } = await exportMediationGroups(svc, {});
+    expect(notes.join(" ")).toMatch(/The AdMob Network line of 1 group was left out/);
+  });
+
+  it("tells unreadable ad sources apart from an unrecognised AdMob Network source", async () => {
+    const unnamed = await exportMediationGroups(setup({ sources: (s) => ({ adSources: s.adSources.filter((x) => x.title !== "AdMob Network") }) }).svc, { group: "Banners" });
+    expect(unnamed.notes.join(" ")).toMatch(/No ad source is titled "AdMob Network"/);
+    const denied = await exportMediationGroups(setup({ sourcesDenied: true }).svc, { group: "Banners" });
+    expect(denied.notes.join(" ")).toMatch(/Ad sources could not be read/);
   });
 
   it("exports the original lines of a group with a running experiment and says so", async () => {

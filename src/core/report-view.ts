@@ -94,11 +94,15 @@ export function computeTotals(report: Report, metrics: string[]): ViewRow {
   if (has("MATCH_RATE") && has("AD_REQUESTS") && has("MATCHED_REQUESTS")) t.match_rate = ratio(matched, requests);
   if (has("SHOW_RATE") && has("MATCHED_REQUESTS") && has("IMPRESSIONS")) t.show_rate = ratio(impressions, matched);
   if (has("IMPRESSION_CTR") && has("CLICKS") && has("IMPRESSIONS")) t.ctr = ratio(clicks, impressions);
+  // Per-mille amounts keep their micros too, so a comparison works on them and not on rounded amounts.
+  const perMille = Math.round(ratio(earnings, impressions) * 1000);
   if (has("IMPRESSION_RPM") && has("IMPRESSIONS") && has("ESTIMATED_EARNINGS")) {
-    t.rpm = microsToAmount(Math.round(ratio(earnings, impressions) * 1000));
+    t.rpm = microsToAmount(perMille);
+    t.rpm_micros = perMille;
   }
   if (has("OBSERVED_ECPM") && has("IMPRESSIONS") && has("ESTIMATED_EARNINGS")) {
-    t.ecpm = microsToAmount(Math.round(ratio(earnings, impressions) * 1000));
+    t.ecpm = microsToAmount(perMille);
+    t.ecpm_micros = perMille;
   }
   // Campaign reports.
   const installs = sum("INSTALLS");
@@ -110,7 +114,10 @@ export function computeTotals(report: Report, metrics: string[]): ViewRow {
     t.cost_micros = cost;
   }
   if (has("CLICK_THROUGH_RATE") && has("CLICKS") && has("IMPRESSIONS")) t.ctr = ratio(clicks, impressions);
-  if (has("AVERAGE_CPI") && has("ESTIMATED_COST") && has("INSTALLS")) t.cpi = microsToAmount(Math.round(ratio(cost, installs)));
+  if (has("AVERAGE_CPI") && has("ESTIMATED_COST") && has("INSTALLS")) {
+    t.cpi_micros = Math.round(ratio(cost, installs));
+    t.cpi = microsToAmount(t.cpi_micros);
+  }
   return t;
 }
 

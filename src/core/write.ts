@@ -1,7 +1,8 @@
 import { appendAudit, type AuditEntry } from "./audit.js";
-import type { AdUnit, MediationGroupLine } from "./client.js";
+import type { AdSource, AdUnit, MediationGroupLine } from "./client.js";
 import { AdmobctlError, usageError } from "./errors.js";
 import { log } from "./log.js";
+import { admobNetworkSourceIds } from "./mediation-export.js";
 import { formatMicros } from "./money.js";
 import type { AdapterView, AdmobService, MediationGroupView, MediationLineView } from "./service.js";
 
@@ -214,15 +215,17 @@ export async function planCreateMediationGroup(svc: AdmobService, group: unknown
   const lineIds = Object.keys(g.mediationGroupLines ?? {});
   const bad = lineIds.filter((id) => !/^-\d+$/.test(id));
   if (bad.length) throw usageError(`New mediation lines are keyed by distinct negative placeholder IDs ("-1", "-2"…), got ${bad.join(", ")}.`);
-  const acct = await svc.account();
+  const [acct, sources] = await Promise.all([svc.account(), svc.adSources().catch((): AdSource[] => [])]);
   const units = Array.isArray(g.targeting.adUnitIds) ? g.targeting.adUnitIds.length : 0;
-  return {
-    action: "Create mediation group",
-    method: "POST",
-    path: `${acct.name}/mediationGroups`,
-    body: group,
-    summary: [`Create mediation group "${g.displayName}" (${String(g.targeting.platform)} ${String(g.targeting.format)}) for ${units} ad unit(s) with ${lineIds.length} line(s) besides the AdMob Network line.`],
-  };
+  const admob = admobNetworkSourceIds(sources);
+  const own = Object.values(g.mediationGroupLines ?? {}).filter((l) => admob.has(String((l as { adSourceId?: unknown })?.adSourceId))).length;
+  const summary = [
+    `Create mediation group "${g.displayName}" (${String(g.targeting.platform)} ${String(g.targeting.format)}) for ${units} ad unit(s) with ${lineIds.length - own} line(s) besides the AdMob Network line.`,
+  ];
+  if (own) {
+    summary.push("The file includes an AdMob Network line. A new group gets its own, so AdMob may reject this or keep both: remove it unless you need its settings.");
+  }
+  return { action: "Create mediation group", method: "POST", path: `${acct.name}/mediationGroups`, body: group, summary };
 }
 
 function resolveLine(group: MediationGroupView, input: string): MediationLineView {

@@ -86,6 +86,9 @@ function fail(err: unknown): ToolResult {
   return { content: [{ type: "text", text }], isError: true };
 }
 
+/** Per-country totals the geo tool returns; the rows still cover every country. */
+const GEO_MAX_COUNTRIES = 25;
+
 /** Drop trailing rows until the JSON fits the context budget. */
 export function fitRows<T extends { rows: unknown[] }>(result: T & { truncated?: boolean; notice?: string }): T {
   if (textOf(result).length <= MAX_TEXT_CHARS) return result;
@@ -404,7 +407,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
     {
       title: "AdMob health check",
       description:
-        "Did anything break? Compares the last complete day(s) with the days just before, per app and in total, and reports `findings` where daily earnings, match rate or show rate dropped by the threshold or more (`breaches` is their count; 0 means nothing dropped). Rows with status `thin` had too little baseline traffic to judge: do not report them as problems. Use for \"is everything OK\", \"did revenue drop\" or a daily check; use admobctl_insights for a fuller analysis. Earnings are estimates.",
+        "Did anything break? Compares the last complete day(s) with the days just before, per app and in total, and reports `findings` where daily earnings, match rate or show rate dropped by the threshold or more, or an app stopped sending ad requests (`breaches` is their count; 0 means nothing dropped). Rows with status `thin` had too little baseline traffic to judge: do not report them as problems. Use for \"is everything OK\", \"did revenue drop\" or a daily check; use admobctl_insights for a fuller analysis. Earnings are estimates.",
       inputSchema: {
         window_days: z.number().int().min(1).max(90).optional().describe("Complete days to judge, ending yesterday (default 1)"),
         baseline_days: z.number().int().min(1).max(366).optional().describe("Days just before the window to compare with (default 7)"),
@@ -602,7 +605,11 @@ export function createMcpServer(deps: McpDeps): McpServer {
     wrap(async (a: RangeArgs & { app?: string; min_requests?: number; currency?: string }) => {
       const r = await analyzeGeo(svc(a), { ...range(a), app: a.app, minRequests: a.min_requests, currency: a.currency });
       // The per-country totals repeat what the rows hold: keep the biggest so the rows get the room.
-      return fitRows({ ...r, countries: r.countries.slice(0, 25) }) as unknown as Record<string, unknown>;
+      const notices =
+        r.countries.length > GEO_MAX_COUNTRIES
+          ? [...r.notices, `\`countries\` lists the ${GEO_MAX_COUNTRIES} biggest of ${r.countries.length} countries; the rows cover all of them.`]
+          : r.notices;
+      return fitRows({ ...r, countries: r.countries.slice(0, GEO_MAX_COUNTRIES), notices }) as unknown as Record<string, unknown>;
     }),
   );
 
@@ -611,7 +618,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
     {
       title: "Lint the AdMob setup",
       description:
-        "Check the account's setup for things that are broken or unused. Problems (they limit or stop ad serving): apps marked action required, enabled mediation groups that target an ad unit that does not exist or have no enabled line. Notes (worth a look, often intentional): apps in review, ad units with no ad requests in the period, ad units in no enabled mediation group. `problems` counts the problems; each finding has a kind, severity, target and message. Mediation checks are skipped with a notice when the account cannot read mediation groups (AdMob API v1beta).",
+        "Check the account's setup for things that are broken or unused. Problems (they limit or stop ad serving): apps marked action required, enabled mediation groups whose targeted ad units are all gone or that have no enabled line. Notes (worth a look, often intentional): apps in review, groups that also target an ad unit that is gone, ad units with no ad requests in the period, ad units in no enabled mediation group. `problems` counts the problems; each finding has a kind, severity, target and message. Mediation checks are skipped with a notice when the account cannot read mediation groups (AdMob API v1beta).",
       inputSchema: { ...appArg, ...rangeInput, ...accountArg },
       outputSchema: loose({ from: z.string(), to: z.string(), checked: anyRecord, problems: z.number(), findings: z.array(anyRecord), summary: z.array(z.string()), notices: z.array(z.string()) }),
       annotations,

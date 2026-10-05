@@ -50,7 +50,8 @@ apps use `--website` (this run), then `admobctl config set websites.<alias> <url
 (all apps); without one they show `unknown-website`. Ask the user for the website instead of guessing it.
 
 `mediation-groups export` drops IDs and output-only fields, keys the lines "-1", "-2"…, and leaves out the AdMob Network
-line (a new group gets its own; `--with-admob-line` keeps it) and the treatment lines of a running A/B experiment. It
+line (a new group gets its own; `--with-admob-line` keeps it, and the `create` dry run then warns that AdMob may reject
+or duplicate it) and the treatment lines of a running A/B experiment. It
 reads only. To clone a group to other ad units, edit `displayName`, `targeting.adUnitIds` and each line's
 `adUnitMappings` in the file, then run `mediation-groups create --file <file>` (a dry run without `--yes`).
 
@@ -76,7 +77,8 @@ admobctl report mediation --from … [--to …] --by ad-source,app
   ascend, metrics descend by default). Without it: by time for a time series, else by earnings.
 - `--compare previous` adds, per row and in `totals`, `previous_<metric>` and `<metric>_change` (a fraction, 0.5 = +50%)
   against the equal-length period just before (`previous.from`/`to`). A row without `previous_*` keys is new; rows that
-  existed only before are counted in `notices`. Not with date, week or month. The table shows the first metric's change.
+  existed only before are counted in `notices` (not when the report is truncated). Changes in money totals are computed
+  from micros (`rpm_micros`, `ecpm_micros`…), not from rounded amounts. Not with date, week or month. The table shows the first metric's change.
 - `--currency USD` converts earnings (Google's daily average rate); the API then adds a warning that converted
   earnings may not match the payment.
 - Only one of date/week/month per report; `ad-type` cannot be combined with requests, match-rate or rpm. Default
@@ -110,7 +112,7 @@ admobctl finance export (--month YYYY-MM | --from YYYY-MM --to YYYY-MM) [--as re
 - `complete: false` means the month has not ended (account time zone).
 - `forecast`: per app `month_to_date` and `projected` (the daily average of the month's complete days carried to
   month-end), plus `days_elapsed`, `days_in_month`, `daily_average`. `projection: false` for a month that has ended.
-  Pacing only, never a booking figure.
+  Pacing only, never a booking figure. Takes `--as summary|csv|json`.
 - `--as journal` prints tab-separated Bilagsjournal rows (Bilag, Dato, Kilde, Beskrivelse, Konto, Kontonavn,
   Debet, Kredit, MVA-behandling, Motpart, Status, Merknad), dated at month-end: debit the receivable (default 1509),
   credit revenue (default 3120) per app.
@@ -133,13 +135,15 @@ admobctl check [--window 1d] [--baseline 7d] [--drop 30] [--min-requests 1000] [
 ```
 
 A health check for cron or a scheduled agent. Compares the window (complete days ending yesterday) with the baseline
-(the days just before it), per app and for all apps together: daily earnings, match rate and show rate.
+(the days just before it), per app and for all apps together: daily earnings, match rate and show rate. The window ends
+yesterday in the account's time zone and network data lands a few hours late, so schedule it after about 04:00 there.
 
 - A drop of `--drop` percent or more is a breach: listed in `findings` (app, metric, change, message), counted in
   `breaches`, and the command **exits 1**. No breach: exit 0.
 - Row `status`: `ok`, `breach`, or `thin` (fewer than `--min-requests` baseline requests: not judged). Rates also need
-  a tenth of that many requests in the window.
-- An app with a baseline but no requests in the window is a breach ("sent no ad requests").
+  a tenth of that many in the window: requests for match rate, matched requests for show rate.
+- An app with enough baseline requests but none in the window is a breach ("sent no ad requests"): metric `earnings`
+  when the baseline earned something, else `requests`.
 - Defaults can be saved: `admobctl config set check.<key> <n>` with key window, baseline, drop or minRequests.
 
 ## Lint
@@ -154,7 +158,7 @@ Checks the setup by joining apps, ad units and mediation groups with traffic. `f
 | Kind | Severity | Meaning |
 |---|---|---|
 | `app-action-required` | problem | The app needs the publisher's attention in AdMob review |
-| `missing-ad-unit` | problem | An enabled mediation group targets an ad unit that is not in the account |
+| `missing-ad-unit` | problem / note | An enabled mediation group targets an ad unit that is not in the account: a problem when none of its ad units exist, a note when the others still serve |
 | `no-enabled-lines` | problem | An enabled mediation group has no enabled line |
 | `app-in-review` | note | The app is still in AdMob review |
 | `unused-ad-unit` | note | The ad unit sent no ad requests in the period |
@@ -183,7 +187,8 @@ admobctl analyze trend     [--by total|app|format|country|platform] [--app <alia
   Highlights `top` (per group), `idle` (requests but no impressions), `low-fill` (<2% match rate on ≥5% of the group's requests).
 
 - `geo`: `rows` (one per country and format: earnings and `earnings_share`, requests and `format_request_share`,
-  match rate, show rate, `ecpm`, `ecpm_vs_format`, `enough_data`) and `countries` (totals per country). Highlights:
+  match rate, show rate, `ecpm`, `ecpm_vs_format`, `enough_data`) and `countries` (totals per country; the MCP tool
+  returns the 25 biggest and says so in `notices`). Highlights:
   `concentration` (one country ≥ 50% of earnings), `low-fill` (≥ 5% of a format's requests, match rate under 70% of
   that format elsewhere), `high-ecpm` (eCPM ≥ 1.5× the format's average on < 5% of its requests).
 - `trend`: one series (the account, or `--app`) or one per `--by` value (the ten biggest). Per series: `earnings`,

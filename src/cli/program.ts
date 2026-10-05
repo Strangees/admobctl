@@ -378,7 +378,7 @@ export function buildProgram(io: CliIO): Command {
     .command("export [group]")
     .description("Print a group (or all groups) as the JSON that `mediation-groups create --file` takes, for backup or cloning")
     .option("--name <name>", "display name for the exported copy (one group)")
-    .option("--with-admob-line", "keep the AdMob Network line (left out by default: a new group gets its own)")
+    .option("--with-admob-line", "keep the AdMob Network line (left out by default: a new group gets its own, and create may reject or duplicate it)")
     .option("--out <file>", "write to this file (readable only by you) instead of stdout")
     .action(async (group: string | undefined, o: { name?: string; withAdmobLine?: boolean; out?: string }, cmd: Command) => {
       const r = await exportMediationGroups(svc(cmd), { group, name: o.name, admobLine: o.withAdmobLine });
@@ -533,7 +533,11 @@ export function buildProgram(io: CliIO): Command {
   finance
     .command("forecast [YYYY-MM]")
     .description("Month-to-date earnings per app and a month-end projection from the daily average (default: this month)")
-    .action(async (month: string | undefined, _o, cmd: Command) => emit(cmd, financeForecastView(await financeForecast(svc(cmd), month))));
+    .addOption(new Option("--as <kind>", "summary (default), csv or json").choices(["summary", "csv", "json"]).default("summary"))
+    .action(async (month: string | undefined, o: { as: AsFormat }, cmd: Command) => {
+      const view = financeForecastView(await financeForecast(svc(cmd), month));
+      emitFinance(cmd, o.as, view, () => view);
+    });
   finance
     .command("export")
     .description("Export accrual vouchers in the Revenue Journal format (spec/SPEC.md), for accounting imports")

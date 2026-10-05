@@ -22,7 +22,7 @@ in one call), `admobctl_analyze_waterfall` (which mediation lines earn, which si
 eCPM per country and format in one call) and `admobctl_analyze_trend`
 (the day a change started, weekday patterns, the first day an app had traffic).
 
-Rows marked `enough_data: false` in the versions and consent analyses have too few requests to judge. Show them if
+Rows marked `enough_data: false` in the versions, consent and geo analyses have too few requests to judge. Show them if
 asked, but do not report their rates as problems. Compare restricted and unrestricted eCPM within one app, never
 across apps.
 

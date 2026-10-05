@@ -22,7 +22,7 @@ export interface CheckOptions {
 
 export const CHECK_DEFAULTS = { window: 1, baseline: 7, drop: 0.3, minRequests: 1000 };
 
-export type CheckMetric = "earnings" | "match_rate" | "show_rate";
+export type CheckMetric = "earnings" | "requests" | "match_rate" | "show_rate";
 
 export interface CheckRow {
   app: string;
@@ -164,6 +164,10 @@ export async function check(svc: AdmobService, opts: CheckOptions = {}): Promise
       row.status = "breach";
       findings.push({ app, metric, change, message });
     };
+    if (w.requests === 0 && b.earnings === 0) {
+      // Nothing earned in the baseline either, so the earnings check cannot see an app that went quiet.
+      breach("requests", -1, `${app} sent no ad requests in the window, after ${b.requests} in the baseline. Check that the app still loads ads (release, SDK, app-ads.txt, account status).`);
+    }
     if (row.earnings_change !== undefined && row.earnings_change <= -drop) {
       breach(
         "earnings",

@@ -11514,7 +11514,7 @@ async function financeForecast(svc, month) {
   const complete = isMonthComplete(ym, today);
   const lastDay = complete ? end : addDays(today, -1);
   if (compareDates(lastDay, start) < 0) {
-    throw usageError(`${label2} has no complete day yet (today's data is still arriving). Try again tomorrow, or: admobctl finance month <last month>`);
+    throw usageError(`${label2} has no complete day yet (today's data is still arriving). Try again tomorrow, or: admobctl finance month ${formatMonth(addDays(start, -1))}`);
   }
   const [{ report }, index] = await Promise.all([
     svc.rawReport("network", { dateRange: { startDate: start, endDate: lastDay }, by: ["app"], metrics: ["earnings"] }),
@@ -12303,7 +12303,12 @@ function readAudit(dir, opts = {}) {
   try {
     text = readFileSync3(file2, "utf8");
   } catch (err) {
-    if (err.code !== "ENOENT") throw err;
+    if (err.code !== "ENOENT") {
+      throw new AdmobctlError("CONFIG", `Could not read ${file2}: ${err.message}`, {
+        fix: `ls -l ${file2}  # it must be a file you can read; move it aside to start a new log`,
+        cause: err
+      });
+    }
   }
   let skipped = 0;
   let entries = [];
@@ -12311,7 +12316,9 @@ function readAudit(dir, opts = {}) {
     if (!line.trim()) continue;
     try {
       const e = JSON.parse(line);
-      if (typeof e?.time !== "string" || typeof e.action !== "string") throw new Error("not an entry");
+      if (typeof e?.time !== "string" || typeof e.action !== "string" || typeof e.method !== "string" || typeof e.path !== "string") {
+        throw new Error("not an entry");
+      }
       entries.push(e);
     } catch {
       skipped++;
@@ -12409,6 +12416,9 @@ async function check(svc, opts = {}) {
       row.status = "breach";
       findings.push({ app, metric: metric2, change: change2, message });
     };
+    if (w.requests === 0 && b.earnings === 0) {
+      breach("requests", -1, `${app} sent no ad requests in the window, after ${b.requests} in the baseline. Check that the app still loads ads (release, SDK, app-ads.txt, account status).`);
+    }
     if (row.earnings_change !== void 0 && row.earnings_change <= -drop) {
       breach(
         "earnings",
@@ -12785,18 +12795,20 @@ async function lint(svc, opts = {}) {
       findings.push({ kind: "app-in-review", severity: "note", target: a.alias, app: a.alias, message: `${a.alias} is still in AdMob review; ad serving is limited until it is approved.` });
     }
   }
-  if (groups) {
+  const mine = new Set(units.map((u) => u.adUnitId));
+  const checkedGroups = groups && only ? groups.filter((g) => g.adUnits.some((u) => mine.has(u.adUnitId))) : groups;
+  if (checkedGroups) {
     const known = new Set(allUnits.map((u) => u.adUnitId));
-    const mine = new Set(units.map((u) => u.adUnitId));
-    for (const g of groups.filter((x) => x.state === "ENABLED")) {
-      if (only && !g.adUnits.some((u) => mine.has(u.adUnitId))) continue;
+    for (const g of checkedGroups.filter((x) => x.state === "ENABLED")) {
       const missing = g.adUnits.filter((u) => !known.has(u.adUnitId));
       if (missing.length) {
+        const none = missing.length === g.adUnits.length;
+        const ids = missing.map((u) => u.adUnitId).join(", ");
         findings.push({
           kind: "missing-ad-unit",
-          severity: "problem",
+          severity: none ? "problem" : "note",
           target: g.name,
-          message: `Mediation group "${g.name}" targets ${missing.length === 1 ? "an ad unit that does" : "ad units that do"} not exist in the account: ${missing.map((u) => u.adUnitId).join(", ")}.`
+          message: none ? `Mediation group "${g.name}" is enabled but every ad unit it targets is gone from the account (${ids}), so it cannot serve.` : `Mediation group "${g.name}" also targets ${missing.length === 1 ? "an ad unit that does" : "ad units that do"} not exist in the account: ${ids}. Its other ad units still serve.`
         });
       }
       if (!g.lines.some((l) => l.state === "ENABLED")) {
@@ -12843,11 +12855,11 @@ async function lint(svc, opts = {}) {
   return {
     from,
     to,
-    checked: { apps: apps.length, ad_units: units.length, mediation_groups: groups ? groups.length : null },
+    checked: { apps: apps.length, ad_units: units.length, mediation_groups: checkedGroups ? checkedGroups.length : null },
     problems,
     findings,
     summary: [
-      findings.length ? `${count(problems, "problem")} and ${count(notes, "note")} in ${count(apps.length, "app")}, ${count(units.length, "ad unit")}${groups ? ` and ${count(groups.length, "mediation group")}` : ""}.` : `Nothing to report in ${count(apps.length, "app")}, ${count(units.length, "ad unit")}${groups ? ` and ${count(groups.length, "mediation group")}` : ""}.`
+      findings.length ? `${count(problems, "problem")} and ${count(notes, "note")} in ${count(apps.length, "app")}, ${count(units.length, "ad unit")}${checkedGroups ? ` and ${count(checkedGroups.length, "mediation group")}` : ""}.` : `Nothing to report in ${count(apps.length, "app")}, ${count(units.length, "ad unit")}${checkedGroups ? ` and ${count(checkedGroups.length, "mediation group")}` : ""}.`
     ],
     notices
   };
@@ -12855,9 +12867,12 @@ async function lint(svc, opts = {}) {
 
 // src/core/mediation-export.ts
 var ADMOB_NETWORK = "admob network";
+function admobNetworkSourceIds(sources) {
+  return new Set(sources.filter((s) => s.title.trim().toLowerCase() === ADMOB_NETWORK).map((s) => s.adSourceId));
+}
 async function exportMediationGroups(svc, opts = {}) {
   if (opts.name !== void 0 && !opts.group) throw usageError("--name needs a group: it renames one exported copy.");
-  const [all, sources] = await Promise.all([svc.rawMediationGroups(), svc.adSources().catch(() => [])]);
+  const [all, sources] = await Promise.all([svc.rawMediationGroups(), svc.adSources().catch(() => null)]);
   let picked = all;
   if (opts.group) {
     const q = opts.group.trim().toLowerCase();
@@ -12865,7 +12880,7 @@ async function exportMediationGroups(svc, opts = {}) {
     if (!picked.length) throw usageError(`Unknown mediation group "${opts.group}". Groups: ${all.map((g) => g.displayName).join(", ") || "(none)"}`);
     if (picked.length > 1) throw usageError(`Mediation group name "${opts.group}" is ambiguous; use the ID: ${picked.map((g) => g.mediationGroupId).join(", ")}`);
   }
-  const admob = new Set(sources.filter((s) => s.title.trim().toLowerCase() === ADMOB_NETWORK).map((s) => s.adSourceId));
+  const admob = admobNetworkSourceIds(sources ?? []);
   const notes = [];
   let droppedAdmob = 0;
   const groups = picked.map((g) => {
@@ -12874,14 +12889,8 @@ async function exportMediationGroups(svc, opts = {}) {
     if (treatment.length) {
       notes.push(`${g.displayName} has a running A/B experiment; its ${treatment.length} treatment ${treatment.length === 1 ? "line" : "lines"} (variant B) ${treatment.length === 1 ? "was" : "were"} left out.`);
     }
-    const kept = lines.filter((l) => {
-      if (l.experimentVariant === "VARIANT_B") return false;
-      if (!opts.admobLine && admob.has(l.adSourceId)) {
-        droppedAdmob++;
-        return false;
-      }
-      return true;
-    });
+    const kept = lines.filter((l) => l.experimentVariant !== "VARIANT_B" && (opts.admobLine || !admob.has(l.adSourceId)));
+    if (kept.length < lines.length - treatment.length) droppedAdmob++;
     const exported = {};
     kept.forEach((l, i) => {
       const line = {};
@@ -12901,8 +12910,10 @@ async function exportMediationGroups(svc, opts = {}) {
   });
   if (droppedAdmob) {
     notes.push(`The AdMob Network line of ${droppedAdmob === 1 ? "1 group" : `${droppedAdmob} groups`} was left out: a new group gets its own. Pass --with-admob-line to keep it.`);
-  } else if (!opts.admobLine && !admob.size) {
+  } else if (!opts.admobLine && !sources) {
     notes.push("Ad sources could not be read, so the AdMob Network line could not be recognised and every line was kept.");
+  } else if (!opts.admobLine && !admob.size) {
+    notes.push('No ad source is titled "AdMob Network", so that line could not be recognised and every line was kept.');
   }
   notes.push("To create a copy: edit displayName (it must be unique), targeting.adUnitIds and each line's adUnitMappings for the target ad units, then admobctl mediation-groups create --file <file>.");
   return { groups, notes };
@@ -13052,15 +13063,17 @@ async function planCreateMediationGroup(svc, group) {
   const lineIds = Object.keys(g.mediationGroupLines ?? {});
   const bad = lineIds.filter((id) => !/^-\d+$/.test(id));
   if (bad.length) throw usageError(`New mediation lines are keyed by distinct negative placeholder IDs ("-1", "-2"\u2026), got ${bad.join(", ")}.`);
-  const acct = await svc.account();
+  const [acct, sources] = await Promise.all([svc.account(), svc.adSources().catch(() => [])]);
   const units = Array.isArray(g.targeting.adUnitIds) ? g.targeting.adUnitIds.length : 0;
-  return {
-    action: "Create mediation group",
-    method: "POST",
-    path: `${acct.name}/mediationGroups`,
-    body: group,
-    summary: [`Create mediation group "${g.displayName}" (${String(g.targeting.platform)} ${String(g.targeting.format)}) for ${units} ad unit(s) with ${lineIds.length} line(s) besides the AdMob Network line.`]
-  };
+  const admob = admobNetworkSourceIds(sources);
+  const own2 = Object.values(g.mediationGroupLines ?? {}).filter((l) => admob.has(String(l?.adSourceId))).length;
+  const summary = [
+    `Create mediation group "${g.displayName}" (${String(g.targeting.platform)} ${String(g.targeting.format)}) for ${units} ad unit(s) with ${lineIds.length - own2} line(s) besides the AdMob Network line.`
+  ];
+  if (own2) {
+    summary.push("The file includes an AdMob Network line. A new group gets its own, so AdMob may reject this or keep both: remove it unless you need its settings.");
+  }
+  return { action: "Create mediation group", method: "POST", path: `${acct.name}/mediationGroups`, body: group, summary };
 }
 function resolveLine(group, input2) {
   const q = input2.trim().toLowerCase();
@@ -13947,11 +13960,14 @@ function computeTotals(report, metrics) {
   if (has("MATCH_RATE") && has("AD_REQUESTS") && has("MATCHED_REQUESTS")) t.match_rate = ratio2(matched, requests);
   if (has("SHOW_RATE") && has("MATCHED_REQUESTS") && has("IMPRESSIONS")) t.show_rate = ratio2(impressions, matched);
   if (has("IMPRESSION_CTR") && has("CLICKS") && has("IMPRESSIONS")) t.ctr = ratio2(clicks, impressions);
+  const perMille2 = Math.round(ratio2(earnings, impressions) * 1e3);
   if (has("IMPRESSION_RPM") && has("IMPRESSIONS") && has("ESTIMATED_EARNINGS")) {
-    t.rpm = microsToAmount(Math.round(ratio2(earnings, impressions) * 1e3));
+    t.rpm = microsToAmount(perMille2);
+    t.rpm_micros = perMille2;
   }
   if (has("OBSERVED_ECPM") && has("IMPRESSIONS") && has("ESTIMATED_EARNINGS")) {
-    t.ecpm = microsToAmount(Math.round(ratio2(earnings, impressions) * 1e3));
+    t.ecpm = microsToAmount(perMille2);
+    t.ecpm_micros = perMille2;
   }
   const installs = sum("INSTALLS");
   const cost = sum("ESTIMATED_COST");
@@ -13962,7 +13978,10 @@ function computeTotals(report, metrics) {
     t.cost_micros = cost;
   }
   if (has("CLICK_THROUGH_RATE") && has("CLICKS") && has("IMPRESSIONS")) t.ctr = ratio2(clicks, impressions);
-  if (has("AVERAGE_CPI") && has("ESTIMATED_COST") && has("INSTALLS")) t.cpi = microsToAmount(Math.round(ratio2(cost, installs)));
+  if (has("AVERAGE_CPI") && has("ESTIMATED_COST") && has("INSTALLS")) {
+    t.cpi_micros = Math.round(ratio2(cost, installs));
+    t.cpi = microsToAmount(t.cpi_micros);
+  }
   return t;
 }
 function shownRows(r) {
@@ -15366,7 +15385,7 @@ function buildProgram(io) {
     async (o, cmd) => emit(cmd, mediationGroupsView(await svc(cmd).mediationGroups(o)))
   );
   groups.command("show <group>").description("Show one mediation group's lines (name or ID)").action(async (group, _o, cmd) => emit(cmd, mediationGroupView(await svc(cmd).mediationGroup(group))));
-  groups.command("export [group]").description("Print a group (or all groups) as the JSON that `mediation-groups create --file` takes, for backup or cloning").option("--name <name>", "display name for the exported copy (one group)").option("--with-admob-line", "keep the AdMob Network line (left out by default: a new group gets its own)").option("--out <file>", "write to this file (readable only by you) instead of stdout").action(async (group, o, cmd) => {
+  groups.command("export [group]").description("Print a group (or all groups) as the JSON that `mediation-groups create --file` takes, for backup or cloning").option("--name <name>", "display name for the exported copy (one group)").option("--with-admob-line", "keep the AdMob Network line (left out by default: a new group gets its own, and create may reject or duplicate it)").option("--out <file>", "write to this file (readable only by you) instead of stdout").action(async (group, o, cmd) => {
     const r = await exportMediationGroups(svc(cmd), { group, name: o.name, admobLine: o.withAdmobLine });
     const content = `${JSON.stringify(group ? r.groups[0] : r.groups, null, 2)}
 `;
@@ -15451,7 +15470,10 @@ function buildProgram(io) {
     const m = await financeMonth(s, month);
     emitFinance(cmd, o.as, financeMonthView(m), () => journalView(journalRows(m, s.profile.finance), m.notes));
   });
-  finance.command("forecast [YYYY-MM]").description("Month-to-date earnings per app and a month-end projection from the daily average (default: this month)").action(async (month, _o, cmd) => emit(cmd, financeForecastView(await financeForecast(svc(cmd), month))));
+  finance.command("forecast [YYYY-MM]").description("Month-to-date earnings per app and a month-end projection from the daily average (default: this month)").addOption(new Option("--as <kind>", "summary (default), csv or json").choices(["summary", "csv", "json"]).default("summary")).action(async (month, o, cmd) => {
+    const view = financeForecastView(await financeForecast(svc(cmd), month));
+    emitFinance(cmd, o.as, view, () => view);
+  });
   finance.command("export").description("Export accrual vouchers in the Revenue Journal format (spec/SPEC.md), for accounting imports").option("--month <YYYY-MM>", "one month").option("--from <YYYY-MM>", "first month of a range").option("--to <YYYY-MM>", "last month of a range").option("--as <format>", `export format: ${EXPORT_FORMATS.join(", ")}`, "revenue-journal-json").option("--integer-amounts", "write amounts as JSON integers instead of decimal strings (JSON only)").option("--scale <digits>", "decimal places the integers carry, 0-6 (default 2; 6 = micros)", (v) => Number(v)).option("--out <file>", "write to this file (readable only by you) instead of stdout").action(
     async (o, cmd) => {
       const { content, notes } = await exportJournal(svc(cmd), o);
@@ -44909,6 +44931,7 @@ Fix: ${err.fix}` : ""}` : `Unexpected error: ${err?.message ?? String(err)}`;
   if (!(err instanceof AdmobctlError)) log.warn(err?.stack ?? String(err));
   return { content: [{ type: "text", text }], isError: true };
 }
+var GEO_MAX_COUNTRIES = 25;
 function fitRows(result) {
   if (textOf(result).length <= MAX_TEXT_CHARS) return result;
   const all = result.rows;
@@ -45186,7 +45209,7 @@ function createMcpServer(deps) {
     "admobctl_check",
     {
       title: "AdMob health check",
-      description: 'Did anything break? Compares the last complete day(s) with the days just before, per app and in total, and reports `findings` where daily earnings, match rate or show rate dropped by the threshold or more (`breaches` is their count; 0 means nothing dropped). Rows with status `thin` had too little baseline traffic to judge: do not report them as problems. Use for "is everything OK", "did revenue drop" or a daily check; use admobctl_insights for a fuller analysis. Earnings are estimates.',
+      description: 'Did anything break? Compares the last complete day(s) with the days just before, per app and in total, and reports `findings` where daily earnings, match rate or show rate dropped by the threshold or more, or an app stopped sending ad requests (`breaches` is their count; 0 means nothing dropped). Rows with status `thin` had too little baseline traffic to judge: do not report them as problems. Use for "is everything OK", "did revenue drop" or a daily check; use admobctl_insights for a fuller analysis. Earnings are estimates.',
       inputSchema: {
         window_days: external_exports.number().int().min(1).max(90).optional().describe("Complete days to judge, ending yesterday (default 1)"),
         baseline_days: external_exports.number().int().min(1).max(366).optional().describe("Days just before the window to compare with (default 7)"),
@@ -45363,14 +45386,15 @@ function createMcpServer(deps) {
     },
     wrap(async (a) => {
       const r = await analyzeGeo(svc(a), { ...range(a), app: a.app, minRequests: a.min_requests, currency: a.currency });
-      return fitRows({ ...r, countries: r.countries.slice(0, 25) });
+      const notices = r.countries.length > GEO_MAX_COUNTRIES ? [...r.notices, `\`countries\` lists the ${GEO_MAX_COUNTRIES} biggest of ${r.countries.length} countries; the rows cover all of them.`] : r.notices;
+      return fitRows({ ...r, countries: r.countries.slice(0, GEO_MAX_COUNTRIES), notices });
     })
   );
   server.registerTool(
     "admobctl_lint",
     {
       title: "Lint the AdMob setup",
-      description: "Check the account's setup for things that are broken or unused. Problems (they limit or stop ad serving): apps marked action required, enabled mediation groups that target an ad unit that does not exist or have no enabled line. Notes (worth a look, often intentional): apps in review, ad units with no ad requests in the period, ad units in no enabled mediation group. `problems` counts the problems; each finding has a kind, severity, target and message. Mediation checks are skipped with a notice when the account cannot read mediation groups (AdMob API v1beta).",
+      description: "Check the account's setup for things that are broken or unused. Problems (they limit or stop ad serving): apps marked action required, enabled mediation groups whose targeted ad units are all gone or that have no enabled line. Notes (worth a look, often intentional): apps in review, groups that also target an ad unit that is gone, ad units with no ad requests in the period, ad units in no enabled mediation group. `problems` counts the problems; each finding has a kind, severity, target and message. Mediation checks are skipped with a notice when the account cannot read mediation groups (AdMob API v1beta).",
       inputSchema: { ...appArg, ...rangeInput, ...accountArg },
       outputSchema: loose({ from: external_exports.string(), to: external_exports.string(), checked: anyRecord, problems: external_exports.number(), findings: external_exports.array(anyRecord), summary: external_exports.array(external_exports.string()), notices: external_exports.array(external_exports.string()) }),
       annotations

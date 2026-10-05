@@ -79,6 +79,14 @@ describe("report compare", () => {
     expect(r.notices.join(" ")).toMatch(/1 row .*only in the previous period/);
   });
 
+  it("computes the change in total RPM from micros, not from rounded amounts", async () => {
+    const { svc } = service();
+    const r = await svc.networkReport({ from: "2026-09", by: ["country"], metrics: ["earnings", "impressions", "rpm"], compare: "previous" });
+    // Previous RPM: 109 / 16 900 × 1000 = 6.4497…, shown as 6.45.
+    const before = Math.round((109e6 / 16900) * 1000);
+    expect(r.totals).toMatchObject({ rpm: 5, rpm_micros: 5_000_000, rpm_change: (5_000_000 - before) / before });
+  });
+
   it("does not cap the previous period when the current one is capped", async () => {
     const { svc, calls } = service();
     await svc.networkReport({ from: "2026-09", by: ["country"], metrics: ["earnings"], compare: "previous", maxRows: 2 });

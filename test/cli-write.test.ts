@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -151,5 +151,15 @@ describe("cli write commands", () => {
     const out = JSON.parse(r.stdout);
     expect(out.entries).toHaveLength(1);
     expect(out.skipped).toBe(1);
+  });
+
+  it("audit-log reports an unreadable log with a fix, not a stack trace", async () => {
+    const empty = await cli(["audit-log", "-o", "json"]);
+    mkdirSync(join(empty.dir, "audit.log"));
+    const r = await cli(["audit-log"], { dir: empty.dir, isTTY: true });
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/Could not read .*audit\.log/);
+    expect(r.stderr).toMatch(/fix: /);
+    expect(r.stderr).not.toMatch(/    at /);
   });
 });

@@ -82,6 +82,16 @@ describe("check", () => {
     expect(r.findings[0]!.message).toMatch(/sent no ad requests/);
   });
 
+  it("flags an app that stopped sending requests even when its baseline earned nothing", async () => {
+    const unfilled = [row(IOS, [0, 14000, 0, 0]), row(ANDROID, [35e6, 7000, 3500, 2800])];
+    const { svc } = setup([row(ANDROID, [5e6, 1000, 500, 400])], unfilled);
+    const r = await check(svc);
+    const ios = r.rows.find((x) => x.app === "example-quiz-ios")!;
+    expect(ios).toMatchObject({ status: "breach", requests: 0, baseline_requests: 14000 });
+    expect(r.findings[0]).toMatchObject({ app: "example-quiz-ios", metric: "requests", change: -1 });
+    expect(r.findings[0]!.message).toMatch(/sent no ad requests/);
+  });
+
   it("does not judge apps with too little baseline traffic", async () => {
     const { svc } = setup([row(IOS, [9e6, 2000, 1500, 1200]), row(ANDROID, [5e6, 1000, 500, 400]), row(TIMER, [0, 5, 0, 0])], baseline);
     const r = await check(svc);

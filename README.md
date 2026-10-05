@@ -115,11 +115,11 @@ admobctl check --window 3d --baseline 14d --drop 40
 admobctl check || echo "AdMob dropped" | mail -s "AdMob check" you@example.com
 ```
 
-Apps with fewer than 1000 baseline requests are listed as `too little data` and not judged (`--min-requests`). Save your own defaults with `admobctl config set check.drop 40` (also `check.window`, `check.baseline`, `check.minRequests`).
+An app that stops sending ad requests is a breach too. Apps with fewer than 1000 baseline requests are listed as `too little data` and not judged (`--min-requests`). Network data lands a few hours late, so run it from cron after about 04:00 in the account's time zone. Save your own defaults with `admobctl config set check.drop 40` (also `check.window`, `check.baseline`, `check.minRequests`).
 
 ### Lint
 
-`admobctl lint` checks the setup rather than the numbers. It exits 1 on a problem: an app marked *action required*, or an enabled mediation group that targets an ad unit that does not exist or has no enabled line. It also lists notes that are often intentional: apps still in review, ad units with no ad requests in the last 30 days, and ad units in no enabled mediation group. Mediation groups need AdMob API v1beta; without access those checks are skipped with a notice.
+`admobctl lint` checks the setup rather than the numbers. It exits 1 on a problem: an app marked *action required*, or an enabled mediation group whose ad units are all gone or that has no enabled line. It also lists notes that are often intentional: apps still in review, groups that also target an ad unit that is gone, ad units with no ad requests in the last 30 days, and ad units in no enabled mediation group. Mediation groups need AdMob API v1beta; without access those checks are skipped with a notice.
 
 ### Analyze
 
@@ -150,7 +150,7 @@ v1beta methods (mediation groups and ad unit mappings in particular) to allowlis
 error says so and points to your AdMob account manager, and `auth doctor` shows which v1beta reads your account can
 use. Campaign reports take at most 30 days per request, so longer ranges are fetched in 30-day chunks and added up.
 
-`mediation-groups export` is for backup and cloning: it prints a group (or, without a name, every group as an array) as the JSON `mediation-groups create --file` takes, without IDs and output-only fields. The AdMob Network line is left out because a new group gets its own (`--with-admob-line` keeps it), and so are the treatment lines of a running A/B experiment.
+`mediation-groups export` is for backup and cloning: it prints a group (or, without a name, every group as an array) as the JSON `mediation-groups create --file` takes, without IDs and output-only fields. The AdMob Network line is left out because a new group gets its own (`--with-admob-line` keeps it; `create` then warns that AdMob may reject or duplicate it), and so are the treatment lines of a running A/B experiment.
 
 ### Changing AdMob (write commands)
 
