@@ -4,6 +4,9 @@ export const LOGIN_COMMAND = `gcloud auth application-default login --scopes=${A
 /** Needed only for the write commands (create apps, ad units, mappings; change mediation). */
 export const MONETIZATION_SCOPE = "https://www.googleapis.com/auth/admob.monetization";
 export const WRITE_LOGIN_COMMAND = `gcloud auth application-default login --scopes=${ADMOB_SCOPE},${MONETIZATION_SCOPE},${CLOUD_PLATFORM_SCOPE}`;
+/** Needed only for `finance balance` (AdSense Management API payments). */
+export const ADSENSE_SCOPE = "https://www.googleapis.com/auth/adsense.readonly";
+export const PAYMENTS_LOGIN_COMMAND = `gcloud auth application-default login --scopes=${ADMOB_SCOPE},${ADSENSE_SCOPE},${CLOUD_PLATFORM_SCOPE}`;
 
 export type ErrorCode =
   | "USAGE"
@@ -17,6 +20,7 @@ export type ErrorCode =
   | "PERMISSION_DENIED"
   | "BETA_ACCESS_DENIED"
   | "CAMPAIGN_REPORT_REJECTED"
+  | "PAYMENTS_UNAVAILABLE"
   | "NOT_FOUND"
   | "RATE_LIMITED"
   | "API_ERROR";
@@ -96,9 +100,11 @@ export function diagnoseApiError(status: number, body: unknown, hints: DiagnoseH
   }
   if (reason === "SERVICE_DISABLED" || /has not been used in project|is disabled/i.test(message)) {
     const project = info?.metadata?.consumer?.replace(/^projects\//, "") ?? "<PROJECT_ID>";
-    return new AdmobctlError("API_NOT_ENABLED", `The AdMob API is not enabled in project ${project}.`, {
+    const title = info?.metadata?.serviceTitle ?? "AdMob API";
+    const service = info?.metadata?.service ?? "admob.googleapis.com";
+    return new AdmobctlError("API_NOT_ENABLED", `The ${title} is not enabled in project ${project}.`, {
       ...opts,
-      fix: `gcloud services enable admob.googleapis.com --project ${project}`,
+      fix: `gcloud services enable ${service} --project ${project}`,
     });
   }
   if (reason === "ACCESS_TOKEN_SCOPE_INSUFFICIENT" || /insufficient authentication scopes/i.test(message)) {

@@ -187,7 +187,8 @@ export function buildProgram(io: CliIO): Command {
     .option("--client-id <id>", "OAuth client ID (Desktop app) from Google Cloud Console")
     .option("--client-secret <secret>", "OAuth client secret (or env ADMOBCTL_OAUTH_CLIENT_SECRET)")
     .option("--write", "also grant admob.monetization, needed by the write commands (create, mediation changes)")
-    .action(async (o: { clientId?: string; clientSecret?: string; write?: boolean }, cmd: Command) => {
+    .option("--payments", "also grant adsense.readonly, needed by finance balance")
+    .action(async (o: { clientId?: string; clientSecret?: string; write?: boolean; payments?: boolean }, cmd: Command) => {
       const profileName = g(cmd).profile ?? loadConfig(dir()).defaultProfile ?? "default";
       const clientId = o.clientId ?? resolveProfile(loadConfig(dir()), g(cmd).profile).oauthClientId;
       if (!clientId) {
@@ -204,6 +205,7 @@ export function buildProgram(io: CliIO): Command {
         fetch: io.service?.fetch,
         print: io.stderr,
         write: o.write,
+        payments: o.payments,
       });
       io.stderr(`Signed in. Profile "${r.profile}" now uses admobctl OAuth. Run: admobctl auth doctor\n`);
     });

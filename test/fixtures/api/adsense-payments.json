@@ -1,0 +1,10 @@
+{
+  "payments": [
+    { "name": "accounts/pub-0000000000000001/payments/unpaid", "amount": "NOK 1,234.56" },
+    {
+      "name": "accounts/pub-0000000000000001/payments/20240521",
+      "date": { "year": 2024, "month": 5, "day": 21 },
+      "amount": "NOK 700.00"
+    }
+  ]
+}

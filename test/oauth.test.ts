@@ -45,6 +45,25 @@ describe("PKCE + auth URL", () => {
       "https://www.googleapis.com/auth/admob.monetization",
     ]);
   });
+
+  it("asks for the adsense scope when payments access is wanted", () => {
+    const url = new URL(buildAuthUrl({ clientId: "cid", redirectUri: "http://127.0.0.1:5555", pkce: createPkce(), state: "st", payments: true }));
+    expect(url.searchParams.get("scope")!.split(" ")).toEqual([
+      "https://www.googleapis.com/auth/admob.readonly",
+      "https://www.googleapis.com/auth/adsense.readonly",
+    ]);
+  });
+
+  it("combines write and payments scopes, AdMob first", () => {
+    const url = new URL(
+      buildAuthUrl({ clientId: "cid", redirectUri: "http://127.0.0.1:5555", pkce: createPkce(), state: "st", write: true, payments: true }),
+    );
+    expect(url.searchParams.get("scope")!.split(" ")).toEqual([
+      "https://www.googleapis.com/auth/admob.readonly",
+      "https://www.googleapis.com/auth/admob.monetization",
+      "https://www.googleapis.com/auth/adsense.readonly",
+    ]);
+  });
 });
 
 describe("waitForLoopbackCode", () => {

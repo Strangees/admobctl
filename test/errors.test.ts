@@ -81,6 +81,25 @@ describe("diagnoseApiError", () => {
     expect(e.fix).toBe("gcloud services enable admob.googleapis.com --project my-project");
   });
 
+  it("names the disabled service from ErrorInfo metadata", () => {
+    const e = diagnoseApiError(403, {
+      error: {
+        code: 403,
+        message: "AdSense Management API has not been used in project my-project before or it is disabled.",
+        details: [
+          {
+            "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+            reason: "SERVICE_DISABLED",
+            metadata: { consumer: "projects/my-project", service: "adsense.googleapis.com", serviceTitle: "AdSense Management API" },
+          },
+        ],
+      },
+    });
+    expect(e.code).toBe("API_NOT_ENABLED");
+    expect(e.message).toBe("The AdSense Management API is not enabled in project my-project.");
+    expect(e.fix).toBe("gcloud services enable adsense.googleapis.com --project my-project");
+  });
+
   it("detects a missing quota project before treating it as a disabled API", () => {
     const e = diagnoseApiError(403, quotaBody);
     expect(e.code).toBe("AUTH_QUOTA_PROJECT_MISSING");
