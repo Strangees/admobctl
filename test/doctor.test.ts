@@ -124,3 +124,42 @@ describe("runDoctor", () => {
     expect(checks.scope!.summary).toMatch(/adsense\.readonly \(finance balance enabled\)/);
   });
 });
+
+describe("runDoctor setup checks", () => {
+  const READ = "https://www.googleapis.com/auth/admob.readonly";
+  const ADSENSE = "https://www.googleapis.com/auth/adsense.readonly";
+
+  it("warns when a stored feature's scope is missing, with a login fix that keeps all features", async () => {
+    const checks = byId(await runDoctor({ ...okDeps(), features: ["read", "write", "payments"], tokenInfo: async () => ({ scopes: [READ] }) }));
+    expect(checks.features!.status).toBe("warn");
+    expect(checks.features!.summary).toMatch(/write, payments/);
+    expect(checks.features!.fix).toBe("admobctl setup login --features write,payments --yes");
+    expect(checks.features!.fix_command).toBe("admobctl setup login --features write,payments --yes");
+  });
+
+  it("is ok when every stored feature's scope is granted", async () => {
+    const checks = byId(await runDoctor({ ...okDeps(), features: ["read", "payments"], tokenInfo: async () => ({ scopes: [READ, ADSENSE] }) }));
+    expect(checks.features!.status).toBe("ok");
+  });
+
+  it("fails when a needed API is disabled, with the setup apis fix", async () => {
+    const checks = byId(
+      await runDoctor({
+        ...okDeps(),
+        features: ["read", "payments"],
+        serviceStates: async () => ({ "admob.googleapis.com": "ENABLED", "adsense.googleapis.com": "DISABLED" }),
+      }),
+    );
+    expect(checks.apis!.status).toBe("fail");
+    expect(checks.apis!.summary).toMatch(/adsense\.googleapis\.com/);
+    expect(checks.apis!.fix_command).toBe("admobctl setup apis --features payments --yes");
+  });
+
+  it("only sets fix_command for admobctl commands", async () => {
+    const checks = await runDoctor({ ...okDeps(), quotaProject: undefined, listApps: async () => [{ alias: "a", appId: "a~1", name: "A", platform: "IOS", resource: "r", approval: "ACTION_REQUIRED" }] as never });
+    const byIdx = byId(checks);
+    expect(byIdx["quota-project"]!.fix_command).toBe("admobctl setup project list");
+    expect(byIdx.apps!.fix).toBeTruthy();
+    expect(byIdx.apps!.fix_command).toBeUndefined();
+  });
+});
