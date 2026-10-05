@@ -28,6 +28,7 @@ async function cli(args: string[], opts: { isTTY?: boolean; dir?: string; routes
     "GET /adUnits/9000000001/adUnitMappings": () => jsonResponse(fixture("ad-unit-mappings.json")),
     "POST /campaignReport:generate": () => jsonResponse(fixture("campaign-report.json")),
     "POST /tokeninfo": () => jsonResponse({ scope: "https://www.googleapis.com/auth/admob.readonly", expires_in: "3000" }),
+    "GET serviceusage.googleapis.com/v1/projects/": () => jsonResponse({ state: "ENABLED" }),
     ...opts.routes,
   });
   let stdout = "";
