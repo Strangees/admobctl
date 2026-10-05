@@ -58,8 +58,10 @@ confirms that exact change. They need the admob.monetization scope and Google al
 ## Errors and setup
 
 Every error ends with `Fix: <command>`. Show the user that exact command; do not paraphrase it or invent another.
-For anything auth-related, suggest `admobctl auth doctor`, which checks credentials, scope, quota project, API access
-and account, and prints a fix for each failure. Service accounts are not supported by the AdMob API.
+For anything about sign-in, scopes, the quota project or APIs, call `admobctl_setup_status` (CLI: `admobctl setup
+status`) and run its `next_command` exactly. These are always `admobctl setup …` commands; never improvise gcloud
+commands. Commands with `--yes` change the user's setup, so show them first. The browser sign-in
+(`admobctl setup login --yes`) must run in the user's own terminal. Service accounts are not supported by the AdMob API.
 
 Ad sources, adapters, mediation groups, ad unit mappings and campaign reports use AdMob API v1beta, which Google
 limits to allowlisted accounts for some methods. A "v1beta" permission error means the account lacks that access,

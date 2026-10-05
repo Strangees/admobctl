@@ -23,46 +23,56 @@ npm link   # puts `admobctl` on your PATH
 
 ## Authenticate
 
-admobctl reuses your gcloud **Application Default Credentials** (ADC) when they are present:
+Run the guided setup. It signs you in, picks the Google Cloud project used for API quota, enables the APIs, and stops
+with exactly one next command whenever it needs you:
 
 ```bash
-gcloud auth application-default login \
-  --scopes=https://www.googleapis.com/auth/admob.readonly,https://www.googleapis.com/auth/cloud-platform
-gcloud auth application-default set-quota-project <PROJECT_ID>   # a project with the AdMob API enabled
-gcloud services enable admob.googleapis.com --project <PROJECT_ID>
-admobctl auth doctor
+admobctl setup                      # shows what it would do; nothing changes without --yes
+admobctl setup --yes                # do it (the Google sign-in opens your browser)
+admobctl setup status               # every check, with the admobctl command that fixes each gap
 ```
 
-`auth doctor` checks credentials, scope, quota project, API access and account, and prints the exact fix for anything that is wrong.
+Features decide which scopes and APIs setup asks for. `read` is always on:
 
-The AdMob API does **not** accept service accounts; you must sign in as a Google user with access to the AdMob account.
-
-**No gcloud?** Use your own OAuth client instead. In Google Cloud Console, create a *Desktop app* OAuth client in a project with the AdMob API enabled, then:
+| Feature | Adds | For |
+|---|---|---|
+| `read` | admob.readonly, cloud-platform; AdMob API | reports, finance, insights, MCP |
+| `write` | admob.monetization | create apps/ad units/mappings, mediation changes |
+| `payments` | adsense.readonly; AdSense Management API | `finance balance` |
 
 ```bash
-admobctl auth login --client-id <id> --client-secret <secret>
+admobctl setup --features write,payments --yes
+```
+
+Setup never drops a feature you already have. The steps also run on their own:
+`setup login [--features …]`, `setup project list`, `setup project use <id>`, `setup apis [--features …]`
+(each is a dry run without `--yes`). Every sign-in, scope, quota-project or API error elsewhere in admobctl names the
+`admobctl setup …` command that fixes it, and `auth doctor` is the same report as `setup status`.
+
+Sign-in uses gcloud **Application Default Credentials** (setup tells you how to install gcloud if it is missing). The
+project and API steps call Google's APIs with your own user token, so they work even when gcloud's active account is a
+service account. The AdMob API does **not** accept service accounts; you must sign in as a Google user with access to
+the AdMob account.
+
+**No gcloud?** Use your own OAuth client instead. In Google Cloud Console, create a *Desktop app* OAuth client in a
+project with the AdMob API enabled, then:
+
+```bash
+admobctl auth login --client-id <id> --client-secret <secret> [--write] [--payments]
 ```
 
 The refresh token is stored in the macOS Keychain (on other OSes, a `0600` file in `~/.admobctl/`). `admobctl auth logout` revokes it.
+After that, `admobctl setup login` uses this OAuth client too.
 
 ### Optional: unpaid balance (`finance balance`)
 
 `finance balance` reads your current unpaid balance from the AdSense Management API, which serves the Google payments
-account that AdMob pays out from. It needs one extra scope and API; everything else works without them.
+account that AdMob pays out from. Turn it on with:
 
 ```bash
-# 1. Sign in again with the adsense.readonly scope (keep admob.monetization only if you use the write commands)
-gcloud auth application-default login \
-  --scopes=https://www.googleapis.com/auth/admob.readonly,https://www.googleapis.com/auth/admob.monetization,https://www.googleapis.com/auth/adsense.readonly,https://www.googleapis.com/auth/cloud-platform
-# 2. Enable the AdSense API in your quota project, as a project owner
-#    (add --account <your Google account> if gcloud is signed in as a service account)
-gcloud services enable adsense.googleapis.com --project <PROJECT_ID>
-# 3. Check
+admobctl setup --features payments --yes
 admobctl finance balance
 ```
-
-With your own OAuth client, use `admobctl auth login --payments` (combine with `--write` if needed) instead of step 1.
-`auth doctor` shows whether the scope is granted.
 
 ## Usage
 
@@ -177,9 +187,8 @@ use. Campaign reports take at most 30 days per request, so longer ranges are fet
 admobctl can also create apps, ad units and ad unit mappings, and change mediation groups and A/B experiments. These
 calls use the AdMob API's v1beta write methods, which need two things beyond the read-only setup:
 
-1. **The `admob.monetization` scope.** Sign in again with it:
-   `gcloud auth application-default login --scopes=https://www.googleapis.com/auth/admob.readonly,https://www.googleapis.com/auth/admob.monetization,https://www.googleapis.com/auth/cloud-platform`
-   (or `admobctl auth login --write`). `auth doctor` says when write commands are enabled.
+1. **The `write` feature** (the `admob.monetization` scope): `admobctl setup --features write --yes`
+   (or `admobctl auth login --write` with your own OAuth client). `setup status` says when write commands are enabled.
 2. **Allowlisting by Google.** Google marks these methods as limited access. Without it they return 403, and
    admobctl tells you to contact your AdMob account manager.
 
@@ -208,7 +217,7 @@ The MCP server stays read-only: no write is exposed as an MCP tool.
 
 ## MCP server
 
-`admobctl mcp` serves read-only tools over stdio: `admobctl_list_accounts`, `admobctl_list_apps`, `admobctl_list_ad_units`, `admobctl_network_report`, `admobctl_mediation_report`, `admobctl_finance_month`, `admobctl_finance_range`, `admobctl_finance_export`, `admobctl_finance_forecast`, `admobctl_finance_balance`, `admobctl_insights`, `admobctl_check`, `admobctl_lint`, `admobctl_analyze_versions`, `admobctl_analyze_consent`, `admobctl_analyze_waterfall`, `admobctl_analyze_geo`, `admobctl_analyze_trend`, `admobctl_campaign_report`, `admobctl_list_ad_sources`, `admobctl_list_adapters`, `admobctl_list_mediation_groups`, `admobctl_list_ad_unit_mappings` and `admobctl_check_app_ads`. Reports default to 200 rows and are trimmed with a notice to stay within roughly 25k tokens.
+`admobctl mcp` serves read-only tools over stdio: `admobctl_list_accounts`, `admobctl_list_apps`, `admobctl_list_ad_units`, `admobctl_network_report`, `admobctl_mediation_report`, `admobctl_finance_month`, `admobctl_finance_range`, `admobctl_finance_export`, `admobctl_finance_forecast`, `admobctl_finance_balance`, `admobctl_setup_status`, `admobctl_insights`, `admobctl_check`, `admobctl_lint`, `admobctl_analyze_versions`, `admobctl_analyze_consent`, `admobctl_analyze_waterfall`, `admobctl_analyze_geo`, `admobctl_analyze_trend`, `admobctl_campaign_report`, `admobctl_list_ad_sources`, `admobctl_list_adapters`, `admobctl_list_mediation_groups`, `admobctl_list_ad_unit_mappings` and `admobctl_check_app_ads`. Reports default to 200 rows and are trimmed with a notice to stay within roughly 25k tokens.
 
 ## Agent plugin (Claude Code and Codex)
 

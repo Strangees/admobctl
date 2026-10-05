@@ -30,7 +30,7 @@ days it is based on (`days_elapsed` of `days_in_month`). Never put the projectio
 For "what is my balance" or "what will Google pay me", call `admobctl_finance_balance` (CLI: `admobctl finance
 balance`). `unpaid` is the balance in the payments currency and includes AdMob earnings. It is not a month's earnings,
 so never book it as one. Payment history is not available from any API: send the user to AdMob → Payments for it. The
-tool needs a one-time extra scope; if it fails, pass its Fix line on.
+tool needs the `payments` feature; if it fails, call `admobctl_setup_status` and pass its `next_command` on.
 
 ## A file for an accounting import
 

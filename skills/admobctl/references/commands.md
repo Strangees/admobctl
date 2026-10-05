@@ -3,22 +3,20 @@
 Global flags (any command): `-o json|table|csv|markdown` (default: table on a TTY, json when piped),
 `--profile <name>`, `--account pub-…`, `-v` (debug logs to stderr). Run `admobctl <cmd> --help` for details.
 
-## Auth
+## Setup and auth
 
 | Command | Purpose |
 |---|---|
-| `admobctl auth doctor` | Checks credentials → token → scope → quota project → API → account → apps (warns about apps marked action required) → beta (which v1beta reads the account can use; warning only); prints `fix:` for each failure. Exit 1 if any check fails. |
+| `admobctl setup [--features write,payments] [--project <id>] [--yes]` | Guided: sign-in → quota project → APIs. Dry run without `--yes`; stops with `Next: <command>` when it needs the user. Never prompts. |
+| `admobctl setup status` (= `auth doctor`) | Checks credentials → token → scope → features → quota project → APIs → AdMob API → account → apps → beta. Each gap has `fix_command`; JSON has `next_command`. Exit 1 on a failure. |
+| `admobctl setup login [--features …] [--yes]` | Sign in with the scopes the features need (gcloud opens the browser; must run in a terminal). Keeps scopes already granted. |
+| `admobctl setup project list` / `setup project use <id> [--yes]` | Google Cloud projects you can use / store one as the quota project. |
+| `admobctl setup apis [--features …] [--yes]` | Enable the APIs the features need in the quota project (as your user, not gcloud's active account). |
 | `admobctl auth status` | Active mode (adc/oauth), quota project, scopes, account |
-| `admobctl auth login --client-id <id> --client-secret <s> [--write]` | Own Desktop OAuth client; refresh token goes to the macOS Keychain. Switches the profile to `oauth`. `--write` also grants admob.monetization; `--payments` grants adsense.readonly (for `finance balance`). |
+| `admobctl auth login --client-id <id> --client-secret <s> [--write] [--payments]` | Own Desktop OAuth client; refresh token goes to the macOS Keychain. Switches the profile to `oauth`. `--write` also grants admob.monetization; `--payments` grants adsense.readonly (for `finance balance`). |
 | `admobctl auth logout` | Revoke and forget the OAuth login; back to gcloud ADC |
 
-gcloud ADC setup (the default):
-
-```bash
-gcloud auth application-default login --scopes=https://www.googleapis.com/auth/admob.readonly,https://www.googleapis.com/auth/cloud-platform
-gcloud auth application-default set-quota-project <PROJECT_ID>
-gcloud services enable admob.googleapis.com --project <PROJECT_ID>
-```
+First-time setup (gcloud ADC, the default): `admobctl setup --yes` in the user's terminal, then `admobctl setup status`.
 
 Service accounts are not supported by the AdMob API.
 
@@ -205,7 +203,7 @@ admobctl analyze trend     [--by total|app|format|country|platform] [--app <alia
 ## MCP tools (`admobctl mcp`)
 
 admobctl_list_accounts, admobctl_list_apps, admobctl_list_ad_units, admobctl_network_report,
-admobctl_mediation_report, admobctl_finance_month, admobctl_finance_range, admobctl_finance_export, admobctl_finance_forecast, admobctl_finance_balance,
+admobctl_mediation_report, admobctl_finance_month, admobctl_finance_range, admobctl_finance_export, admobctl_finance_forecast, admobctl_finance_balance, admobctl_setup_status,
 admobctl_insights, admobctl_check, admobctl_lint,
 admobctl_analyze_versions, admobctl_analyze_consent, admobctl_analyze_waterfall, admobctl_analyze_geo, admobctl_analyze_trend (`include_days` for the daily rows), admobctl_campaign_report,
 admobctl_list_ad_sources, admobctl_list_adapters (`ad_source`), admobctl_list_mediation_groups,
@@ -218,8 +216,7 @@ Reports default to 200 rows.
 
 ## Write commands (v1beta; CLI only)
 
-Need the `admob.monetization` scope (`gcloud auth application-default login --scopes=…admob.readonly,…admob.monetization,…cloud-platform`
-or `admobctl auth login --write`) and Google allowlisting (403 → contact the AdMob account manager).
+Need the `write` feature (`admobctl setup --features write --yes`) and Google allowlisting (403 → contact the AdMob account manager).
 **Without `--yes` every write is a dry run**: it prints the request and a summary (JSON: `{applied: false, plans}`).
 With `--yes` it applies them in order (JSON: `{applied: true, plans, results}`) and appends each to `~/.admobctl/audit.log`.
 
