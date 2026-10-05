@@ -966,7 +966,7 @@
     {
       "name": "admobctl_check",
       "title": "AdMob health check",
-      "description": "Did anything break? Compares the last complete day(s) with the days just before, per app and in total, and reports `findings` where daily earnings, match rate or show rate dropped by the threshold or more (`breaches` is their count; 0 means nothing dropped). Rows with status `thin` had too little baseline traffic to judge: do not report them as problems. Use for \"is everything OK\", \"did revenue drop\" or a daily check; use admobctl_insights for a fuller analysis. Earnings are estimates.",
+      "description": "Did anything break? Compares the last complete day(s) with the days just before, per app and in total, and reports `findings` where daily earnings, match rate or show rate dropped by the threshold or more, or an app stopped sending ad requests (`breaches` is their count; 0 means nothing dropped). Rows with status `thin` had too little baseline traffic to judge: do not report them as problems. Use for \"is everything OK\", \"did revenue drop\" or a daily check; use admobctl_insights for a fuller analysis. Earnings are estimates.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1914,7 +1914,7 @@
     {
       "name": "admobctl_lint",
       "title": "Lint the AdMob setup",
-      "description": "Check the account's setup for things that are broken or unused. Problems (they limit or stop ad serving): apps marked action required, enabled mediation groups that target an ad unit that does not exist or have no enabled line. Notes (worth a look, often intentional): apps in review, ad units with no ad requests in the period, ad units in no enabled mediation group. `problems` counts the problems; each finding has a kind, severity, target and message. Mediation checks are skipped with a notice when the account cannot read mediation groups (AdMob API v1beta).",
+      "description": "Check the account's setup for things that are broken or unused. Problems (they limit or stop ad serving): apps marked action required, enabled mediation groups whose targeted ad units are all gone or that have no enabled line. Notes (worth a look, often intentional): apps in review, groups that also target an ad unit that is gone, ad units with no ad requests in the period, ad units in no enabled mediation group. `problems` counts the problems; each finding has a kind, severity, target and message. Mediation checks are skipped with a notice when the account cannot read mediation groups (AdMob API v1beta).",
       "inputSchema": {
         "type": "object",
         "properties": {

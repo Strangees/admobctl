@@ -72,6 +72,7 @@ describe("financeForecast", () => {
   it("explains when there is nothing to project from yet", async () => {
     const first = setup("2026-10-01T08:00:00Z");
     await expect(financeForecast(first.svc)).rejects.toThrow(/no complete day/i);
+    await expect(financeForecast(first.svc)).rejects.toThrow(/admobctl finance month 2026-09/);
     const future = setup("2026-10-02T08:00:00Z");
     await expect(financeForecast(future.svc, "2026-11")).rejects.toThrow(/has not started/);
   });
@@ -86,5 +87,13 @@ describe("cli finance forecast", () => {
     expect(stdout).toMatch(/example-quiz-ios\s+.*20\.00\s+60\.00/);
     expect(stdout).toMatch(/Total\s+.*30\.34\s+91\.01/);
     expect(stdout).toMatch(/10 of 30 days/);
+  });
+
+  it("takes --as like finance month", async () => {
+    const { deps } = setup("2026-09-11T08:00:00Z");
+    let stdout = "";
+    const code = await run(["node", "admobctl", "finance", "forecast", "--as", "json"], { stdout: (s) => (stdout += s), stderr: () => {}, isTTY: true, service: deps });
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toMatchObject({ month: "2026-09" });
   });
 });

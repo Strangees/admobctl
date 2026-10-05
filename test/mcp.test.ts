@@ -324,6 +324,20 @@ describe("mcp server", () => {
     expect((wf.structuredContent!.rows as unknown[]).length).toBe(1);
   });
 
+  it("says when the geo country totals are cut to the biggest", async () => {
+    const country = (c: string) => ({
+      row: { dimensionValues: { COUNTRY: { value: c }, FORMAT: { value: "BANNER" } }, metricValues: { ESTIMATED_EARNINGS: { microsValue: "1000000" }, AD_REQUESTS: { integerValue: "10" } } },
+    });
+    const codes = Array.from({ length: 30 }, (_, i) => `C${i}`);
+    const { client } = await connect({
+      "POST /networkReport:generate": () => jsonResponse([{ header: { localizationSettings: { currencyCode: "NOK" } } }, ...codes.map(country)]),
+    });
+    const r = (await client.callTool({ name: "admobctl_analyze_geo", arguments: { last_days: 7 } })) as ToolResult;
+    expect(r.isError, r.content[0]!.text).toBeFalsy();
+    expect(r.structuredContent!.countries).toHaveLength(25);
+    expect(r.structuredContent!.notices).toContain("`countries` lists the 25 biggest of 30 countries; the rows cover all of them.");
+  });
+
   it("serves the daily trend without the day rows unless asked", async () => {
     const day = (n: number) => ({
       row: { dimensionValues: { DATE: { value: `202609${String(n).padStart(2, "0")}` } }, metricValues: { ESTIMATED_EARNINGS: { microsValue: "1000000" }, AD_REQUESTS: { integerValue: "10" } } },

@@ -237,7 +237,7 @@ export async function financeForecast(svc: AdmobService, month?: string): Promis
   const complete = isMonthComplete(ym, today);
   const lastDay = complete ? end : addDays(today, -1);
   if (compareDates(lastDay, start) < 0) {
-    throw usageError(`${label} has no complete day yet (today's data is still arriving). Try again tomorrow, or: admobctl finance month <last month>`);
+    throw usageError(`${label} has no complete day yet (today's data is still arriving). Try again tomorrow, or: admobctl finance month ${formatMonth(addDays(start, -1))}`);
   }
   const [{ report }, index] = await Promise.all([
     svc.rawReport("network", { dateRange: { startDate: start, endDate: lastDay }, by: ["app"], metrics: ["earnings"] }),

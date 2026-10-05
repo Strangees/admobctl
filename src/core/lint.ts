@@ -77,18 +77,24 @@ export async function lint(svc: AdmobService, opts: LintOptions = {}): Promise<L
     }
   }
 
-  if (groups) {
+  // With --app, only the groups that target the app's ad units are checked (and counted).
+  const mine = new Set(units.map((u) => u.adUnitId));
+  const checkedGroups = groups && only ? groups.filter((g) => g.adUnits.some((u) => mine.has(u.adUnitId))) : groups;
+  if (checkedGroups) {
     const known = new Set(allUnits.map((u) => u.adUnitId));
-    const mine = new Set(units.map((u) => u.adUnitId));
-    for (const g of groups.filter((x) => x.state === "ENABLED")) {
-      if (only && !g.adUnits.some((u) => mine.has(u.adUnitId))) continue;
+    for (const g of checkedGroups.filter((x) => x.state === "ENABLED")) {
       const missing = g.adUnits.filter((u) => !known.has(u.adUnitId));
       if (missing.length) {
+        // Only a group left with no ad unit at all stops serving; otherwise the rest of it still works.
+        const none = missing.length === g.adUnits.length;
+        const ids = missing.map((u) => u.adUnitId).join(", ");
         findings.push({
           kind: "missing-ad-unit",
-          severity: "problem",
+          severity: none ? "problem" : "note",
           target: g.name,
-          message: `Mediation group "${g.name}" targets ${missing.length === 1 ? "an ad unit that does" : "ad units that do"} not exist in the account: ${missing.map((u) => u.adUnitId).join(", ")}.`,
+          message: none
+            ? `Mediation group "${g.name}" is enabled but every ad unit it targets is gone from the account (${ids}), so it cannot serve.`
+            : `Mediation group "${g.name}" also targets ${missing.length === 1 ? "an ad unit that does" : "ad units that do"} not exist in the account: ${ids}. Its other ad units still serve.`,
         });
       }
       if (!g.lines.some((l) => l.state === "ENABLED")) {
@@ -139,13 +145,13 @@ export async function lint(svc: AdmobService, opts: LintOptions = {}): Promise<L
   return {
     from,
     to,
-    checked: { apps: apps.length, ad_units: units.length, mediation_groups: groups ? groups.length : null },
+    checked: { apps: apps.length, ad_units: units.length, mediation_groups: checkedGroups ? checkedGroups.length : null },
     problems,
     findings,
     summary: [
       findings.length
-        ? `${count(problems, "problem")} and ${count(notes, "note")} in ${count(apps.length, "app")}, ${count(units.length, "ad unit")}${groups ? ` and ${count(groups.length, "mediation group")}` : ""}.`
-        : `Nothing to report in ${count(apps.length, "app")}, ${count(units.length, "ad unit")}${groups ? ` and ${count(groups.length, "mediation group")}` : ""}.`,
+        ? `${count(problems, "problem")} and ${count(notes, "note")} in ${count(apps.length, "app")}, ${count(units.length, "ad unit")}${checkedGroups ? ` and ${count(checkedGroups.length, "mediation group")}` : ""}.`
+        : `Nothing to report in ${count(apps.length, "app")}, ${count(units.length, "ad unit")}${checkedGroups ? ` and ${count(checkedGroups.length, "mediation group")}` : ""}.`,
     ],
     notices,
   };

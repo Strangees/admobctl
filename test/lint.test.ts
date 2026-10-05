@@ -55,11 +55,11 @@ describe("lint", () => {
     expect(r.problems).toBe(0);
   });
 
-  it("reports groups that target a missing ad unit or cannot serve as problems", async () => {
+  it("reports groups that target only missing ad units or cannot serve as problems", async () => {
     const r = await lint(
       setup({
         groups: (g) => {
-          g.mediationGroups[0]!.targeting.adUnitIds.push("ca-app-pub-0000000000000001/9999999999");
+          g.mediationGroups[0]!.targeting.adUnitIds = ["ca-app-pub-0000000000000001/9999999999"];
           for (const line of Object.values(g.mediationGroups[1]!.mediationGroupLines)) line.state = "DISABLED";
           return g;
         },
@@ -68,7 +68,23 @@ describe("lint", () => {
     const problems = r.findings.filter((f) => f.severity === "problem");
     expect(problems.map((f) => `${f.kind}:${f.target}`)).toEqual(["missing-ad-unit:Banners", "no-enabled-lines:Interstitials"]);
     expect(problems[0]!.message).toMatch(/9999999999/);
+    expect(problems[0]!.message).toMatch(/cannot serve/);
     expect(r.problems).toBe(2);
+  });
+
+  it("notes a missing ad unit when the group still targets ad units that exist", async () => {
+    const r = await lint(
+      setup({
+        groups: (g) => {
+          g.mediationGroups[0]!.targeting.adUnitIds.push("ca-app-pub-0000000000000001/9999999999");
+          return g;
+        },
+      }).svc,
+    );
+    const f = r.findings.find((x) => x.kind === "missing-ad-unit")!;
+    expect(f).toMatchObject({ severity: "note", target: "Banners" });
+    expect(f.message).toMatch(/9999999999/);
+    expect(r.problems).toBe(0);
   });
 
   it("does not judge disabled groups", async () => {
@@ -113,7 +129,8 @@ describe("lint", () => {
   it("limits the findings to one app", async () => {
     const r = await lint(setup({ units: [] }).svc, { app: "example-quiz-android" });
     expect(kinds(r)).toEqual(["unused-ad-unit:Quiz banner (Android)", "ungrouped-ad-unit:Quiz banner (Android)"]);
-    expect(r.checked).toMatchObject({ apps: 1, ad_units: 1 });
+    // Only the groups that target the app's ad units count as checked.
+    expect(r.checked).toMatchObject({ apps: 1, ad_units: 1, mediation_groups: 0 });
   });
 });
 
