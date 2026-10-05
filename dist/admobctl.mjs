@@ -12495,7 +12495,7 @@ async function financeBalance(svc) {
 }
 
 // src/version.ts
-var VERSION = true ? "0.3.0" : "0.0.0-dev";
+var VERSION = true ? "0.4.0" : "0.0.0-dev";
 
 // src/core/journal.ts
 var JOURNAL_FORMAT = "revenue-journal/1";
