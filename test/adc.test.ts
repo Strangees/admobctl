@@ -77,7 +77,7 @@ describe("AdcTokenProvider", () => {
     const p = new AdcTokenProvider({ info: () => undefined, exec: async () => ({ code: 0, stdout: "", stderr: "" }) });
     const err = await p.getToken().catch((e) => e);
     expect(err.code).toBe("AUTH_NO_CREDENTIALS");
-    expect(err.fix).toContain("gcloud auth application-default login");
+    expect(err.fix).toBe("admobctl setup login --yes");
   });
 
   it("maps a gcloud reauth failure to AUTH_TOKEN_EXPIRED", async () => {

@@ -71,14 +71,13 @@ describe("diagnoseApiError", () => {
   it("detects a missing AdMob scope and gives the login command", () => {
     const e = diagnoseApiError(403, scopeBody);
     expect(e.code).toBe("AUTH_SCOPE_MISSING");
-    expect(e.fix).toContain(LOGIN_COMMAND);
-    expect(e.fix).toContain("admob.readonly");
+    expect(e.fix).toBe("admobctl setup login --yes");
   });
 
   it("detects a disabled API and names the project to enable it in", () => {
     const e = diagnoseApiError(403, disabledBody);
     expect(e.code).toBe("API_NOT_ENABLED");
-    expect(e.fix).toBe("gcloud services enable admob.googleapis.com --project my-project");
+    expect(e.fix).toBe("admobctl setup apis --yes");
   });
 
   it("names the disabled service from ErrorInfo metadata", () => {
@@ -97,13 +96,13 @@ describe("diagnoseApiError", () => {
     });
     expect(e.code).toBe("API_NOT_ENABLED");
     expect(e.message).toBe("The AdSense Management API is not enabled in project my-project.");
-    expect(e.fix).toBe("gcloud services enable adsense.googleapis.com --project my-project");
+    expect(e.fix).toBe("admobctl setup apis --features payments --yes");
   });
 
   it("detects a missing quota project before treating it as a disabled API", () => {
     const e = diagnoseApiError(403, quotaBody);
     expect(e.code).toBe("AUTH_QUOTA_PROJECT_MISSING");
-    expect(e.fix).toContain("gcloud auth application-default set-quota-project");
+    expect(e.fix).toBe("admobctl setup project list");
   });
 
   it("detects expired credentials", () => {

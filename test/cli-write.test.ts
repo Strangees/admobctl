@@ -114,7 +114,7 @@ describe("cli write commands", () => {
     const r = await cli(["mediation-groups", "set-line", "Banners", "Waterfall 3.00", "--state", "disabled", "--yes"], { scopeError: true, isTTY: true });
     expect(r.code).toBe(1);
     expect(r.stderr).toMatch(/admob\.monetization/);
-    expect(r.stderr).toMatch(/fix: gcloud auth application-default login --scopes=.*admob\.monetization/);
+    expect(r.stderr).toMatch(/fix: admobctl setup login --features write --yes/);
   });
 
   it("audit-log lists applied writes, newest first, without calling the API", async () => {

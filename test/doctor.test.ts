@@ -49,13 +49,13 @@ describe("runDoctor", () => {
   it("flags a missing AdMob scope", async () => {
     const checks = byId(await runDoctor({ ...okDeps(), tokenInfo: async () => ({ scopes: ["openid"] }) }));
     expect(checks.scope!.status).toBe("fail");
-    expect(checks.scope!.fix).toContain("admob.readonly");
+    expect(checks.scope!.fix).toBe("admobctl setup login --yes");
   });
 
   it("warns when no quota project is set in ADC mode", async () => {
     const checks = byId(await runDoctor({ ...okDeps(), quotaProject: undefined }));
     expect(checks["quota-project"]!.status).toBe("warn");
-    expect(checks["quota-project"]!.fix).toContain("set-quota-project");
+    expect(checks["quota-project"]!.fix).toBe("admobctl setup project list");
   });
 
   it("reports a disabled API with its fix", async () => {

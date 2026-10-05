@@ -1,6 +1,6 @@
 import { appsNeedingAction, type AppRef } from "../aliases.js";
 import type { PublisherAccount } from "../client.js";
-import { AdmobctlError, ADSENSE_SCOPE, LOGIN_COMMAND, MONETIZATION_SCOPE } from "../errors.js";
+import { AdmobctlError, ADSENSE_SCOPE, MONETIZATION_SCOPE } from "../errors.js";
 
 export type CheckStatus = "ok" | "warn" | "fail" | "skip";
 
@@ -46,7 +46,7 @@ export async function fetchTokenInfo(token: string, doFetch: typeof fetch = fetc
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ access_token: token }).toString(),
   });
-  if (!res.ok) throw new AdmobctlError("AUTH_TOKEN_EXPIRED", "Google rejected the access token.", { fix: LOGIN_COMMAND });
+  if (!res.ok) throw new AdmobctlError("AUTH_TOKEN_EXPIRED", "Google rejected the access token.", { fix: "admobctl setup login --yes" });
   const j = (await res.json()) as { scope?: string; email?: string; expires_in?: string };
   const info: TokenInfo = { scopes: (j.scope ?? "").split(/\s+/).filter(Boolean) };
   if (j.email) info.email = j.email;
@@ -102,7 +102,7 @@ export async function runDoctor(d: DoctorDeps): Promise<Check[]> {
             id: "scope",
             status: "fail",
             summary: `Token lacks the AdMob scope (has: ${info.scopes.join(" ") || "none"})`,
-            fix: d.mode === "adc" ? LOGIN_COMMAND : "admobctl auth login",
+            fix: "admobctl setup login --yes",
           },
     );
   } catch (err) {
@@ -117,7 +117,7 @@ export async function runDoctor(d: DoctorDeps): Promise<Check[]> {
             id: "quota-project",
             status: "warn",
             summary: "No quota project set; ADC requests to the AdMob API usually need one.",
-            fix: "gcloud auth application-default set-quota-project <PROJECT_ID>  (or: admobctl config set quotaProject <PROJECT_ID>)",
+            fix: "admobctl setup project list",
           },
     );
   } else {

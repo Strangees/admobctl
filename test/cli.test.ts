@@ -203,7 +203,7 @@ describe("cli", () => {
       },
     });
     expect(r.code).not.toBe(0);
-    expect(r.stderr).toContain("admobctl auth login --payments");
+    expect(r.stderr).toContain("admobctl setup login --features payments --yes");
   });
 
   it("prints a finance range by month", async () => {

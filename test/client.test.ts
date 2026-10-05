@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { AdmobClient } from "../src/core/client.js";
-import { PAYMENTS_LOGIN_COMMAND } from "../src/core/errors.js";
 import { fakeFetch, fixture, jsonResponse, noSleep } from "./helpers.js";
 
 function makeClient(routes: Parameters<typeof fakeFetch>[0], quotaProject?: string) {
@@ -89,15 +88,12 @@ describe("AdmobClient.listPayments (AdSense Management API)", () => {
     expect(await client.listPayments(`accounts/${PUB}`)).toEqual([]);
   });
 
-  it("explains a missing adsense scope with a login fix that keeps the write scope", async () => {
+  it("explains a missing adsense scope with a setup login fix for the payments feature", async () => {
     const { client } = makeClient({ "GET /v2/accounts/": scopeError });
     const err = await client.listPayments(PUB).catch((e: unknown) => e);
     expect(err).toMatchObject({ code: "AUTH_SCOPE_MISSING" });
     const fix = (err as { fix: string }).fix;
-    expect(fix).toContain(PAYMENTS_LOGIN_COMMAND);
-    expect(fix).toContain("admob.monetization");
-    expect(fix).toContain("admobctl auth login --payments");
-    expect(fix).toMatch(/auth login --payments[^)]*--write/);
+    expect(fix).toBe("admobctl setup login --features payments --yes");
   });
 
   it.each([
@@ -136,8 +132,6 @@ describe("AdmobClient.listPayments (AdSense Management API)", () => {
     const err = await client.listPayments(PUB).catch((e: unknown) => e);
     expect(err).toMatchObject({ code: "API_NOT_ENABLED" });
     const fix = (err as { fix: string }).fix;
-    expect(fix.startsWith("gcloud services enable adsense.googleapis.com --project qp")).toBe(true);
-    expect(fix).toContain("--account");
-    expect(fix).toContain("minute");
+    expect(fix).toBe("admobctl setup apis --features payments --yes");
   });
 });

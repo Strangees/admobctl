@@ -221,7 +221,7 @@ describe("mcp server", () => {
     const r = (await client.callTool({ name: "admobctl_list_accounts", arguments: {} })) as ToolResult;
     expect(r.isError).toBe(true);
     expect(r.content[0]!.text).toMatch(/AdMob scope/);
-    expect(r.content[0]!.text).toMatch(/Fix: gcloud auth application-default login/);
+    expect(r.content[0]!.text).toMatch(/Fix: admobctl setup login --yes/);
   });
 
   it("reuses one service across tool calls, so the account and apps are fetched once", async () => {

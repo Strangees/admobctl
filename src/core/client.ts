@@ -1,4 +1,4 @@
-import { AdmobctlError, MONETIZATION_SCOPE, PAYMENTS_LOGIN_COMMAND, WRITE_LOGIN_COMMAND } from "./errors.js";
+import { AdmobctlError } from "./errors.js";
 import { requestJson, type HttpOptions } from "./http.js";
 import { processLimiters, type Limiters, type QuotaCategory } from "./ratelimit.js";
 import { parseReport, type Report, type ReportSpec } from "./report.js";
@@ -239,7 +239,7 @@ export class AdmobClient {
         throw new AdmobctlError("AUTH_SCOPE_MISSING", "Write commands need the admob.monetization scope, which your credentials do not include.", {
           status: err.status,
           cause: err,
-          fix: `${WRITE_LOGIN_COMMAND}  (or: admobctl auth login --write)`,
+          fix: "admobctl setup login --features write --yes",
         });
       }
       throw err;
@@ -312,12 +312,7 @@ function paymentsError(err: unknown, publisherId: string): unknown {
     case "AUTH_SCOPE_MISSING":
       return new AdmobctlError("AUTH_SCOPE_MISSING", "finance balance needs the adsense.readonly scope, which your credentials do not include.", {
         ...opts,
-        fix: `${PAYMENTS_LOGIN_COMMAND}  (add ,${MONETIZATION_SCOPE} to --scopes if you use the write commands; or: admobctl auth login --payments, plus --write if you use the write commands)`,
-      });
-    case "API_NOT_ENABLED":
-      return new AdmobctlError("API_NOT_ENABLED", err.message, {
-        ...opts,
-        fix: `${err.fix}  (run it as a project owner: if gcloud is signed in as a service account, add --account <your Google account>; allow a minute to take effect)`,
+        fix: "admobctl setup login --features payments --yes",
       });
     case "PERMISSION_DENIED":
     case "NOT_FOUND":

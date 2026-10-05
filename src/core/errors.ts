@@ -95,7 +95,7 @@ export function diagnoseApiError(status: number, body: unknown, hints: DiagnoseH
   if (/quota project/i.test(message)) {
     return new AdmobctlError("AUTH_QUOTA_PROJECT_MISSING", "No quota project is set for your Application Default Credentials.", {
       ...opts,
-      fix: "gcloud auth application-default set-quota-project <PROJECT_ID>  (a project where the AdMob API is enabled)",
+      fix: "admobctl setup project list",
     });
   }
   if (reason === "SERVICE_DISABLED" || /has not been used in project|is disabled/i.test(message)) {
@@ -104,19 +104,19 @@ export function diagnoseApiError(status: number, body: unknown, hints: DiagnoseH
     const service = info?.metadata?.service ?? "admob.googleapis.com";
     return new AdmobctlError("API_NOT_ENABLED", `The ${title} is not enabled in project ${project}.`, {
       ...opts,
-      fix: `gcloud services enable ${service} --project ${project}`,
+      fix: `admobctl setup apis${service === "adsense.googleapis.com" ? " --features payments" : ""} --yes`,
     });
   }
   if (reason === "ACCESS_TOKEN_SCOPE_INSUFFICIENT" || /insufficient authentication scopes/i.test(message)) {
     return new AdmobctlError("AUTH_SCOPE_MISSING", "Your credentials do not include the AdMob scope.", {
       ...opts,
-      fix: `${LOGIN_COMMAND}  (or: admobctl auth login --client-id <id>)`,
+      fix: "admobctl setup login --yes",
     });
   }
   if (status === 401) {
     return new AdmobctlError("AUTH_TOKEN_EXPIRED", "Your credentials are expired or invalid.", {
       ...opts,
-      fix: `${LOGIN_COMMAND}  (or: admobctl auth login)`,
+      fix: "admobctl setup login --yes",
     });
   }
   if (status === 403) {
