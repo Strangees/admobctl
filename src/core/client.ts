@@ -312,7 +312,7 @@ function paymentsError(err: unknown, publisherId: string): unknown {
     case "AUTH_SCOPE_MISSING":
       return new AdmobctlError("AUTH_SCOPE_MISSING", "finance balance needs the adsense.readonly scope, which your credentials do not include.", {
         ...opts,
-        fix: `${PAYMENTS_LOGIN_COMMAND}  (add ,${MONETIZATION_SCOPE} to --scopes if you use the write commands; or: admobctl auth login --payments)`,
+        fix: `${PAYMENTS_LOGIN_COMMAND}  (add ,${MONETIZATION_SCOPE} to --scopes if you use the write commands; or: admobctl auth login --payments, plus --write if you use the write commands)`,
       });
     case "API_NOT_ENABLED":
       return new AdmobctlError("API_NOT_ENABLED", err.message, {
@@ -321,7 +321,7 @@ function paymentsError(err: unknown, publisherId: string): unknown {
       });
     case "PERMISSION_DENIED":
     case "NOT_FOUND":
-      return new AdmobctlError("PAYMENTS_UNAVAILABLE", `No Google payments (AdSense) account was found for ${publisherId}, so the unpaid balance is unavailable.`, {
+      return new AdmobctlError("PAYMENTS_UNAVAILABLE", `No Google payments (AdSense) account was found or accessible for ${publisherId}, so the unpaid balance is unavailable. (Google: ${err.message})`, {
         ...opts,
         fix: "Check AdMob → Payments in the web UI. If your balance shows there, run admobctl auth doctor and make sure you signed in as the AdMob account owner.",
       });

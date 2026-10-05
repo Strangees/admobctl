@@ -97,6 +97,7 @@ describe("AdmobClient.listPayments (AdSense Management API)", () => {
     expect(fix).toContain(PAYMENTS_LOGIN_COMMAND);
     expect(fix).toContain("admob.monetization");
     expect(fix).toContain("admobctl auth login --payments");
+    expect(fix).toMatch(/auth login --payments[^)]*--write/);
   });
 
   it.each([
@@ -107,6 +108,7 @@ describe("AdmobClient.listPayments (AdSense Management API)", () => {
     const err = await client.listPayments(PUB).catch((e: unknown) => e);
     expect(err).toMatchObject({ code: "PAYMENTS_UNAVAILABLE" });
     expect((err as Error).message).toContain(PUB);
+    expect((err as Error).message).toContain(body.error.message);
     expect((err as { fix?: string }).fix).toBeTruthy();
   });
 
