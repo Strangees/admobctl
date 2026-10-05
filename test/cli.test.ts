@@ -175,6 +175,37 @@ describe("cli", () => {
     expect(JSON.parse(json.stdout).total).toBe(102.45);
   });
 
+  it("prints the unpaid balance from AdSense payments", async () => {
+    const routes = { "GET /v2/accounts/": () => jsonResponse(fixture("adsense-payments.json")) };
+    const json = await cli(["finance", "balance", "--as", "json"], { routes });
+    expect(json.code).toBe(0);
+    expect(JSON.parse(json.stdout)).toMatchObject({ account: "pub-0000000000000001", currency: "NOK", unpaid: 1234.56 });
+    const summary = await cli(["finance", "balance"], { isTTY: true, routes });
+    expect(summary.code).toBe(0);
+    expect(summary.stdout).toContain("Unpaid (NOK)");
+    expect(summary.stdout).toContain("1234.56");
+  });
+
+  it("explains how to add the adsense scope when finance balance lacks it", async () => {
+    const r = await cli(["finance", "balance"], {
+      routes: {
+        "GET /v2/accounts/": () =>
+          jsonResponse(
+            {
+              error: {
+                code: 403,
+                message: "Request had insufficient authentication scopes.",
+                details: [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "ACCESS_TOKEN_SCOPE_INSUFFICIENT" }],
+              },
+            },
+            403,
+          ),
+      },
+    });
+    expect(r.code).not.toBe(0);
+    expect(r.stderr).toContain("admobctl auth login --payments");
+  });
+
   it("prints a finance range by month", async () => {
     const r = await cli(["finance", "range", "--from", "2026-07", "--to", "2026-09", "-o", "csv"]);
     expect(r.stdout).toBe("Month,Earnings (NOK),Complete\n2026-07,65.00,yes\n2026-08,78.08,yes\n2026-09,102.45,yes\n");

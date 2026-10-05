@@ -5,6 +5,7 @@ import type { AuditLog } from "../core/audit.js";
 import type { Check } from "../core/auth/doctor.js";
 import type { CheckResult, CheckRow } from "../core/check.js";
 import { JOURNAL_COLUMNS, type FinanceForecast, type FinanceMonth, type FinanceRange, type JournalRow } from "../core/finance.js";
+import type { FinanceBalance } from "../core/payments.js";
 import type { GeoResult } from "../core/geo.js";
 import type { InsightsResult } from "../core/insights.js";
 import type { LintResult } from "../core/lint.js";
@@ -209,6 +210,20 @@ export function financeMonthView(m: FinanceMonth): Output {
       footer: [{ alias: "Total", earnings: m.total.toFixed(2) }],
     },
     notes: [`${m.month} (${m.from} → ${m.to}, ${m.timeZone}), booking date ${m.bookingDate}.`, ...m.notes],
+  };
+}
+
+export function financeBalanceView(b: FinanceBalance): Output {
+  return {
+    data: b,
+    table: {
+      columns: [
+        { key: "account", label: "Account" },
+        { key: "unpaid", label: `Unpaid (${b.currency})`, align: "right" },
+      ],
+      rows: [{ account: b.account, unpaid: b.unpaid.toFixed(2) }],
+    },
+    notes: b.notes,
   };
 }
 

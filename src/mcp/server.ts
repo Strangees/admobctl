@@ -6,6 +6,7 @@ import { checkAppAds } from "../core/app-ads.js";
 import { check } from "../core/check.js";
 import { AdmobctlError } from "../core/errors.js";
 import { financeForecast, financeMonth, financeRange, JOURNAL_COLUMNS, journalRows } from "../core/finance.js";
+import { financeBalance } from "../core/payments.js";
 import { exportJournal } from "../core/journal.js";
 import { analyzeGeo } from "../core/geo.js";
 import { INSIGHT_DIMENSIONS, insights } from "../core/insights.js";
@@ -38,6 +39,7 @@ const INSTRUCTIONS = `Read-only access to the user's Google AdMob account via ad
 - All earnings are ESTIMATES. When reporting money, say so and that they should be reconciled against AdMob Payments (finalized).
 - For "is everything OK?" or "did revenue drop?" use admobctl_check: it compares the last complete day with the week before.
 - For "what did I earn in <month>" use admobctl_finance_month; for trends and recommendations use admobctl_insights.
+- For "what is my balance / what will Google pay me" use admobctl_finance_balance (unpaid balance; it needs an extra scope, so pass its Fix line on if it fails).
 - For a file an accounting system can import, use admobctl_finance_export and hand over its \`content\` unchanged.
 - For SDK/app-version problems, consent impact or mediation waterfalls use the admobctl_analyze_* tools.
 - For "is my app-ads.txt OK?" or unexplained "limited ad serving" use admobctl_check_app_ads. Google Play listings cannot be
@@ -343,6 +345,19 @@ export function createMcpServer(deps: McpDeps): McpServer {
       annotations,
     },
     wrap(async (a: { month?: string; account?: string }) => ({ ...(await financeForecast(svc(a), a.month)) })),
+  );
+
+  server.registerTool(
+    "admobctl_finance_balance",
+    {
+      title: "AdMob unpaid balance",
+      description:
+        "Current unpaid balance Google will pay out (AdSense Management API; includes AdMob earnings), in the account's payment currency. Not a monthly figure and not payment history. Needs a one-time extra sign-in scope; if it fails, pass the Fix line on.",
+      inputSchema: { ...accountArg },
+      outputSchema: loose({ account: z.string(), currency: z.string(), unpaid: z.number(), notes: z.array(z.string()) }),
+      annotations,
+    },
+    wrap(async (a: { account?: string }) => ({ ...(await financeBalance(svc(a))) })),
   );
 
   server.registerTool(

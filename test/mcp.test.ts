@@ -6,6 +6,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it } from "vitest";
 import { createMcpServer, MAX_TEXT_CHARS } from "../src/mcp/server.js";
 import { AdmobctlError } from "../src/core/errors.js";
+import { BALANCE_NOTE } from "../src/core/payments.js";
 import { AdmobService } from "../src/core/service.js";
 import type { TokenProvider } from "../src/core/auth/types.js";
 import { fakeFetch, fixture, jsonResponse, noSleep } from "./helpers.js";
@@ -78,6 +79,7 @@ describe("mcp server", () => {
         "admobctl_list_ad_unit_mappings",
         "admobctl_list_adapters",
         "admobctl_list_mediation_groups",
+        "admobctl_finance_balance",
         "admobctl_finance_export",
         "admobctl_finance_forecast",
         "admobctl_finance_month",
@@ -112,6 +114,14 @@ describe("mcp server", () => {
     const sc = r.structuredContent as { problems: number; apps: Array<{ status: string; websiteSource: string }> };
     expect(sc.problems).toBe(0);
     expect(sc.apps).toEqual([expect.objectContaining({ status: "ok", websiteSource: "flag" })]);
+  });
+
+  it("returns the unpaid balance from admobctl_finance_balance", async () => {
+    const { client } = await connect({ "GET /v2/accounts/": () => jsonResponse(fixture("adsense-payments.json")) });
+    const r = (await client.callTool({ name: "admobctl_finance_balance", arguments: {} })) as ToolResult;
+    expect(r.isError).toBeFalsy();
+    expect(r.structuredContent).toMatchObject({ account: "pub-0000000000000001", currency: "NOK", unpaid: 1234.56 });
+    expect(r.structuredContent!.notes).toContain(BALANCE_NOTE);
   });
 
   it("returns structured content and a JSON text mirror", async () => {

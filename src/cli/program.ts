@@ -10,6 +10,7 @@ import { readAudit } from "../core/audit.js";
 import { check } from "../core/check.js";
 import { AdmobctlError } from "../core/errors.js";
 import { financeForecast, financeMonth, financeRange, journalRows } from "../core/finance.js";
+import { financeBalance } from "../core/payments.js";
 import { EXPORT_FORMATS, exportJournal } from "../core/journal.js";
 import { analyzeGeo } from "../core/geo.js";
 import { INSIGHT_DIMENSIONS, insights, type InsightDimension } from "../core/insights.js";
@@ -46,6 +47,7 @@ import {
   checkView,
   consentView,
   doctorView,
+  financeBalanceView,
   financeForecastView,
   financeMonthView,
   financeRangeView,
@@ -538,6 +540,14 @@ export function buildProgram(io: CliIO): Command {
     .addOption(new Option("--as <kind>", "summary (default), csv or json").choices(["summary", "csv", "json"]).default("summary"))
     .action(async (month: string | undefined, o: { as: AsFormat }, cmd: Command) => {
       const view = financeForecastView(await financeForecast(svc(cmd), month));
+      emitFinance(cmd, o.as, view, () => view);
+    });
+  finance
+    .command("balance")
+    .description("Current unpaid balance from Google payments (includes AdMob earnings; needs the adsense.readonly scope)")
+    .addOption(new Option("--as <kind>", "summary (default), csv or json").choices(["summary", "csv", "json"]).default("summary"))
+    .action(async (o: { as: AsFormat }, cmd: Command) => {
+      const view = financeBalanceView(await financeBalance(svc(cmd)));
       emitFinance(cmd, o.as, view, () => view);
     });
   finance

@@ -1,0 +1,1 @@
+{"account":"pub-0000000000000001","currency":"NOK","unpaid":1234.56,"unpaidMicros":1234560000,"notes":["Unpaid balance from Google payments (AdSense Management API). It includes AdMob earnings. Payment history is not available: the API leaves out AdMob payouts."]}

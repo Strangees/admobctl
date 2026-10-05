@@ -10578,6 +10578,8 @@ var CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
 var LOGIN_COMMAND = `gcloud auth application-default login --scopes=${ADMOB_SCOPE},${CLOUD_PLATFORM_SCOPE}`;
 var MONETIZATION_SCOPE = "https://www.googleapis.com/auth/admob.monetization";
 var WRITE_LOGIN_COMMAND = `gcloud auth application-default login --scopes=${ADMOB_SCOPE},${MONETIZATION_SCOPE},${CLOUD_PLATFORM_SCOPE}`;
+var ADSENSE_SCOPE = "https://www.googleapis.com/auth/adsense.readonly";
+var PAYMENTS_LOGIN_COMMAND = `gcloud auth application-default login --scopes=${ADMOB_SCOPE},${ADSENSE_SCOPE},${CLOUD_PLATFORM_SCOPE}`;
 var AdmobctlError = class extends Error {
   code;
   /** An exact command or action that resolves the problem. */
@@ -10624,9 +10626,11 @@ function diagnoseApiError(status, body, hints = {}) {
   }
   if (reason === "SERVICE_DISABLED" || /has not been used in project|is disabled/i.test(message)) {
     const project = info?.metadata?.consumer?.replace(/^projects\//, "") ?? "<PROJECT_ID>";
-    return new AdmobctlError("API_NOT_ENABLED", `The AdMob API is not enabled in project ${project}.`, {
+    const title = info?.metadata?.serviceTitle ?? "AdMob API";
+    const service = info?.metadata?.service ?? "admob.googleapis.com";
+    return new AdmobctlError("API_NOT_ENABLED", `The ${title} is not enabled in project ${project}.`, {
       ...opts,
-      fix: `gcloud services enable admob.googleapis.com --project ${project}`
+      fix: `gcloud services enable ${service} --project ${project}`
     });
   }
   if (reason === "ACCESS_TOKEN_SCOPE_INSUFFICIENT" || /insufficient authentication scopes/i.test(message)) {
@@ -10767,7 +10771,7 @@ async function runDoctor(d) {
       granted.length ? {
         id: "scope",
         status: "ok",
-        summary: `Scope granted: ${granted.map((s) => s.split("/").pop()).join(", ")}${info.scopes.includes(MONETIZATION_SCOPE) ? ", admob.monetization (write commands enabled)" : ""}`
+        summary: `Scope granted: ${granted.map((s) => s.split("/").pop()).join(", ")}${info.scopes.includes(MONETIZATION_SCOPE) ? ", admob.monetization (write commands enabled)" : ""}${info.scopes.includes(ADSENSE_SCOPE) ? ", adsense.readonly (finance balance enabled)" : ""}`
       } : {
         id: "scope",
         status: "fail",
@@ -11070,7 +11074,7 @@ function buildAuthUrl(o) {
     client_id: o.clientId,
     redirect_uri: o.redirectUri,
     response_type: "code",
-    scope: o.write ? `${ADMOB_SCOPE} ${MONETIZATION_SCOPE}` : ADMOB_SCOPE,
+    scope: [ADMOB_SCOPE, ...o.write ? [MONETIZATION_SCOPE] : [], ...o.payments ? [ADSENSE_SCOPE] : []].join(" "),
     code_challenge: o.pkce.challenge,
     code_challenge_method: "S256",
     access_type: "offline",
@@ -11209,7 +11213,7 @@ async function login(o) {
   const state = randomBytes2(16).toString("hex");
   const wait = waitForLoopbackCode({ state });
   const { redirectUri } = await wait.ready;
-  const url2 = buildAuthUrl({ clientId: o.clientId, redirectUri, pkce, state, write: o.write });
+  const url2 = buildAuthUrl({ clientId: o.clientId, redirectUri, pkce, state, write: o.write, payments: o.payments });
   o.print(`Opening your browser to sign in to Google. If it does not open, visit:
 
   ${url2}
@@ -12461,6 +12465,33 @@ async function check(svc, opts = {}) {
   const span = `${result.window.from}${windowDays > 1 ? ` \u2192 ${result.window.to}` : ""} against ${result.baseline.from} \u2192 ${result.baseline.to}`;
   result.summary = findings.length ? [`${findings.length} ${findings.length === 1 ? "drop" : "drops"} of ${pct(drop)} or more, ${span}.`, ...findings.map((f) => f.message), ESTIMATE_LABEL] : [`No drop of ${pct(drop)} or more in earnings, match rate or show rate, ${span}.`, ESTIMATE_LABEL];
   return result;
+}
+
+// src/core/payments.ts
+var BALANCE_NOTE = "Unpaid balance from Google payments (AdSense Management API). It includes AdMob earnings. Payment history is not available: the API leaves out AdMob payouts.";
+var AMOUNT = /^(-)?([A-Z]{3}) (-)?(\d{1,3}(?:,\d{3})*|\d+)(?:\.(\d{1,6}))?$/;
+function parseAmount(text) {
+  const m = AMOUNT.exec(text);
+  const micros = m ? BigInt(m[4].replace(/,/g, "")) * 1000000n + BigInt((m[5] ?? "").padEnd(6, "0")) : void 0;
+  if (!m || micros === void 0 || micros > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new AdmobctlError("API_ERROR", `Unrecognized payment amount "${text}" from the AdSense Management API.`, {
+      fix: "Please report the amount's format (not its value) at https://github.com/Strangees/admobctl/issues"
+    });
+  }
+  const n = Number(micros);
+  return { currency: m[2], micros: m[1] || m[3] ? -n : n };
+}
+async function financeBalance(svc) {
+  const acct = await svc.account();
+  const unpaid = (await svc.client.listPayments(acct.name)).find((p) => p.name.endsWith("/payments/unpaid"));
+  const { currency, micros } = unpaid ? parseAmount(unpaid.amount) : { currency: acct.currencyCode, micros: 0 };
+  return {
+    account: acct.publisherId,
+    currency,
+    unpaid: microsToAmount(micros),
+    unpaidMicros: micros,
+    notes: unpaid ? [BALANCE_NOTE] : ["No unpaid balance reported.", BALANCE_NOTE]
+  };
 }
 
 // src/version.ts
@@ -13722,6 +13753,7 @@ function parseReport(raw) {
 // src/core/client.ts
 var API_BASE = "https://admob.googleapis.com/v1";
 var API_BASE_BETA = "https://admob.googleapis.com/v1beta";
+var ADSENSE_API_BASE = "https://adsense.googleapis.com/v2";
 function accountName(account) {
   return account.startsWith("accounts/") ? account : `accounts/${account}`;
 }
@@ -13738,7 +13770,7 @@ var AdmobClient = class {
     };
     if (this.opts.quotaProject) headers["x-goog-user-project"] = this.opts.quotaProject;
     if (body !== void 0) headers["content-type"] = "application/json";
-    const base = version2 === "v1" ? this.opts.baseUrl ?? API_BASE : this.opts.betaBaseUrl ?? API_BASE_BETA;
+    const base = version2 === "v1" ? this.opts.baseUrl ?? API_BASE : version2 === "v1beta" ? this.opts.betaBaseUrl ?? API_BASE_BETA : this.opts.adsenseBaseUrl ?? ADSENSE_API_BASE;
     try {
       return await requestJson(
         `${base}/${path2}`,
@@ -13821,6 +13853,16 @@ var AdmobClient = class {
       throw err;
     }
   }
+  // ── AdSense Management API (adsense.readonly scope) ──────────────
+  /** All payments of the publisher's Google payments account: `unpaid` plus paid ones. Not paginated. */
+  async listPayments(account) {
+    try {
+      const page = await this.request("account", "GET", `${accountName(account)}/payments`, void 0, "adsense");
+      return page?.payments ?? [];
+    } catch (err) {
+      throw paymentsError(err, account.replace(/^accounts\//, ""));
+    }
+  }
   async campaignReport(account, spec) {
     try {
       const raw = await this.request("reporting", "POST", `${accountName(account)}/campaignReport:generate`, { reportSpec: spec }, "v1beta");
@@ -13859,6 +13901,30 @@ function betaError(err, path2, httpMethod) {
       fix: "If `admobctl accounts list` works, ask your Google AdMob account manager to enable AdMob API (v1beta) access for this publisher account."
     }
   );
+}
+function paymentsError(err, publisherId) {
+  if (!(err instanceof AdmobctlError)) return err;
+  const opts = { status: err.status, cause: err };
+  switch (err.code) {
+    case "AUTH_SCOPE_MISSING":
+      return new AdmobctlError("AUTH_SCOPE_MISSING", "finance balance needs the adsense.readonly scope, which your credentials do not include.", {
+        ...opts,
+        fix: `${PAYMENTS_LOGIN_COMMAND}  (add ,${MONETIZATION_SCOPE} to --scopes if you use the write commands; or: admobctl auth login --payments)`
+      });
+    case "API_NOT_ENABLED":
+      return new AdmobctlError("API_NOT_ENABLED", err.message, {
+        ...opts,
+        fix: `${err.fix}  (run it as a project owner: if gcloud is signed in as a service account, add --account <your Google account>; allow a minute to take effect)`
+      });
+    case "PERMISSION_DENIED":
+    case "NOT_FOUND":
+      return new AdmobctlError("PAYMENTS_UNAVAILABLE", `No Google payments (AdSense) account was found for ${publisherId}, so the unpaid balance is unavailable.`, {
+        ...opts,
+        fix: "Check AdMob \u2192 Payments in the web UI. If your balance shows there, run admobctl auth doctor and make sure you signed in as the AdMob account owner."
+      });
+    default:
+      return err;
+  }
 }
 
 // src/core/freshness.ts
@@ -14794,6 +14860,19 @@ function financeMonthView(m) {
     notes: [`${m.month} (${m.from} \u2192 ${m.to}, ${m.timeZone}), booking date ${m.bookingDate}.`, ...m.notes]
   };
 }
+function financeBalanceView(b) {
+  return {
+    data: b,
+    table: {
+      columns: [
+        { key: "account", label: "Account" },
+        { key: "unpaid", label: `Unpaid (${b.currency})`, align: "right" }
+      ],
+      rows: [{ account: b.account, unpaid: b.unpaid.toFixed(2) }]
+    },
+    notes: b.notes
+  };
+}
 function financeForecastView(f) {
   const cur = f.currency;
   return {
@@ -15281,7 +15360,7 @@ function buildProgram(io) {
   const yesOption = () => new Option("--yes", "apply the change (without it, only print what would be sent)");
   program2.description("Fast CLI for the Google AdMob API (unofficial, not affiliated with Google)").version(VERSION, "-V, --version").addOption(new Option("-o, --output <format>", "output format (default: table on a TTY, json when piped)").choices(OUTPUT_FORMATS)).option("--profile <name>", "config profile to use").option("--account <pub-id>", "AdMob publisher ID (pub-\u2026)").option("-v, --verbose", "debug logging to stderr").hook("preAction", (cmd) => log.setVerbose(Boolean(cmd.opts().verbose))).showHelpAfterError("(run with --help for usage)").configureOutput({ writeOut: io.stdout, writeErr: io.stderr }).exitOverride();
   const auth = program2.command("auth").description("Authenticate and diagnose credentials");
-  auth.command("login").description("Sign in with your own OAuth client (Desktop app) instead of gcloud ADC").option("--client-id <id>", "OAuth client ID (Desktop app) from Google Cloud Console").option("--client-secret <secret>", "OAuth client secret (or env ADMOBCTL_OAUTH_CLIENT_SECRET)").option("--write", "also grant admob.monetization, needed by the write commands (create, mediation changes)").action(async (o, cmd) => {
+  auth.command("login").description("Sign in with your own OAuth client (Desktop app) instead of gcloud ADC").option("--client-id <id>", "OAuth client ID (Desktop app) from Google Cloud Console").option("--client-secret <secret>", "OAuth client secret (or env ADMOBCTL_OAUTH_CLIENT_SECRET)").option("--write", "also grant admob.monetization, needed by the write commands (create, mediation changes)").option("--payments", "also grant adsense.readonly, needed by finance balance").action(async (o, cmd) => {
     const profileName = g(cmd).profile ?? loadConfig(dir()).defaultProfile ?? "default";
     const clientId = o.clientId ?? resolveProfile(loadConfig(dir()), g(cmd).profile).oauthClientId;
     if (!clientId) {
@@ -15297,7 +15376,8 @@ function buildProgram(io) {
       store: defaultSecretStore(dir(), io.service?.exec),
       fetch: io.service?.fetch,
       print: io.stderr,
-      write: o.write
+      write: o.write,
+      payments: o.payments
     });
     io.stderr(`Signed in. Profile "${r.profile}" now uses admobctl OAuth. Run: admobctl auth doctor
 `);
@@ -15472,6 +15552,10 @@ function buildProgram(io) {
   });
   finance.command("forecast [YYYY-MM]").description("Month-to-date earnings per app and a month-end projection from the daily average (default: this month)").addOption(new Option("--as <kind>", "summary (default), csv or json").choices(["summary", "csv", "json"]).default("summary")).action(async (month, o, cmd) => {
     const view = financeForecastView(await financeForecast(svc(cmd), month));
+    emitFinance(cmd, o.as, view, () => view);
+  });
+  finance.command("balance").description("Current unpaid balance from Google payments (includes AdMob earnings; needs the adsense.readonly scope)").addOption(new Option("--as <kind>", "summary (default), csv or json").choices(["summary", "csv", "json"]).default("summary")).action(async (o, cmd) => {
+    const view = financeBalanceView(await financeBalance(svc(cmd)));
     emitFinance(cmd, o.as, view, () => view);
   });
   finance.command("export").description("Export accrual vouchers in the Revenue Journal format (spec/SPEC.md), for accounting imports").option("--month <YYYY-MM>", "one month").option("--from <YYYY-MM>", "first month of a range").option("--to <YYYY-MM>", "last month of a range").option("--as <format>", `export format: ${EXPORT_FORMATS.join(", ")}`, "revenue-journal-json").option("--integer-amounts", "write amounts as JSON integers instead of decimal strings (JSON only)").option("--scale <digits>", "decimal places the integers carry, 0-6 (default 2; 6 = micros)", (v) => Number(v)).option("--out <file>", "write to this file (readable only by you) instead of stdout").action(
@@ -44901,6 +44985,7 @@ var INSTRUCTIONS = `Read-only access to the user's Google AdMob account via admo
 - All earnings are ESTIMATES. When reporting money, say so and that they should be reconciled against AdMob Payments (finalized).
 - For "is everything OK?" or "did revenue drop?" use admobctl_check: it compares the last complete day with the week before.
 - For "what did I earn in <month>" use admobctl_finance_month; for trends and recommendations use admobctl_insights.
+- For "what is my balance / what will Google pay me" use admobctl_finance_balance (unpaid balance; it needs an extra scope, so pass its Fix line on if it fails).
 - For a file an accounting system can import, use admobctl_finance_export and hand over its \`content\` unchanged.
 - For SDK/app-version problems, consent impact or mediation waterfalls use the admobctl_analyze_* tools.
 - For "is my app-ads.txt OK?" or unexplained "limited ad serving" use admobctl_check_app_ads. Google Play listings cannot be
@@ -45151,6 +45236,17 @@ function createMcpServer(deps) {
       annotations
     },
     wrap(async (a) => ({ ...await financeForecast(svc(a), a.month) }))
+  );
+  server.registerTool(
+    "admobctl_finance_balance",
+    {
+      title: "AdMob unpaid balance",
+      description: "Current unpaid balance Google will pay out (AdSense Management API; includes AdMob earnings), in the account's payment currency. Not a monthly figure and not payment history. Needs a one-time extra sign-in scope; if it fails, pass the Fix line on.",
+      inputSchema: { ...accountArg },
+      outputSchema: loose({ account: external_exports.string(), currency: external_exports.string(), unpaid: external_exports.number(), notes: external_exports.array(external_exports.string()) }),
+      annotations
+    },
+    wrap(async (a) => ({ ...await financeBalance(svc(a)) }))
   );
   server.registerTool(
     "admobctl_finance_export",
