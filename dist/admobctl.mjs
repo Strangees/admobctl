@@ -12464,7 +12464,7 @@ async function check(svc, opts = {}) {
 }
 
 // src/version.ts
-var VERSION = true ? "0.2.0" : "0.0.0-dev";
+var VERSION = true ? "0.3.0" : "0.0.0-dev";
 
 // src/core/journal.ts
 var JOURNAL_FORMAT = "revenue-journal/1";
