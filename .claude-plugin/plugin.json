@@ -7,6 +7,10 @@
   "repository": "https://github.com/Strangees/admobctl",
   "license": "MIT",
   "keywords": ["admob", "ads", "monetization", "mcp", "finance", "reports"],
+  "icon": "./assets/icon.png",
+  "documentationUrl": "https://github.com/Strangees/admobctl#readme",
+  "supportUrl": "https://github.com/Strangees/admobctl/issues",
+  "privacyPolicyUrl": "https://github.com/Strangees/admobctl/blob/main/PRIVACY.md",
   "mcpServers": {
     "admobctl": {
       "command": "node",

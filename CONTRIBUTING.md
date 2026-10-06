@@ -45,4 +45,4 @@ into `test/fixtures/private/`, which is gitignored.
 
 Leave the version number alone: the maintainer bumps it when releasing (README, "CI and releases").
 
-`AGENTS.md` has the same rules in short form for coding agents such as Codex and Claude Code (`CLAUDE.md` imports it).
+`AGENTS.md` has the same rules in short form for coding agents such as Codex and Claude Code (`.claude/CLAUDE.md` imports it).

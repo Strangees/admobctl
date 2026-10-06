@@ -272,6 +272,30 @@ admobctl config set finance.revenueAccount 3120
 admobctl config get
 ```
 
+## Data and privacy
+
+admobctl runs on your computer. It has no server of its own and no telemetry, and it sends nothing to its author or
+any other third party. [PRIVACY.md](PRIVACY.md) is the full policy.
+
+It connects only to:
+
+- **Google APIs, with your own credentials:** the AdMob API (`admob.googleapis.com`) for account data and reports, and
+  for changes only when you run a write command with `--yes`; the AdSense Management API (`adsense.googleapis.com`)
+  for `finance balance`; Cloud Resource Manager and Service Usage (`cloudresourcemanager.googleapis.com`,
+  `serviceusage.googleapis.com`) for `setup` and `setup status`, which find your projects and check or enable APIs;
+  and Google OAuth (`accounts.google.com`, `oauth2.googleapis.com`) to sign in, refresh and check tokens, and revoke
+  them on logout.
+- **For the app-ads.txt check only:** Apple's iTunes lookup API (`itunes.apple.com`), which receives your apps' App
+  Store IDs, and each app's developer website, which receives a request for `/app-ads.txt`.
+
+It runs `gcloud` to get an access token from Application Default Credentials and for `setup login`, `security` on macOS
+to keep OAuth tokens in the Keychain, and your system's browser opener for the OAuth sign-in, which then listens on a
+`127.0.0.1` port for Google's redirect. It writes only to `~/.admobctl/` (or `ADMOBCTL_HOME`): the config, an audit
+log of applied writes and, on systems other than macOS, OAuth credentials, all readable only by you.
+
+Through the MCP server, tool results (your AdMob data) go to the AI assistant that called the tool, under that
+assistant's own terms.
+
 ## Development
 
 Running admobctl needs Node.js 20+. Developing it (vitest) needs Node.js 22.12+.
