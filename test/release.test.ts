@@ -1,4 +1,4 @@
-/** Guards what a release ships: one version everywhere, and the open-source hygiene rules in .claude/CLAUDE.md. */
+/** Guards what a release ships: one version everywhere, and the open-source hygiene rules in AGENTS.md. */
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
