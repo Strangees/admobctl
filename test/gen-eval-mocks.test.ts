@@ -1,5 +1,5 @@
 /**
- * Regenerates evals/mocks/admobctl/*.md (canned MCP tool results for `claude plugin eval`)
+ * Regenerates plugin/evals/mocks/admobctl/*.md (canned MCP tool results for `claude plugin eval`)
  * by running the real tools against synthetic fixtures. Skipped unless GEN_MOCKS=1:
  *   npm run eval:mocks
  */
@@ -154,6 +154,6 @@ it.skipIf(!process.env.GEN_MOCKS)("generate eval mocks", async () => {
   };
   for (const [name, args] of Object.entries(calls)) {
     const r = (await client.callTool({ name, arguments: args })) as { content: Array<{ text: string }> };
-    writeFileSync(new URL(`../evals/mocks/admobctl/${name}.md`, import.meta.url), `${r.content[0]!.text}\n`);
+    writeFileSync(new URL(`../plugin/evals/mocks/admobctl/${name}.md`, import.meta.url), `${r.content[0]!.text}\n`);
   }
 });

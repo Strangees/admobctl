@@ -229,10 +229,11 @@ The MCP server stays read-only: no write is exposed as an MCP tool.
 
 ## Agent plugin (Claude Code and Codex)
 
-This repo is also a plugin marketplace. The plugin bundles the MCP server and three skills:
-`admobctl` (routing, auth, command reference), `admobctl-finance` (monthly bookkeeping, estimate vs finalized)
+This repo is also a plugin marketplace. The plugin, in [`plugin/`](plugin/README.md), bundles the MCP server and three
+skills: `admobctl` (routing, auth, command reference), `admobctl-finance` (monthly bookkeeping, estimate vs finalized)
 and `admobctl-insights` (how to analyze and present monetization findings). It needs only Node.js 20+ and
-authentication (see above); `dist/admobctl.mjs` is committed, so no `npm install` is needed.
+authentication (see above): `plugin/dist/admobctl.mjs` is committed and the plugin folder has no `package.json`, so
+installing the plugin downloads no packages.
 
 Claude Code:
 
@@ -252,8 +253,8 @@ Then ask: *"What did my AdMob apps earn last month, per app?"*
 
 ### Plugin evals
 
-`evals/` holds `claude plugin eval` cases that run against mocked MCP tools (`evals/mocks/`, generated from
-synthetic fixtures with `npm run eval:mocks`), so no AdMob account is needed:
+`plugin/evals/` holds `claude plugin eval` cases that run against mocked MCP tools (`plugin/evals/mocks/`, generated
+from synthetic fixtures with `npm run eval:mocks`), so no AdMob account is needed:
 
 ```bash
 npm run eval -- --runs 3
@@ -275,27 +276,9 @@ admobctl config get
 ## Data and privacy
 
 admobctl runs on your computer. It has no server of its own and no telemetry, and it sends nothing to its author or
-any other third party. [PRIVACY.md](PRIVACY.md) is the full policy.
-
-It connects only to:
-
-- **Google APIs, with your own credentials:** the AdMob API (`admob.googleapis.com`) for account data and reports, and
-  for changes only when you run a write command with `--yes`; the AdSense Management API (`adsense.googleapis.com`)
-  for `finance balance`; Cloud Resource Manager and Service Usage (`cloudresourcemanager.googleapis.com`,
-  `serviceusage.googleapis.com`) for `setup` and `setup status`, which find your projects and check or enable APIs;
-  and Google OAuth (`accounts.google.com`, `oauth2.googleapis.com`) to sign in, refresh and check tokens, and revoke
-  them on logout.
-- **For the app-ads.txt check only:** Apple's iTunes lookup API (`itunes.apple.com`), which receives your apps' App
-  Store IDs, and each app's developer website, which receives a request for `/app-ads.txt`.
-
-It runs `gcloud` to get an access token from Application Default Credentials and for `setup login`, `security` on macOS
-to keep OAuth tokens in the Keychain, and your system's browser opener for the OAuth sign-in, which then listens on a
-`127.0.0.1` port for Google's redirect. It writes only to `~/.admobctl/` (or `ADMOBCTL_HOME`): the config, an audit
-log of applied writes and, on systems other than macOS, OAuth credentials, all readable only by you. The one exception
-is a file you name with `--out` (`finance export`, `mediation-groups export`).
-
-Through the MCP server, tool results (your AdMob data) go to the AI assistant that called the tool, under that
-assistant's own terms.
+any other third party. It talks only to Google's APIs, with your own credentials, and for the app-ads.txt check to
+Apple's App Store lookup and your apps' websites. The [plugin README](plugin/README.md#data-and-privacy) lists every
+host, program and file it uses, and [PRIVACY.md](PRIVACY.md) is the full policy.
 
 ## Development
 
@@ -304,7 +287,7 @@ Running admobctl needs Node.js 20+. Developing it (vitest) needs Node.js 22.12+.
 ```bash
 npm test            # vitest
 npm run typecheck
-npm run build       # → dist/admobctl.mjs (single file, no runtime dependencies)
+npm run build       # → plugin/dist/admobctl.mjs (single file, no runtime dependencies)
 npm run check       # typecheck + bundle + tests
 npm run eval        # plugin evals (uses your Claude credentials)
 
@@ -326,7 +309,7 @@ the version and merge to `main`:
 
 ```bash
 npm version <patch|minor|major> --no-git-tag-version   # package.json + lockfile
-# set the same version in .claude-plugin/plugin.json and .codex-plugin/plugin.json
+# set the same version in plugin/.claude-plugin/plugin.json and plugin/.codex-plugin/plugin.json
 npm run check                                          # rebuilds the bundle with the new version
 ```
 

@@ -5,7 +5,7 @@
   "plugins": [
     {
       "name": "admobctl",
-      "source": "./",
+      "source": "./plugin",
       "description": "AdMob reports, monthly finance (estimates) and monetization insights via the admobctl CLI and MCP server."
     }
   ]

@@ -23,7 +23,7 @@ admobctl_campaign_report, admobctl_list_ad_sources, admobctl_list_adapters, admo
 admobctl_list_ad_unit_mappings, admobctl_check_app_ads.
 If fewer than 25 admobctl tools are available, list which ones are missing (the session may need a restart).
 
-## Part B: CLI (`node dist/admobctl.mjs …`)
+## Part B: CLI (`node plugin/dist/admobctl.mjs …`)
 1. `--version`, then `auth status`, `auth doctor` and `setup status`. Doctor should list admob.readonly, admob.monetization and adsense.readonly.
 2. Reads: `accounts list`, `apps list`, `apps app-ads`, `ad-units list`, `ad-units mappings <one ad unit>`, `ad-sources list`, `ad-sources adapters <one source>`, `mediation-groups list`, `mediation-groups show <one group>`, `mediation-groups export <one group>`.
 3. Reports: `report network --from <last month> --by app`, `report mediation --from <last month> --by app`, `report campaign --from <last month>`, and one report with `--currency USD`.

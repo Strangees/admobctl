@@ -5,7 +5,7 @@ const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url),
 
 await build({
   entryPoints: ["src/bin.ts"],
-  outfile: "dist/admobctl.mjs",
+  outfile: "plugin/dist/admobctl.mjs",
   bundle: true,
   platform: "node",
   format: "esm",

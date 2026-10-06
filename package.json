@@ -1,13 +1,13 @@
 {
   "name": "admobctl",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Fast command-line tool and agent plugin for the Google AdMob API. Unofficial, not affiliated with Google.",
   "type": "module",
   "bin": {
-    "admobctl": "dist/admobctl.mjs"
+    "admobctl": "plugin/dist/admobctl.mjs"
   },
   "files": [
-    "dist/admobctl.mjs",
+    "plugin/dist/admobctl.mjs",
     "README.md",
     "LICENSE"
   ],
@@ -22,7 +22,7 @@
     "record-fixtures": "esbuild scripts/record-fixtures.ts --bundle --platform=node --format=esm --outfile=dist/record-fixtures.mjs --log-level=warning && node dist/record-fixtures.mjs",
     "check": "npm run typecheck && npm run build && npm test",
     "eval:mocks": "npm run build && GEN_MOCKS=1 vitest run test/gen-eval-mocks.test.ts && node scripts/dump-tools.mjs",
-    "eval": "claude plugin eval . --ablation none --no-publish"
+    "eval": "claude plugin eval plugin --ablation none --no-publish"
   },
   "keywords": [
     "admob",

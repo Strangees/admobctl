@@ -8,7 +8,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { describe, expect, it } from "vitest";
 
-const bin = fileURLToPath(new URL("../dist/admobctl.mjs", import.meta.url));
+const bin = fileURLToPath(new URL("../plugin/dist/admobctl.mjs", import.meta.url));
 const env = { ...process.env, ADMOBCTL_HOME: mkdtempSync(join(tmpdir(), "admobctl-e2e-")) } as Record<string, string>;
 
 describe.skipIf(!existsSync(bin))("built bundle", () => {
