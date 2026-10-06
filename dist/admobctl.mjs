@@ -10924,7 +10924,7 @@ async function runChecks(d) {
 // src/core/exec.ts
 import { spawn } from "node:child_process";
 var exec = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
-  const child = spawn(cmd, args, { stdio: opts.interactive ? "inherit" : ["pipe", "pipe", "pipe"], shell: false, env: opts.env ?? process.env });
+  const child = spawn(cmd, args, { stdio: opts.interactive ? ["inherit", 2, "inherit"] : ["pipe", "pipe", "pipe"], shell: false, env: opts.env ?? process.env });
   let stdout = "";
   let stderr = "";
   const timer = opts.timeoutMs ? setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs) : void 0;
