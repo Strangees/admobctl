@@ -9,14 +9,17 @@ export interface ExecResult {
 export type Exec = (
   cmd: string,
   args: string[],
-  /** `interactive` connects the child to this terminal (stdin/stdout/stderr); stdout/stderr are then not captured. */
+  /**
+   * `interactive` connects the child to this terminal (stdin/stderr) and sends its stdout to stderr, since admobctl's
+   * stdout carries only command output. Its output is then not captured.
+   */
   opts?: { input?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv; interactive?: boolean },
 ) => Promise<ExecResult>;
 
 /** Spawn without a shell. Rejects only if the binary cannot be started. */
 export const exec: Exec = (cmd, args, opts = {}) =>
   new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: opts.interactive ? "inherit" : ["pipe", "pipe", "pipe"], shell: false, env: opts.env ?? process.env });
+    const child = spawn(cmd, args, { stdio: opts.interactive ? ["inherit", 2, "inherit"] : ["pipe", "pipe", "pipe"], shell: false, env: opts.env ?? process.env });
     let stdout = "";
     let stderr = "";
     const timer = opts.timeoutMs ? setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs) : undefined;

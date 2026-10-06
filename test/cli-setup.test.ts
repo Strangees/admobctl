@@ -12,7 +12,7 @@ const S = (n: string) => `https://www.googleapis.com/auth/${n}`;
 
 async function cli(
   args: string[],
-  o: { isTTY?: boolean; profile?: ProfileConfig; scopes?: string[]; signedOut?: boolean; adsense?: "ENABLED" | "DISABLED"; quotaProject?: string; mode?: "adc" | "oauth"; profileName?: string } = {},
+  o: { isTTY?: boolean; stdinIsTTY?: boolean; profile?: ProfileConfig; scopes?: string[]; signedOut?: boolean; adsense?: "ENABLED" | "DISABLED"; quotaProject?: string; mode?: "adc" | "oauth"; profileName?: string } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), "admobctl-setup-cli-"));
   saveConfig(dir, { profiles: { [o.profileName ?? "default"]: o.profile ?? {} } });
@@ -48,6 +48,7 @@ async function cli(
     stdout: (s) => (stdout += s),
     stderr: (s) => (stderr += s),
     isTTY: o.isTTY ?? false,
+    stdinIsTTY: o.stdinIsTTY ?? false,
     service: { configDir: dir, tokenProvider: token, fetch: f.fetch, sleep: noSleep, exec },
   });
   return { code, stdout, stderr, calls: f.calls, execCalls, profile: () => loadConfig(dir).profiles[o.profileName ?? "default"]! };
@@ -97,7 +98,7 @@ describe("admobctl setup", () => {
   });
 
   it("setup login --yes at a terminal runs the gcloud sign-in", async () => {
-    const r = await cli(["setup", "login", "--features", "payments", "--yes"], { isTTY: true, signedOut: true });
+    const r = await cli(["setup", "login", "--features", "payments", "--yes"], { isTTY: true, stdinIsTTY: true, signedOut: true });
     expect(r.code, r.stderr).toBe(0);
     expect(r.execCalls.at(-1)!.slice(0, 4)).toEqual(["gcloud", "auth", "application-default", "login"]);
     expect(r.profile().features).toEqual(["read", "payments"]);
@@ -110,6 +111,27 @@ it("setup apis preserves an explicit project across parent/subcommand options", 
   expect(r.calls.filter((c) => c.url.includes("serviceusage")).every((c) => c.url.includes("/projects/example-a/"))).toBe(true);
   expect(r.stderr).toContain("--project example-a --yes");
   expect(r.profile().quotaProject).toBeUndefined();
+});
+
+it("setup login --yes with stdout redirected still runs the sign-in from a terminal", async () => {
+  const r = await cli(["setup", "login", "--yes"], { isTTY: false, stdinIsTTY: true, signedOut: true });
+  expect(r.code, r.stderr).toBe(0);
+  expect(r.execCalls.at(-1)!.slice(0, 4)).toEqual(["gcloud", "auth", "application-default", "login"]);
+  expect(JSON.parse(r.stdout)).toMatchObject({ steps: [{ step: "login", status: "applied" }] });
+});
+
+it("setup login --yes with piped stdin refuses the sign-in even when stdout is a terminal", async () => {
+  const r = await cli(["setup", "login", "--yes"], { isTTY: true, stdinIsTTY: false, signedOut: true });
+  expect(r.code).toBe(2);
+  expect(r.stderr).toContain("must run in a terminal");
+  expect(r.execCalls).toEqual([]);
+});
+
+it("guided setup with piped stdin stops at the sign-in even when stdout is a terminal", async () => {
+  const r = await cli(["setup", "--yes"], { isTTY: true, stdinIsTTY: false, signedOut: true });
+  expect(r.code).toBe(0);
+  expect(r.stderr).toContain("Next: admobctl setup login --yes");
+  expect(r.execCalls).toEqual([]);
 });
 
 it("setup login refuses OAuth without a terminal before starting browser login", async () => {

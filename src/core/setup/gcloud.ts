@@ -20,7 +20,7 @@ export async function gcloudInstalled(exec: Exec): Promise<boolean> {
   }
 }
 
-/** Runs the sign-in attached to this terminal, so gcloud can open the browser and print its prompts. */
+/** Runs the sign-in attached to this terminal, so gcloud can open the browser and print its prompts (on stderr). */
 export async function runLogin(exec: Exec, scopes: string[]): Promise<void> {
   const r = await exec("gcloud", loginArgs(scopes), { interactive: true });
   if (r.code !== 0) {

@@ -169,13 +169,15 @@ export function createMcpServer(deps: McpDeps): McpServer {
   const ttl = deps.serviceTtlMs ?? SERVICE_TTL_MS;
   const now = deps.now ?? Date.now;
   const services = new Map<string, { svc: AdmobService; createdAt: number }>();
-  const svc = (a: { account?: string }): AdmobService => {
-    const key = a.account ?? "";
-    const hit = services.get(key);
-    if (hit && now() - hit.createdAt < ttl) return hit.svc;
+  const freshSvc = (a: { account?: string }): AdmobService => {
     const fresh = deps.service({ account: a.account });
-    services.set(key, { svc: fresh, createdAt: now() });
+    services.set(a.account ?? "", { svc: fresh, createdAt: now() });
     return fresh;
+  };
+  const svc = (a: { account?: string }): AdmobService => {
+    const hit = services.get(a.account ?? "");
+    if (hit && now() - hit.createdAt < ttl) return hit.svc;
+    return freshSvc(a);
   };
   const wrap =
     <A>(fn: (args: A) => Promise<Record<string, unknown>>) =>
@@ -364,7 +366,9 @@ export function createMcpServer(deps: McpDeps): McpServer {
       annotations,
     },
     wrap(async (a: { account?: string }) => {
-      const s = svc(a);
+      // Never the cached service: the user may just have run a setup command (sign-in, quota project, features) in a
+      // terminal. Replacing the cache entry also lets the next tool call use the new setup.
+      const s = freshSvc(a);
       return { ...(await setupStatus(s, { fetch: s.fetch })) };
     }),
   );

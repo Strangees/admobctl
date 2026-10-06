@@ -13,8 +13,8 @@ export interface SetupContext {
   svc: AdmobService;
   cloud: CloudClient;
   exec: Exec;
-  /** A person at a terminal: only then may setup run the browser sign-in or prompt. */
-  isTTY: boolean;
+  /** A person at a terminal (stdin, not stdout): only then may setup run the browser sign-in or prompt. */
+  interactive: boolean;
   /** Scopes of the current token; throws when there are no usable credentials. */
   tokenInfo: () => Promise<TokenInfo>;
   /** OAuth-mode sign-in (admobctl auth login), supplied by the CLI. */
@@ -95,7 +95,7 @@ export async function planLogin(ctx: SetupContext, requested: Feature[]): Promis
 
 export async function applyLogin(ctx: SetupContext, plan: LoginPlan): Promise<LoginPlan> {
   if (plan.status === "planned") {
-    if (!ctx.isTTY) {
+    if (!ctx.interactive) {
       throw new AdmobctlError("USAGE", `The Google sign-in opens a browser, so it must run in a terminal. Run this in a terminal: ${ctx.svc.tokenProvider.mode === "oauth" ? plan.next_command : loginCommand(plan.scopes)}`, {
         fix: plan.next_command,
       });
@@ -207,7 +207,7 @@ export async function runSetup(ctx: SetupContext, o: { features: Feature[]; proj
   const login = await planLogin(ctx, o.features);
   if (login.status === "planned") {
     if (!o.yes) return stop(login);
-    if (!ctx.isTTY) {
+    if (!ctx.interactive) {
       return stop({ ...login, status: "needs-input", summary: [...login.summary, "The sign-in opens a browser: run the command above in a terminal."] });
     }
   }

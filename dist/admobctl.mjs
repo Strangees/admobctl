@@ -10924,7 +10924,7 @@ async function runChecks(d) {
 // src/core/exec.ts
 import { spawn } from "node:child_process";
 var exec = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
-  const child = spawn(cmd, args, { stdio: opts.interactive ? "inherit" : ["pipe", "pipe", "pipe"], shell: false, env: opts.env ?? process.env });
+  const child = spawn(cmd, args, { stdio: opts.interactive ? ["inherit", 2, "inherit"] : ["pipe", "pipe", "pipe"], shell: false, env: opts.env ?? process.env });
   let stdout = "";
   let stderr = "";
   const timer = opts.timeoutMs ? setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs) : void 0;
@@ -11401,7 +11401,7 @@ async function planLogin(ctx, requested) {
 }
 async function applyLogin(ctx, plan) {
   if (plan.status === "planned") {
-    if (!ctx.isTTY) {
+    if (!ctx.interactive) {
       throw new AdmobctlError("USAGE", `The Google sign-in opens a browser, so it must run in a terminal. Run this in a terminal: ${ctx.svc.tokenProvider.mode === "oauth" ? plan.next_command : loginCommand(plan.scopes)}`, {
         fix: plan.next_command
       });
@@ -11499,7 +11499,7 @@ async function runSetup(ctx, o) {
   const login2 = await planLogin(ctx, o.features);
   if (login2.status === "planned") {
     if (!o.yes) return stop(login2);
-    if (!ctx.isTTY) {
+    if (!ctx.interactive) {
       return stop({ ...login2, status: "needs-input", summary: [...login2.summary, "The sign-in opens a browser: run the command above in a terminal."] });
     }
   }
@@ -12969,7 +12969,7 @@ async function financeBalance(svc) {
 }
 
 // src/version.ts
-var VERSION = true ? "0.5.0" : "0.0.0-dev";
+var VERSION = true ? "0.5.1" : "0.0.0-dev";
 
 // src/core/journal.ts
 var JOURNAL_FORMAT = "revenue-journal/1";
@@ -15797,7 +15797,7 @@ function buildProgram(io) {
       svc: s,
       cloud: new CloudClient({ getToken: () => tp.getToken(), fetch: io.service?.fetch, sleep: io.service?.sleep }),
       exec: io.service?.exec ?? exec,
-      isTTY: io.isTTY,
+      interactive: io.stdinIsTTY ?? false,
       tokenInfo: async () => fetchTokenInfo(await tp.getToken(), io.service?.fetch),
       oauthLogin: (o) => oauthSignIn(cmd, o)
     };
@@ -45533,13 +45533,15 @@ function createMcpServer(deps) {
   const ttl = deps.serviceTtlMs ?? SERVICE_TTL_MS;
   const now = deps.now ?? Date.now;
   const services = /* @__PURE__ */ new Map();
-  const svc = (a) => {
-    const key = a.account ?? "";
-    const hit = services.get(key);
-    if (hit && now() - hit.createdAt < ttl) return hit.svc;
+  const freshSvc = (a) => {
     const fresh = deps.service({ account: a.account });
-    services.set(key, { svc: fresh, createdAt: now() });
+    services.set(a.account ?? "", { svc: fresh, createdAt: now() });
     return fresh;
+  };
+  const svc = (a) => {
+    const hit = services.get(a.account ?? "");
+    if (hit && now() - hit.createdAt < ttl) return hit.svc;
+    return freshSvc(a);
   };
   const wrap = (fn) => async (args) => {
     try {
@@ -45709,7 +45711,7 @@ function createMcpServer(deps) {
       annotations
     },
     wrap(async (a) => {
-      const s = svc(a);
+      const s = freshSvc(a);
       return { ...await setupStatus(s, { fetch: s.fetch }) };
     })
   );
@@ -46011,6 +46013,7 @@ var code = await run(process.argv, {
   stdout: (s) => process.stdout.write(s),
   stderr: (s) => process.stderr.write(s),
   isTTY: Boolean(process.stdout.isTTY),
+  stdinIsTTY: Boolean(process.stdin.isTTY),
   runMcp: runStdioServer
 });
 process.exitCode = code;
