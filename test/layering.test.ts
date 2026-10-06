@@ -1,4 +1,4 @@
-/** Enforces the layering rule in .claude/CLAUDE.md: src/cli and src/mcp never import each other. */
+/** Enforces the layering rule in AGENTS.md: src/cli and src/mcp never import each other. */
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
