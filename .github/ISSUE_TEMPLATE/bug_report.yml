@@ -1,0 +1,62 @@
+name: Bug report
+description: A command or MCP tool does not work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This issue is public. Redact before you paste.** Replace your publisher ID (`pub-…`), app and ad unit IDs
+        (`ca-app-pub-…`), app names, earnings, email address, Google Cloud project ID and any token with placeholders
+        such as `pub-XXXXXXXXXXXXXXXX`.
+
+        For a security problem, do not open an issue: report it privately as described in
+        [SECURITY.md](https://github.com/Strangees/admobctl/security/policy).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The command or MCP tool you ran, what you expected, and what you got instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: admobctl version
+      description: Output of `admobctl --version`
+    validations:
+      required: true
+  - type: dropdown
+    id: via
+    attributes:
+      label: How you ran it
+      options:
+        - CLI
+        - Claude Code plugin
+        - Codex plugin
+        - Another MCP client
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: OS and Node.js version
+      placeholder: macOS 26, Node.js 24.1
+  - type: textarea
+    id: error
+    attributes:
+      label: Error output
+      description: The error code, message and `Fix:` line, if there was one. Run with `-v` for request details.
+      render: text
+  - type: textarea
+    id: doctor
+    attributes:
+      label: auth doctor output
+      description: For sign-in, scope or API access problems, the output of `admobctl auth doctor`, redacted.
+      render: text
+  - type: checkboxes
+    id: redacted
+    attributes:
+      label: Privacy
+      options:
+        - label: I removed publisher IDs, app and ad unit IDs, app names, earnings, emails, project IDs and tokens from everything above.
+          required: true
