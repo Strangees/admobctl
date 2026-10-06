@@ -22,8 +22,8 @@ admobctl runs on your machine with your Google credentials, so these are in scop
 - **Credentials:** the OAuth login (loopback and PKCE), refresh tokens in the macOS Keychain or in a `0600` file in
   `~/.admobctl/`, and access tokens obtained from gcloud. Any way for a token to leak into logs, output, files or
   process arguments.
-- **Write commands:** anything that changes an AdMob account without `--yes`, or sends a request other than the one
-  the dry run printed.
+- **Commands that change things:** anything that changes an AdMob account (write commands) or a Google Cloud project
+  (`setup`) without `--yes`, or does something other than what the dry run printed.
 - **The MCP server:** any way for an MCP client to change the account (the server is read-only), or to read local
   files.
 - **Files admobctl writes** (config, audit log, `--out` exports) ending up readable by other users.

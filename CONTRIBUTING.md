@@ -21,7 +21,8 @@ npm run check   # typecheck + bundle + tests
 - Money is integer micros end to end. Round only in output (`formatMicros`, `microsToAmount`).
 - stdout is for command output and the MCP protocol. Log through `src/core/log.ts`, which writes to stderr.
 - Every API or auth failure becomes an `AdmobctlError` with a `fix` command the user can run (`src/core/errors.ts`).
-- The MCP server is read-only. Commands that change AdMob exist only in the CLI and are dry runs unless `--yes`.
+- The MCP server is read-only. Commands that change AdMob or a Google Cloud project exist only in the CLI and are dry
+  runs unless `--yes`.
 
 ## Tests
 

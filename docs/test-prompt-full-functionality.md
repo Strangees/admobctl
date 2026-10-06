@@ -1,4 +1,11 @@
-You are testing admobctl v0.5.0 (the AdMob CLI + MCP plugin) against my real AdMob account, end to end, and reporting back what works and what doesn't. Work from /Users/stian/admobctl.
+# Live test prompt
+
+A read-only end-to-end test of a build against your own AdMob account. Paste everything below the line into Claude Code
+or Codex, in a session at the root of this repository with the admobctl plugin installed.
+
+---
+
+You are testing admobctl (the AdMob CLI + MCP plugin) against my real AdMob account, end to end, and reporting back what works and what doesn't. Work from the root of this repository.
 
 ## Hard rules
 - READ-ONLY. Never pass `--yes` to any command. Write commands (apps create, ad-units create/map/map-batch, mediation-groups create/set-line/add-line/set-ad-units, experiment start/stop) may only be run WITHOUT `--yes`, so they print a plan and send nothing. If any output suggests a change was actually applied, stop immediately and tell me.
