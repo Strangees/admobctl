@@ -1,14 +1,17 @@
 import { appsNeedingAction, type AppRef } from "../aliases.js";
 import type { PublisherAccount } from "../client.js";
-import { AdmobctlError, LOGIN_COMMAND, MONETIZATION_SCOPE } from "../errors.js";
+import { AdmobctlError, ADSENSE_SCOPE, CLOUD_PLATFORM_SCOPE, MONETIZATION_SCOPE } from "../errors.js";
+import { apisFor, featuresFlag, featuresFromScopes, mergeFeatures, type Feature } from "../setup/features.js";
 
 export type CheckStatus = "ok" | "warn" | "fail" | "skip";
 
 export interface Check {
-  id: "credentials" | "token" | "scope" | "quota-project" | "api" | "account" | "apps" | "beta";
+  id: "credentials" | "token" | "scope" | "features" | "quota-project" | "apis" | "api" | "account" | "apps" | "beta";
   status: CheckStatus;
   summary: string;
   fix?: string;
+  /** The fix as a runnable admobctl command; absent when the fix is a manual step (AdMob UI, account manager). */
+  fix_command?: string;
 }
 
 export interface TokenInfo {
@@ -30,6 +33,10 @@ export interface DoctorDeps {
   listApps?: () => Promise<AppRef[]>;
   /** v1beta reads to try; Google allowlists some of them per account. Missing access is a warning only. */
   betaProbes?: Record<string, () => Promise<unknown>>;
+  /** Setup features the profile uses; checks their scopes. */
+  features?: Feature[];
+  /** State of each API the features need, in the quota project. */
+  serviceStates?: () => Promise<Record<string, string>>;
 }
 
 const ADMOB_SCOPES = ["https://www.googleapis.com/auth/admob.readonly", "https://www.googleapis.com/auth/admob.report"];
@@ -46,7 +53,7 @@ export async function fetchTokenInfo(token: string, doFetch: typeof fetch = fetc
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ access_token: token }).toString(),
   });
-  if (!res.ok) throw new AdmobctlError("AUTH_TOKEN_EXPIRED", "Google rejected the access token.", { fix: LOGIN_COMMAND });
+  if (!res.ok) throw new AdmobctlError("AUTH_TOKEN_EXPIRED", "Google rejected the access token.", { fix: "admobctl setup login --yes" });
   const j = (await res.json()) as { scope?: string; email?: string; expires_in?: string };
   const info: TokenInfo = { scopes: (j.scope ?? "").split(/\s+/).filter(Boolean) };
   if (j.email) info.email = j.email;
@@ -56,8 +63,15 @@ export async function fetchTokenInfo(token: string, doFetch: typeof fetch = fetc
 
 /** Run the auth checks in order. Later checks are skipped when an earlier one makes them meaningless. */
 export async function runDoctor(d: DoctorDeps): Promise<Check[]> {
+  const checks = await runChecks(d);
+  for (const c of checks) if (c.fix?.startsWith("admobctl ")) c.fix_command = c.fix.split("  (")[0];
+  return checks;
+}
+
+async function runChecks(d: DoctorDeps): Promise<Check[]> {
   const checks: Check[] = [];
   // The optional checks run last, so any early stop skips them too and the check list stays stable.
+  const setupChecks: Check["id"][] = d.features ? ["features", "apis"] : [];
   const optional: Check["id"][] = [...(d.listApps ? (["apps"] as const) : []), ...(d.betaProbes ? (["beta"] as const) : [])];
   const skipRest = (ids: Check["id"][], why: string) => {
     for (const id of [...ids, ...optional]) checks.push({ id, status: "skip", summary: why });
@@ -72,7 +86,7 @@ export async function runDoctor(d: DoctorDeps): Promise<Check[]> {
     });
   } catch (err) {
     checks.push(failed("credentials", err));
-    skipRest(["token", "scope", "quota-project", "api", "account"], "skipped: no usable credentials");
+    skipRest(["token", "scope", ...setupChecks, "quota-project", "api", "account"], "skipped: no usable credentials");
     return checks;
   }
 
@@ -82,13 +96,14 @@ export async function runDoctor(d: DoctorDeps): Promise<Check[]> {
     checks.push({ id: "token", status: "ok", summary: "Access token obtained" });
   } catch (err) {
     checks.push(failed("token", err));
-    skipRest(["scope", "quota-project", "api", "account"], "skipped: no access token");
+    skipRest(["scope", ...setupChecks, "quota-project", "api", "account"], "skipped: no access token");
     return checks;
   }
 
   try {
     const info = await d.tokenInfo(token);
     const granted = ADMOB_SCOPES.filter((s) => info.scopes.includes(s));
+    const grantedFeatures = featuresFromScopes(info.scopes);
     checks.push(
       granted.length
         ? {
@@ -96,17 +111,35 @@ export async function runDoctor(d: DoctorDeps): Promise<Check[]> {
             status: "ok",
             summary: `Scope granted: ${granted.map((s) => s.split("/").pop()).join(", ")}${
               info.scopes.includes(MONETIZATION_SCOPE) ? ", admob.monetization (write commands enabled)" : ""
-            }`,
+            }${info.scopes.includes(ADSENSE_SCOPE) ? ", adsense.readonly (finance balance enabled)" : ""}`,
           }
         : {
             id: "scope",
             status: "fail",
             summary: `Token lacks the AdMob scope (has: ${info.scopes.join(" ") || "none"})`,
-            fix: d.mode === "adc" ? LOGIN_COMMAND : "admobctl auth login",
+            fix: "admobctl setup login --yes",
           },
     );
+    if (d.features) {
+      const missing = d.features.filter((f) => !grantedFeatures.includes(f));
+      const missingCloudPlatform = !info.scopes.includes(CLOUD_PLATFORM_SCOPE);
+      const missingScopes = [...missing, ...(missingCloudPlatform ? ["cloud-platform"] : [])];
+      checks.push(
+        missingScopes.length
+          ? {
+              id: "features",
+              status: "warn",
+              summary: missing.length
+                ? `Your sign-in lacks the scopes for: ${missing.join(", ")}${missingCloudPlatform ? ", cloud-platform" : ""}`
+                : "Your sign-in lacks the cloud-platform scope needed for setup.",
+              fix: `admobctl setup login${featuresFlag(mergeFeatures(d.features, grantedFeatures))} --yes`,
+            }
+          : { id: "features", status: "ok", summary: `Features: ${d.features.join(", ")}` },
+      );
+    }
   } catch (err) {
     checks.push(failed("scope", err));
+    if (d.features) checks.push({ id: "features", status: "skip", summary: "skipped: token scopes are unavailable" });
   }
 
   if (d.mode === "adc") {
@@ -117,11 +150,34 @@ export async function runDoctor(d: DoctorDeps): Promise<Check[]> {
             id: "quota-project",
             status: "warn",
             summary: "No quota project set; ADC requests to the AdMob API usually need one.",
-            fix: "gcloud auth application-default set-quota-project <PROJECT_ID>  (or: admobctl config set quotaProject <PROJECT_ID>)",
+            fix: "admobctl setup project list",
           },
     );
   } else {
     checks.push({ id: "quota-project", status: "ok", summary: "Not needed for your own OAuth client" });
+  }
+
+  if (d.serviceStates) {
+    try {
+      const states = await d.serviceStates();
+      const off = apisFor(d.features ?? ["read"]).filter((s) => states[s] !== "ENABLED");
+      checks.push(
+        off.length
+          ? { id: "apis", status: "fail", summary: `Not enabled in the quota project: ${off.join(", ")}`, fix: `admobctl setup apis${featuresFlag(d.features ?? ["read"])} --yes` }
+          : { id: "apis", status: "ok", summary: `APIs enabled: ${apisFor(d.features ?? ["read"]).join(", ")}` },
+      );
+    } catch (err) {
+      checks.push(failed("apis", err));
+    }
+  } else if (d.features) {
+    checks.push({
+      id: "apis",
+        status: "skip",
+        summary:
+        d.mode === "oauth"
+          ? "API enablement in the OAuth client project was not checked here; actual feature API requests will report access issues."
+          : "API enablement was not checked because no service-state lookup is available.",
+    });
   }
 
   try {

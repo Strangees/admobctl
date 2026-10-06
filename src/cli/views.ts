@@ -1,10 +1,14 @@
 import { appsNeedingAction, approvalLabel, type AppRef } from "../core/aliases.js";
+import type { CloudProject } from "../core/setup/cloud.js";
+import type { SetupStatus } from "../core/setup/status.js";
+import type { SetupRun } from "../core/setup/steps.js";
 import type { ConsentResult, VersionsResult, WaterfallResult } from "../core/analyze.js";
 import type { AppAdsResult } from "../core/app-ads.js";
 import type { AuditLog } from "../core/audit.js";
 import type { Check } from "../core/auth/doctor.js";
 import type { CheckResult, CheckRow } from "../core/check.js";
 import { JOURNAL_COLUMNS, type FinanceForecast, type FinanceMonth, type FinanceRange, type JournalRow } from "../core/finance.js";
+import type { FinanceBalance } from "../core/payments.js";
 import type { GeoResult } from "../core/geo.js";
 import type { InsightsResult } from "../core/insights.js";
 import type { LintResult } from "../core/lint.js";
@@ -162,6 +166,37 @@ export function reportView(r: ReportResult): Output {
 
 const ICONS: Record<Check["status"], string> = { ok: "✓", warn: "!", fail: "✗", skip: "-" };
 
+export function setupStatusView(s: SetupStatus): Output {
+  return { ...doctorView(s.checks), data: s };
+}
+
+export function setupStepsView(r: SetupRun): Output {
+  return {
+    data: r,
+    table: {
+      columns: [
+        { key: "step", label: "Step" },
+        { key: "status", label: "Status" },
+        { key: "summary", label: "Details" },
+      ],
+      rows: r.steps.flatMap((s) => s.summary.map((line, i) => (i === 0 ? { step: s.step, status: s.status, summary: line } : { step: "", status: "", summary: line }))),
+    },
+  };
+}
+
+export function projectsView(projects: CloudProject[]): Output {
+  return {
+    data: projects,
+    table: {
+      columns: [
+        { key: "projectId", label: "Project ID" },
+        { key: "name", label: "Name" },
+      ],
+      rows: projects.map((p) => ({ ...p })),
+    },
+  };
+}
+
 export function doctorView(checks: Check[]): Output {
   return {
     data: { ok: checks.every((c) => c.status !== "fail"), checks },
@@ -209,6 +244,20 @@ export function financeMonthView(m: FinanceMonth): Output {
       footer: [{ alias: "Total", earnings: m.total.toFixed(2) }],
     },
     notes: [`${m.month} (${m.from} → ${m.to}, ${m.timeZone}), booking date ${m.bookingDate}.`, ...m.notes],
+  };
+}
+
+export function financeBalanceView(b: FinanceBalance): Output {
+  return {
+    data: b,
+    table: {
+      columns: [
+        { key: "account", label: "Account" },
+        { key: "unpaid", label: `Unpaid (${b.currency})`, align: "right" },
+      ],
+      rows: [{ account: b.account, unpaid: b.unpaid.toFixed(2) }],
+    },
+    notes: b.notes,
   };
 }
 

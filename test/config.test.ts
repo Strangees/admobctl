@@ -107,3 +107,14 @@ describe("config", () => {
     });
   });
 });
+
+describe("features in the profile", () => {
+  it("stores a parsed feature list and rejects unknown ones", () => {
+    const cfg = { profiles: {} };
+    setProfileValue(cfg, "default", "features", "payments,write");
+    expect(resolveProfile(cfg).features).toEqual(["read", "write", "payments"]);
+    expect(() => setProfileValue(cfg, "default", "features", "nope")).toThrow(/Unknown feature/);
+    setProfileValue(cfg, "default", "features", undefined);
+    expect(resolveProfile(cfg).features).toBeUndefined();
+  });
+});

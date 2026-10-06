@@ -36,6 +36,7 @@ describe("PKCE + auth URL", () => {
     });
     expect(url.searchParams.get("scope")).toContain("admob.readonly");
     expect(url.searchParams.get("scope")).not.toContain("admob.monetization");
+    expect(url.searchParams.get("scope")).not.toContain("cloud-platform");
   });
 
   it("asks for the monetization scope too when write access is wanted", () => {
@@ -43,6 +44,45 @@ describe("PKCE + auth URL", () => {
     expect(url.searchParams.get("scope")!.split(" ")).toEqual([
       "https://www.googleapis.com/auth/admob.readonly",
       "https://www.googleapis.com/auth/admob.monetization",
+    ]);
+  });
+
+  it("asks for the adsense scope when payments access is wanted", () => {
+    const url = new URL(buildAuthUrl({ clientId: "cid", redirectUri: "http://127.0.0.1:5555", pkce: createPkce(), state: "st", payments: true }));
+    expect(url.searchParams.get("scope")!.split(" ")).toEqual([
+      "https://www.googleapis.com/auth/admob.readonly",
+      "https://www.googleapis.com/auth/adsense.readonly",
+    ]);
+  });
+
+  it("combines write and payments scopes, AdMob first", () => {
+    const url = new URL(
+      buildAuthUrl({ clientId: "cid", redirectUri: "http://127.0.0.1:5555", pkce: createPkce(), state: "st", write: true, payments: true }),
+    );
+    expect(url.searchParams.get("scope")!.split(" ")).toEqual([
+      "https://www.googleapis.com/auth/admob.readonly",
+      "https://www.googleapis.com/auth/admob.monetization",
+      "https://www.googleapis.com/auth/adsense.readonly",
+    ]);
+  });
+
+  it("adds cloud-platform for setup without dropping requested OAuth features", () => {
+    const url = new URL(
+      buildAuthUrl({
+        clientId: "cid",
+        redirectUri: "http://127.0.0.1:5555",
+        pkce: createPkce(),
+        state: "st",
+        write: true,
+        payments: true,
+        cloudPlatform: true,
+      }),
+    );
+    expect(url.searchParams.get("scope")!.split(" ")).toEqual([
+      "https://www.googleapis.com/auth/admob.readonly",
+      "https://www.googleapis.com/auth/admob.monetization",
+      "https://www.googleapis.com/auth/adsense.readonly",
+      "https://www.googleapis.com/auth/cloud-platform",
     ]);
   });
 });
@@ -172,6 +212,8 @@ describe("OAuthTokenProvider", () => {
     expect(await p.getToken()).toBe("tok1");
     now = 3560_000;
     expect(await p.getToken()).toBe("tok2");
+    p.resetCache();
+    expect(await p.getToken()).toBe("tok3");
     expect(Object.fromEntries(new URLSearchParams(f.calls[0]!.body as string))).toMatchObject({
       grant_type: "refresh_token",
       refresh_token: "rtoken",

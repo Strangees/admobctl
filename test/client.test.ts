@@ -57,3 +57,81 @@ describe("AdmobClient", () => {
     await expect(client.listAccounts()).rejects.toMatchObject({ code: "AUTH_SCOPE_MISSING" });
   });
 });
+
+describe("AdmobClient.listPayments (AdSense Management API)", () => {
+  const PUB = "pub-0000000000000001";
+  const scopeError = () =>
+    jsonResponse(
+      {
+        error: {
+          code: 403,
+          message: "Request had insufficient authentication scopes.",
+          status: "PERMISSION_DENIED",
+          details: [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "ACCESS_TOKEN_SCOPE_INSUFFICIENT" }],
+        },
+      },
+      403,
+    );
+
+  it("GETs the account's payments from adsense.googleapis.com/v2 with auth and quota headers", async () => {
+    const { client, calls } = makeClient({ "GET /v2/accounts/": () => jsonResponse(fixture("adsense-payments.json")) }, "qp");
+    const payments = await client.listPayments(PUB);
+    expect(calls[0]!.url).toBe(`https://adsense.googleapis.com/v2/accounts/${PUB}/payments`);
+    expect(calls[0]!.headers.authorization).toBe("Bearer test-token");
+    expect(calls[0]!.headers["x-goog-user-project"]).toBe("qp");
+    expect(payments).toHaveLength(2);
+    expect(payments[0]).toEqual({ name: `accounts/${PUB}/payments/unpaid`, amount: "NOK\u00a01,234.56" });
+  });
+
+  it("returns an empty list when the response has no payments", async () => {
+    const { client } = makeClient({ "GET /v2/accounts/": () => jsonResponse({}) });
+    expect(await client.listPayments(`accounts/${PUB}`)).toEqual([]);
+  });
+
+  it("explains a missing adsense scope with a setup login fix for the payments feature", async () => {
+    const { client } = makeClient({ "GET /v2/accounts/": scopeError });
+    const err = await client.listPayments(PUB).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: "AUTH_SCOPE_MISSING" });
+    const fix = (err as { fix: string }).fix;
+    expect(fix).toBe("admobctl setup login --features payments --yes");
+  });
+
+  it.each([
+    [403, { error: { code: 403, message: "The caller does not have permission", status: "PERMISSION_DENIED" } }],
+    [404, { error: { code: 404, message: "Requested entity was not found.", status: "NOT_FOUND" } }],
+  ])("maps a %i for the account to PAYMENTS_UNAVAILABLE", async (status, body) => {
+    const { client } = makeClient({ "GET /v2/accounts/": () => jsonResponse(body, status) });
+    const err = await client.listPayments(PUB).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: "PAYMENTS_UNAVAILABLE" });
+    expect((err as Error).message).toContain(PUB);
+    expect((err as Error).message).toContain(body.error.message);
+    expect((err as { fix?: string }).fix).toBeTruthy();
+  });
+
+  it("tells how to enable the AdSense API, including the service-account pitfall", async () => {
+    const { client } = makeClient({
+      "GET /v2/accounts/": () =>
+        jsonResponse(
+          {
+            error: {
+              code: 403,
+              message: "AdSense Management API has not been used in project qp before or it is disabled.",
+              status: "PERMISSION_DENIED",
+              details: [
+                {
+                  "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                  reason: "SERVICE_DISABLED",
+                  metadata: { consumer: "projects/qp", service: "adsense.googleapis.com", serviceTitle: "AdSense Management API" },
+                },
+              ],
+            },
+          },
+          403,
+        ),
+    });
+    const err = await client.listPayments(PUB).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: "API_NOT_ENABLED" });
+    const fix = (err as { fix: string }).fix;
+    expect(fix).toBe("admobctl setup apis --features payments --project qp --yes");
+  });
+});

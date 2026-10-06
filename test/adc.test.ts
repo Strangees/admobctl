@@ -43,12 +43,14 @@ describe("AdcTokenProvider", () => {
         runs++;
         expect(cmd).toBe("gcloud");
         expect(args).toEqual(["auth", "application-default", "print-access-token"]);
-        return { code: 0, stdout: "ya29.token\n", stderr: "" };
+        return { code: 0, stdout: `ya29.token-${runs}\n`, stderr: "" };
       },
     });
-    expect(await p.getToken()).toBe("ya29.token");
-    expect(await p.getToken()).toBe("ya29.token");
-    expect(runs).toBe(1);
+    expect(await p.getToken()).toBe("ya29.token-1");
+    expect(await p.getToken()).toBe("ya29.token-1");
+    p.resetCache();
+    expect(await p.getToken()).toBe("ya29.token-2");
+    expect(runs).toBe(2);
   });
 
   it("points gcloud at the same credentials file we inspected", async () => {
@@ -77,7 +79,7 @@ describe("AdcTokenProvider", () => {
     const p = new AdcTokenProvider({ info: () => undefined, exec: async () => ({ code: 0, stdout: "", stderr: "" }) });
     const err = await p.getToken().catch((e) => e);
     expect(err.code).toBe("AUTH_NO_CREDENTIALS");
-    expect(err.fix).toContain("gcloud auth application-default login");
+    expect(err.fix).toBe("admobctl setup login --yes");
   });
 
   it("maps a gcloud reauth failure to AUTH_TOKEN_EXPIRED", async () => {

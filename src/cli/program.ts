@@ -1,8 +1,25 @@
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { Command, CommanderError, Option } from "commander";
-import { fetchTokenInfo, runDoctor } from "../core/auth/doctor.js";
+import { fetchTokenInfo } from "../core/auth/doctor.js";
+import { exec as defaultExec } from "../core/exec.js";
+import { CloudClient } from "../core/setup/cloud.js";
+import { parseFeatures } from "../core/setup/features.js";
+import { setupStatus } from "../core/setup/status.js";
+import { profileCommand } from "../core/setup/commands.js";
+import {
+  applyApis,
+  applyLogin,
+  applyProject,
+  planApis,
+  planLogin,
+  planProject,
+  runSetup,
+  type SetupContext,
+  type SetupRun,
+  type StepResult,
+} from "../core/setup/steps.js";
 import { login, logout } from "../core/auth/login.js";
-import { defaultSecretStore } from "../core/auth/oauth.js";
+import { defaultSecretStore, type StoredOAuth } from "../core/auth/oauth.js";
 import { configDir, configPath, loadConfig, resolveProfile, saveConfig, setProfileValue } from "../core/config.js";
 import { analyzeConsent, analyzeVersions, analyzeWaterfall, VERSION_KINDS, type VersionKind } from "../core/analyze.js";
 import { checkAppAds } from "../core/app-ads.js";
@@ -10,6 +27,7 @@ import { readAudit } from "../core/audit.js";
 import { check } from "../core/check.js";
 import { AdmobctlError } from "../core/errors.js";
 import { financeForecast, financeMonth, financeRange, journalRows } from "../core/finance.js";
+import { financeBalance } from "../core/payments.js";
 import { EXPORT_FORMATS, exportJournal } from "../core/journal.js";
 import { analyzeGeo } from "../core/geo.js";
 import { INSIGHT_DIMENSIONS, insights, type InsightDimension } from "../core/insights.js";
@@ -45,7 +63,10 @@ import {
   auditLogView,
   checkView,
   consentView,
-  doctorView,
+  projectsView,
+  setupStatusView,
+  setupStepsView,
+  financeBalanceView,
   financeForecastView,
   financeMonthView,
   financeRangeView,
@@ -178,6 +199,66 @@ export function buildProgram(io: CliIO): Command {
     .configureOutput({ writeOut: io.stdout, writeErr: io.stderr })
     .exitOverride();
 
+  /** Own-OAuth-client sign-in, shared by auth login and setup login in OAuth mode. */
+  const oauthSignIn = async (cmd: Command, o: { clientId?: string; clientSecret?: string; write?: boolean; payments?: boolean; cloudPlatform?: boolean }) => {
+    const profileName = g(cmd).profile ?? loadConfig(dir()).defaultProfile ?? "default";
+    const clientId = o.clientId ?? resolveProfile(loadConfig(dir()), g(cmd).profile).oauthClientId;
+    if (!clientId) {
+      throw new AdmobctlError("USAGE", "An OAuth client ID is required.", {
+        fix: "Create a Desktop app OAuth client in Google Cloud Console (APIs & Services → Credentials), then: admobctl auth login --client-id <id> --client-secret <secret>",
+      });
+    }
+    const store = defaultSecretStore(dir(), io.service?.exec);
+    let saved: StoredOAuth | undefined;
+    const raw = await store.get(profileName);
+    if (raw) {
+      try { saved = JSON.parse(raw) as StoredOAuth; } catch { /* A new sign-in can repair corrupt credentials. */ }
+    }
+    const r = await login({
+      configDir: dir(),
+      profile: profileName,
+      clientId,
+      clientSecret: o.clientSecret ?? process.env.ADMOBCTL_OAUTH_CLIENT_SECRET ?? (saved?.clientId === clientId ? saved.clientSecret : undefined),
+      store,
+      fetch: io.service?.fetch,
+      print: io.stderr,
+      write: o.write,
+      payments: o.payments,
+      cloudPlatform: o.cloudPlatform,
+    });
+    io.stderr(`Signed in. Profile "${r.profile}" now uses admobctl OAuth. Run: ${profileCommand("admobctl setup status", profileName, loadConfig(dir()).defaultProfile)}\n`);
+  };
+  const setupCtx = (cmd: Command): SetupContext => {
+    const s = svc(cmd);
+    const tp = s.tokenProvider;
+    return {
+      svc: s,
+      cloud: new CloudClient({ getToken: () => tp.getToken(), fetch: io.service?.fetch, sleep: io.service?.sleep }),
+      exec: io.service?.exec ?? defaultExec,
+      isTTY: io.isTTY,
+      tokenInfo: async () => fetchTokenInfo(await tp.getToken(), io.service?.fetch),
+      oauthLogin: (o) => oauthSignIn(cmd, o),
+    };
+  };
+  const emitSetup = (cmd: Command, r: SetupRun) => {
+    emit(cmd, setupStepsView(r));
+    const last = r.steps[r.steps.length - 1];
+    if (last?.status === "planned") io.stderr("Dry run: nothing changed.\n");
+    if (r.next_command) io.stderr(`Next: ${r.next_command}\n`);
+    else if (r.steps.every((x) => x.status === "done" || x.status === "applied")) io.stderr("Setup steps complete. Check everything with: admobctl setup status\n");
+  };
+  const runStep = async <P extends StepResult>(cmd: Command, plan: P, yes: boolean | undefined, apply: (p: P) => Promise<P>) => {
+    const r = yes ? await apply(plan) : plan;
+    const pending = r.status === "planned" || r.status === "needs-input";
+    emitSetup(cmd, { steps: [r], ...(pending && r.next_command ? { next_command: r.next_command } : {}) });
+  };
+  const emitStatus = async (cmd: Command) => {
+    const st = await setupStatus(svc(cmd), { fetch: io.service?.fetch });
+    emit(cmd, setupStatusView(st));
+    if (st.next_command) io.stderr(`Next: ${st.next_command}\n`);
+    if (!st.ok) process.exitCode = 1;
+  };
+
   // ── auth ──────────────────────────────────────────────────────────
   const auth = program.command("auth").description("Authenticate and diagnose credentials");
 
@@ -187,26 +268,9 @@ export function buildProgram(io: CliIO): Command {
     .option("--client-id <id>", "OAuth client ID (Desktop app) from Google Cloud Console")
     .option("--client-secret <secret>", "OAuth client secret (or env ADMOBCTL_OAUTH_CLIENT_SECRET)")
     .option("--write", "also grant admob.monetization, needed by the write commands (create, mediation changes)")
-    .action(async (o: { clientId?: string; clientSecret?: string; write?: boolean }, cmd: Command) => {
-      const profileName = g(cmd).profile ?? loadConfig(dir()).defaultProfile ?? "default";
-      const clientId = o.clientId ?? resolveProfile(loadConfig(dir()), g(cmd).profile).oauthClientId;
-      if (!clientId) {
-        throw new AdmobctlError("USAGE", "An OAuth client ID is required.", {
-          fix: "Create a Desktop app OAuth client in Google Cloud Console (APIs & Services → Credentials), then: admobctl auth login --client-id <id> --client-secret <secret>",
-        });
-      }
-      const r = await login({
-        configDir: dir(),
-        profile: profileName,
-        clientId,
-        clientSecret: o.clientSecret ?? process.env.ADMOBCTL_OAUTH_CLIENT_SECRET,
-        store: defaultSecretStore(dir(), io.service?.exec),
-        fetch: io.service?.fetch,
-        print: io.stderr,
-        write: o.write,
-      });
-      io.stderr(`Signed in. Profile "${r.profile}" now uses admobctl OAuth. Run: admobctl auth doctor\n`);
-    });
+    .option("--payments", "also grant adsense.readonly, needed by finance balance")
+    .option("--cloud-platform", "also grant cloud-platform, needed by setup project/API management")
+    .action(async (o: { clientId?: string; clientSecret?: string; write?: boolean; payments?: boolean; cloudPlatform?: boolean }, cmd: Command) => oauthSignIn(cmd, o));
 
   auth
     .command("logout")
@@ -241,23 +305,59 @@ export function buildProgram(io: CliIO): Command {
 
   auth
     .command("doctor")
-    .description("Diagnose common setup problems and print the exact fix")
+    .description("Diagnose setup problems and print the exact admobctl command that fixes each (same as setup status)")
+    .action(async (_o, cmd: Command) => emitStatus(cmd));
+
+  // ── setup ─────────────────────────────────────────────────────────
+  /** setup and its subcommands share --features/--yes; commander may hand them to either, so read both. */
+  const setupOpts = (cmd: Command) => cmd.optsWithGlobals<{ features?: string; project?: string; yes?: boolean }>();
+  const featuresOption = () => new Option("--features <list>", "extra features: write (write commands), payments (finance balance); read is always on");
+  const setup = program
+    .command("setup")
+    .description("Set up admobctl step by step: sign-in, Cloud project, APIs. Prints the one next command when it needs you")
+    .addOption(featuresOption())
+    .option("--project <id>", "Google Cloud project to use for API quota")
+    .addOption(yesOption())
+    .action(async (o: { features?: string; project?: string; yes?: boolean }, cmd: Command) =>
+      emitSetup(cmd, await runSetup(setupCtx(cmd), { features: parseFeatures(o.features), project: o.project, yes: !!o.yes })),
+    );
+  setup
+    .command("status")
+    .description("Every setup check, with the admobctl command that fixes each gap; exits 1 on a failure")
+    .action(async (_o, cmd: Command) => emitStatus(cmd));
+  setup
+    .command("login")
+    .description("Sign in with the scopes your features need (gcloud opens the browser); keeps scopes you already have")
+    .addOption(featuresOption())
+    .addOption(yesOption())
     .action(async (_o, cmd: Command) => {
-      const s = svc(cmd);
-      const tp = s.tokenProvider;
-      const checks = await runDoctor({
-        mode: tp.mode,
-        checkCredentials: () => tp.checkCredentials?.(),
-        getToken: () => tp.getToken(),
-        tokenInfo: (t) => fetchTokenInfo(t, io.service?.fetch),
-        quotaProject: s.profile.quotaProject ?? tp.quotaProject(),
-        listAccounts: () => s.listAccounts(),
-        account: () => s.account(),
-        listApps: () => s.apps(),
-        betaProbes: { "ad sources": () => s.adSources(), "mediation groups": () => s.mediationGroups() },
-      });
-      emit(cmd, doctorView(checks));
-      if (checks.some((c) => c.status === "fail")) process.exitCode = 1;
+      const ctx = setupCtx(cmd);
+      const o = setupOpts(cmd);
+      await runStep(cmd, await planLogin(ctx, parseFeatures(o.features)), o.yes, (p) => applyLogin(ctx, p));
+    });
+  const project = setup.command("project").description("The Google Cloud project used for API quota");
+  project
+    .command("list")
+    .description("Google Cloud projects you can use")
+    .action(async (_o, cmd: Command) => emit(cmd, projectsView(await setupCtx(cmd).cloud.listProjects())));
+  project
+    .command("use <id>")
+    .description("Use this project for API quota (stored in the profile)")
+    .addOption(yesOption())
+    .action(async (id: string, _o, cmd: Command) => {
+      const ctx = setupCtx(cmd);
+      await runStep(cmd, await planProject(ctx, id), setupOpts(cmd).yes, (p) => applyProject(ctx, p));
+    });
+  setup
+    .command("apis")
+    .description("Enable the Google APIs your features need in the chosen project")
+    .option("--project <id>", "API consumer project (defaults to the quota project; does not change the profile)")
+    .addOption(featuresOption())
+    .addOption(yesOption())
+    .action(async (_o, cmd: Command) => {
+      const ctx = setupCtx(cmd);
+      const o = setupOpts(cmd);
+      await runStep(cmd, await planApis(ctx, parseFeatures(o.features), o.project), o.yes, (p) => applyApis(ctx, p));
     });
 
   // ── accounts / apps / ad-units ────────────────────────────────────
@@ -539,6 +639,14 @@ export function buildProgram(io: CliIO): Command {
       emitFinance(cmd, o.as, view, () => view);
     });
   finance
+    .command("balance")
+    .description("Current unpaid balance from Google payments (includes AdMob earnings; needs the adsense.readonly scope)")
+    .addOption(new Option("--as <kind>", "summary (default), csv or json").choices(["summary", "csv", "json"]).default("summary"))
+    .action(async (o: { as: AsFormat }, cmd: Command) => {
+      const view = financeBalanceView(await financeBalance(svc(cmd)));
+      emitFinance(cmd, o.as, view, () => view);
+    });
+  finance
     .command("export")
     .description("Export accrual vouchers in the Revenue Journal format (spec/SPEC.md), for accounting imports")
     .option("--month <YYYY-MM>", "one month")
@@ -770,6 +878,12 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       return err.exitCode === 0 ? 0 : 2;
     }
     const opts = program.opts<GlobalOpts>();
+    if (err instanceof AdmobctlError && err.fix) {
+      let configuredDefault: string | undefined;
+      try { configuredDefault = loadConfig(io.service?.configDir ?? configDir()).defaultProfile; } catch { /* Preserve the original config error. */ }
+      const fix = profileCommand(err.fix, opts.profile ?? configuredDefault ?? "default", configuredDefault);
+      err = new AdmobctlError(err.code, err.message, { status: err.status, cause: err, fix });
+    }
     return reportError(io, err, (opts.output ?? defaultFormat(io.isTTY)) === "json");
   }
 }

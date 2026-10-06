@@ -6,17 +6,22 @@ export interface ExecResult {
   stderr: string;
 }
 
-export type Exec = (cmd: string, args: string[], opts?: { input?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv }) => Promise<ExecResult>;
+export type Exec = (
+  cmd: string,
+  args: string[],
+  /** `interactive` connects the child to this terminal (stdin/stdout/stderr); stdout/stderr are then not captured. */
+  opts?: { input?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv; interactive?: boolean },
+) => Promise<ExecResult>;
 
 /** Spawn without a shell. Rejects only if the binary cannot be started. */
 export const exec: Exec = (cmd, args, opts = {}) =>
   new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"], shell: false, env: opts.env ?? process.env });
+    const child = spawn(cmd, args, { stdio: opts.interactive ? "inherit" : ["pipe", "pipe", "pipe"], shell: false, env: opts.env ?? process.env });
     let stdout = "";
     let stderr = "";
     const timer = opts.timeoutMs ? setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs) : undefined;
-    child.stdout.on("data", (d) => (stdout += d));
-    child.stderr.on("data", (d) => (stderr += d));
+    child.stdout?.on("data", (d) => (stdout += d));
+    child.stderr?.on("data", (d) => (stderr += d));
     child.on("error", (err) => {
       if (timer) clearTimeout(timer);
       reject(err);
@@ -25,5 +30,5 @@ export const exec: Exec = (cmd, args, opts = {}) =>
       if (timer) clearTimeout(timer);
       resolve({ code: code ?? 1, stdout, stderr });
     });
-    child.stdin.end(opts.input ?? "");
+    child.stdin?.end(opts.input ?? "");
   });

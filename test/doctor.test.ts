@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runDoctor, type DoctorDeps } from "../src/core/auth/doctor.js";
-import { AdmobctlError } from "../src/core/errors.js";
+import { AdmobctlError, CLOUD_PLATFORM_SCOPE } from "../src/core/errors.js";
 import { fixture } from "./helpers.js";
 
 const okDeps = (): DoctorDeps => ({
@@ -49,13 +49,13 @@ describe("runDoctor", () => {
   it("flags a missing AdMob scope", async () => {
     const checks = byId(await runDoctor({ ...okDeps(), tokenInfo: async () => ({ scopes: ["openid"] }) }));
     expect(checks.scope!.status).toBe("fail");
-    expect(checks.scope!.fix).toContain("admob.readonly");
+    expect(checks.scope!.fix).toBe("admobctl setup login --yes");
   });
 
   it("warns when no quota project is set in ADC mode", async () => {
     const checks = byId(await runDoctor({ ...okDeps(), quotaProject: undefined }));
     expect(checks["quota-project"]!.status).toBe("warn");
-    expect(checks["quota-project"]!.fix).toContain("set-quota-project");
+    expect(checks["quota-project"]!.fix).toBe("admobctl setup project list");
   });
 
   it("reports a disabled API with its fix", async () => {
@@ -111,5 +111,82 @@ describe("runDoctor", () => {
     );
     expect(checks.scope!.status).toBe("ok");
     expect(checks.scope!.summary).toMatch(/admob\.monetization \(write commands enabled\)/);
+  });
+
+  it("says when finance balance is enabled by the adsense scope", async () => {
+    const checks = byId(
+      await runDoctor({
+        ...okDeps(),
+        tokenInfo: async () => ({ scopes: ["https://www.googleapis.com/auth/admob.readonly", "https://www.googleapis.com/auth/adsense.readonly"] }),
+      }),
+    );
+    expect(checks.scope!.status).toBe("ok");
+    expect(checks.scope!.summary).toMatch(/adsense\.readonly \(finance balance enabled\)/);
+  });
+});
+
+describe("runDoctor setup checks", () => {
+  const READ = "https://www.googleapis.com/auth/admob.readonly";
+  const ADSENSE = "https://www.googleapis.com/auth/adsense.readonly";
+
+  it("warns when a stored feature's scope is missing, with a login fix that keeps all features", async () => {
+    const checks = byId(await runDoctor({ ...okDeps(), features: ["read", "write", "payments"], tokenInfo: async () => ({ scopes: [READ] }) }));
+    expect(checks.features!.status).toBe("warn");
+    expect(checks.features!.summary).toMatch(/write, payments/);
+    expect(checks.features!.fix).toBe("admobctl setup login --features write,payments --yes");
+    expect(checks.features!.fix_command).toBe("admobctl setup login --features write,payments --yes");
+  });
+
+  it("is ok when every stored feature's scope is granted", async () => {
+    const checks = byId(await runDoctor({ ...okDeps(), features: ["read", "payments"], tokenInfo: async () => ({ scopes: [READ, ADSENSE, CLOUD_PLATFORM_SCOPE] }) }));
+    expect(checks.features!.status).toBe("ok");
+  });
+
+  it("warns when setup's cloud-platform scope is missing even when feature scopes are granted", async () => {
+    const checks = byId(await runDoctor({ ...okDeps(), mode: "oauth", features: ["read", "payments"], tokenInfo: async () => ({ scopes: [READ, ADSENSE] }) }));
+    expect(checks.features!.status).toBe("warn");
+    expect(checks.features!.summary).toMatch(/cloud-platform/);
+    expect(checks.features!.fix).toBe("admobctl setup login --features payments --yes");
+  });
+
+  it("does not claim OAuth client APIs are enabled when Service Usage state is unavailable", async () => {
+    const checks = byId(await runDoctor({ ...okDeps(), mode: "oauth", features: ["read", "payments"] }));
+    expect(checks.apis!.status).toBe("skip");
+    expect(checks.apis!.summary).toMatch(/actual feature API requests/);
+  });
+
+  it("preserves the service-account prerequisite without exposing a repeatable fix command", async () => {
+    const fix = "Unset GOOGLE_APPLICATION_CREDENTIALS in the terminal that runs admobctl, then run admobctl setup login --yes.";
+    const checks = byId(
+      await runDoctor({
+        ...okDeps(),
+        checkCredentials: () => {
+          throw new AdmobctlError("AUTH_SERVICE_ACCOUNT", "AdMob does not support service accounts.", { fix });
+        },
+      }),
+    );
+    expect(checks.credentials!.fix).toBe(fix);
+    expect(checks.credentials!.fix_command).toBeUndefined();
+  });
+
+  it("fails when a needed API is disabled, with the setup apis fix", async () => {
+    const checks = byId(
+      await runDoctor({
+        ...okDeps(),
+        features: ["read", "payments"],
+        serviceStates: async () => ({ "admob.googleapis.com": "ENABLED", "adsense.googleapis.com": "DISABLED" }),
+      }),
+    );
+    expect(checks.apis!.status).toBe("fail");
+    expect(checks.apis!.summary).toMatch(/adsense\.googleapis\.com/);
+    expect(checks.apis!.fix_command).toBe("admobctl setup apis --features payments --yes");
+  });
+
+  it("only sets fix_command for admobctl commands", async () => {
+    const checks = await runDoctor({ ...okDeps(), quotaProject: undefined, listApps: async () => [{ alias: "a", appId: "a~1", name: "A", platform: "IOS", resource: "r", approval: "ACTION_REQUIRED" }] as never });
+    const byIdx = byId(checks);
+    expect(byIdx["quota-project"]!.fix_command).toBe("admobctl setup project list");
+    expect(byIdx.apps!.fix).toBeTruthy();
+    expect(byIdx.apps!.fix_command).toBeUndefined();
   });
 });

@@ -1,4 +1,4 @@
-import { AdmobctlError, WRITE_LOGIN_COMMAND } from "./errors.js";
+import { AdmobctlError } from "./errors.js";
 import { requestJson, type HttpOptions } from "./http.js";
 import { processLimiters, type Limiters, type QuotaCategory } from "./ratelimit.js";
 import { parseReport, type Report, type ReportSpec } from "./report.js";
@@ -6,6 +6,8 @@ import { parseReport, type Report, type ReportSpec } from "./report.js";
 export const API_BASE = "https://admob.googleapis.com/v1";
 /** Beta surface: ad sources, mediation groups, ad unit mappings, campaign reports, and every write method. */
 export const API_BASE_BETA = "https://admob.googleapis.com/v1beta";
+/** AdSense Management API: only payments, for the unpaid balance (which includes AdMob earnings). */
+export const ADSENSE_API_BASE = "https://adsense.googleapis.com/v2";
 
 export interface PublisherAccount {
   name: string;
@@ -85,6 +87,14 @@ export interface AdUnitMapping {
   adUnitConfigurations?: Record<string, string>;
 }
 
+export interface AdsensePayment {
+  /** accounts/{pub}/payments/unpaid, or accounts/{pub}/payments/{yyyymmdd} for a paid payment. */
+  name: string;
+  /** Formatted, e.g. "NOK 1,234.56". */
+  amount: string;
+  date?: { year: number; month: number; day: number };
+}
+
 export interface CampaignReportSpec {
   dateRange: ReportSpec["dateRange"];
   dimensions: string[];
@@ -92,13 +102,14 @@ export interface CampaignReportSpec {
   languageCode?: string;
 }
 
-type ApiVersion = "v1" | "v1beta";
+type ApiVersion = "v1" | "v1beta" | "adsense";
 
 export interface AdmobClientOptions extends HttpOptions {
   getToken: () => Promise<string>;
   quotaProject?: string;
   baseUrl?: string;
   betaBaseUrl?: string;
+  adsenseBaseUrl?: string;
   /** Client-side quota limiters. Default: shared by the whole process. */
   limiters?: Limiters;
 }
@@ -127,7 +138,12 @@ export class AdmobClient {
     };
     if (this.opts.quotaProject) headers["x-goog-user-project"] = this.opts.quotaProject;
     if (body !== undefined) headers["content-type"] = "application/json";
-    const base = version === "v1" ? (this.opts.baseUrl ?? API_BASE) : (this.opts.betaBaseUrl ?? API_BASE_BETA);
+    const base =
+      version === "v1"
+        ? (this.opts.baseUrl ?? API_BASE)
+        : version === "v1beta"
+          ? (this.opts.betaBaseUrl ?? API_BASE_BETA)
+          : (this.opts.adsenseBaseUrl ?? ADSENSE_API_BASE);
     try {
       return await requestJson<T>(
         `${base}/${path}`,
@@ -223,10 +239,22 @@ export class AdmobClient {
         throw new AdmobctlError("AUTH_SCOPE_MISSING", "Write commands need the admob.monetization scope, which your credentials do not include.", {
           status: err.status,
           cause: err,
-          fix: `${WRITE_LOGIN_COMMAND}  (or: admobctl auth login --write)`,
+          fix: "admobctl setup login --features write --yes",
         });
       }
       throw err;
+    }
+  }
+
+  // ── AdSense Management API (adsense.readonly scope) ──────────────
+
+  /** All payments of the publisher's Google payments account: `unpaid` plus paid ones. Not paginated. */
+  async listPayments(account: string): Promise<AdsensePayment[]> {
+    try {
+      const page = await this.request<{ payments?: AdsensePayment[] }>("account", "GET", `${accountName(account)}/payments`, undefined, "adsense");
+      return page?.payments ?? [];
+    } catch (err) {
+      throw paymentsError(err, account.replace(/^accounts\//, ""));
     }
   }
 
@@ -274,4 +302,25 @@ function betaError(err: unknown, path: string, httpMethod: string): unknown {
       fix: "If `admobctl accounts list` works, ask your Google AdMob account manager to enable AdMob API (v1beta) access for this publisher account.",
     },
   );
+}
+
+/** AdSense payments failures, phrased for `finance balance` (an optional, extra setup). */
+function paymentsError(err: unknown, publisherId: string): unknown {
+  if (!(err instanceof AdmobctlError)) return err;
+  const opts = { status: err.status, cause: err };
+  switch (err.code) {
+    case "AUTH_SCOPE_MISSING":
+      return new AdmobctlError("AUTH_SCOPE_MISSING", "finance balance needs the adsense.readonly scope, which your credentials do not include.", {
+        ...opts,
+        fix: "admobctl setup login --features payments --yes",
+      });
+    case "PERMISSION_DENIED":
+    case "NOT_FOUND":
+      return new AdmobctlError("PAYMENTS_UNAVAILABLE", `No Google payments (AdSense) account was found or accessible for ${publisherId}, so the unpaid balance is unavailable. (Google: ${err.message})`, {
+        ...opts,
+        fix: "Check AdMob → Payments in the web UI. If your balance shows there, run admobctl auth doctor and make sure you signed in as the AdMob account owner.",
+      });
+    default:
+      return err;
+  }
 }

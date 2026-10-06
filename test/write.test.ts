@@ -201,7 +201,7 @@ describe("applyPlan", () => {
     const plan = await planUpdateLine(svc, { group: "Banners", line: "4000000000000003", state: "disabled" });
     const err = (await applyPlan(svc, plan).catch((e: unknown) => e)) as AdmobctlError;
     expect(err.code).toBe("AUTH_SCOPE_MISSING");
-    expect(err.fix).toMatch(/admob\.monetization/);
+    expect(err.fix).toBe("admobctl setup login --features write --yes");
     const patch = calls.find((c) => c.method === "PATCH")!;
     expect(new URL(patch.url).searchParams.get("updateMask")).toBe('mediation_group_lines["4000000000000003"].state');
     const audit = JSON.parse(readFileSync(join(dir, "audit.log"), "utf8").trim());

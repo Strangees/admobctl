@@ -1,4 +1,5 @@
 import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { parseFeatures, type Feature } from "./setup/features.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { AdmobctlError, usageError } from "./errors.js";
@@ -36,6 +37,8 @@ export interface CheckConfig {
 export interface ProfileConfig {
   account?: string;
   quotaProject?: string;
+  /** Setup features this profile uses (always includes "read"); set by `admobctl setup`. */
+  features?: Feature[];
   authMode?: AuthMode;
   oauthClientId?: string;
   finance?: FinanceConfig;
@@ -124,11 +127,16 @@ const CHECK_KEYS = ["check.window", "check.baseline", "check.drop", "check.minRe
 const MAP_KEYS = new Set([...Object.keys(DEFAULT_FINANCE).map((k) => `finance.${k}`), ...CHECK_KEYS]);
 const AUTH_MODES: AuthMode[] = ["auto", "adc", "oauth"];
 
-export const SETTABLE_KEYS = [...SCALAR_KEYS, ...MAP_KEYS, "aliases.<alias>", "websites.<alias>"];
+export const SETTABLE_KEYS = [...SCALAR_KEYS, "features", ...MAP_KEYS, "aliases.<alias>", "websites.<alias>"];
 
 /** Set (or with value undefined, unset) a dotted key on a profile. */
 export function setProfileValue(config: ConfigFile, profile: string, key: string, value: string | undefined): void {
   const p = (config.profiles[profile] ??= {});
+  if (key === "features") {
+    if (value === undefined) delete p.features;
+    else p.features = parseFeatures(value);
+    return;
+  }
   if (SCALAR_KEYS.has(key)) {
     if (key === "authMode" && value !== undefined && !AUTH_MODES.includes(value as AuthMode)) {
       throw usageError(`authMode must be one of ${AUTH_MODES.join(", ")}`);
