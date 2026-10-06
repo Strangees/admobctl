@@ -1,0 +1,27 @@
+name: Feature request or question
+description: An idea for a command or MCP tool, a larger change to discuss before a pull request, or a question
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This issue is public. Redact before you paste.** Replace your publisher ID (`pub-…`), app and ad unit IDs
+        (`ca-app-pub-…`), app names, earnings, email address, Google Cloud project ID and any token with placeholders
+        such as `pub-XXXXXXXXXXXXXXXX`.
+
+        For a security problem, do not open an issue: report it privately as described in
+        [SECURITY.md](https://github.com/Strangees/admobctl/security/policy). For a command or MCP tool that does not
+        work as documented, use the bug report.
+  - type: textarea
+    id: what
+    attributes:
+      label: What you would like, or your question
+      description: The problem you want to solve and the command, MCP tool or AdMob API feature it involves.
+    validations:
+      required: true
+  - type: checkboxes
+    id: redacted
+    attributes:
+      label: Privacy
+      options:
+        - label: I removed publisher IDs, app and ad unit IDs, app names, earnings, emails, project IDs and tokens from everything above.
+          required: true

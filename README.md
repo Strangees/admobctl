@@ -287,7 +287,8 @@ npm run eval        # plugin evals (uses your Claude credentials)
 npm run record-fixtures -- --month 2026-09 --expect <booked total> --range 2026-01:2026-09 --expect-range <booked total>
 ```
 
-See [.claude/CLAUDE.md](.claude/CLAUDE.md) for code conventions.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for code conventions and what a pull request needs. Report security problems
+privately as described in [SECURITY.md](SECURITY.md).
 
 ### CI and releases
 
@@ -309,4 +310,5 @@ A push that does not change the version releases nothing.
 
 ## License
 
-MIT
+MIT, except the Revenue Journal specification text in [spec/](spec/), which is CC BY 4.0; the spec's schema, examples
+and conformance files are MIT too ([spec/LICENSE](spec/LICENSE)).
