@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for coding agents (Codex, Claude Code and others) working in this repository. `CLAUDE.md` imports this file.
+Guidance for coding agents (Codex, Claude Code and others) working in this repository. `.claude/CLAUDE.md` imports this file.
 
 admobctl is a TypeScript CLI, MCP server and Claude Code/Codex plugin for the Google AdMob API. Running it needs
 Node.js 20+; developing it (vitest) needs 22.12+.

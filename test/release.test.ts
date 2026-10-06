@@ -51,3 +51,19 @@ describe("open-source hygiene", () => {
     expect(tracked.filter((f) => /(^|\/)PRD[^/]*\.md$/.test(f))).toEqual([]);
   });
 });
+
+describe("directory listing", () => {
+  const manifest = JSON.parse(read(".claude-plugin/plugin.json")) as Record<string, unknown>;
+
+  it("points the icon at a committed image and the listing links at https URLs", () => {
+    expect(tracked).toContain(String(manifest.icon).replace(/^\.\//, ""));
+    for (const key of ["documentationUrl", "supportUrl", "privacyPolicyUrl"]) expect(manifest[key], key).toMatch(/^https:\/\//);
+    expect(manifest.privacyPolicyUrl).toBe("https://github.com/Strangees/admobctl/blob/main/PRIVACY.md");
+    expect(tracked).toContain("PRIVACY.md");
+  });
+
+  it("keeps CLAUDE.md out of the plugin root, where it is not loaded and fails plugin validation", () => {
+    expect(tracked).not.toContain("CLAUDE.md");
+    expect(tracked).toContain(".claude/CLAUDE.md");
+  });
+});
