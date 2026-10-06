@@ -38,11 +38,14 @@ into `test/fixtures/private/`, which is gitignored.
 ## Pull requests
 
 1. `npm run check` passes.
-2. **Commit the rebuilt bundle.** `dist/admobctl.mjs` is committed because Claude Code and Codex install the plugin
-   straight from git. `npm run check` rebuilds it, and CI fails when the committed bundle does not match the source.
-3. If you changed what an MCP tool returns, run `npm run eval:mocks` and commit `evals/mocks/`; CI checks these too.
-4. Update the README and `skills/` when a command, flag or MCP tool changes.
+2. **Commit the rebuilt bundle.** `plugin/dist/admobctl.mjs` is committed because Claude Code and Codex install the
+   plugin straight from git. `npm run check` rebuilds it, and CI fails when the committed bundle does not match the
+   source.
+3. If you changed what an MCP tool returns, run `npm run eval:mocks` and commit `plugin/evals/mocks/`; CI checks these
+   too.
+4. Update the README, `plugin/README.md` and `plugin/skills/` when a command, flag or MCP tool changes.
 
 Leave the version number alone: the maintainer bumps it when releasing (README, "CI and releases").
 
-`AGENTS.md` has the same rules in short form for coding agents such as Codex and Claude Code (`.claude/CLAUDE.md` imports it).
+`AGENTS.md` has the same rules in short form for coding agents such as Codex and Claude Code (`.claude/CLAUDE.md`
+imports it).

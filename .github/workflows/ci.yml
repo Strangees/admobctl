@@ -35,15 +35,15 @@ jobs:
         if: matrix.node != 20
       - run: npm run build
       - name: Committed bundle is up to date
-        run: git diff --exit-code dist/admobctl.mjs
+        run: git diff --exit-code plugin/dist/admobctl.mjs
       - name: Bundle runs on this Node version
-        run: node dist/admobctl.mjs --version
+        run: node plugin/dist/admobctl.mjs --version
       - run: npm test
         if: matrix.node != 20
       # `npm run eval` itself needs Claude credentials and is run by hand.
       - name: Committed eval mocks are up to date
         if: matrix.node == 22
-        run: npm run eval:mocks && git diff --exit-code evals/mocks
+        run: npm run eval:mocks && git diff --exit-code plugin/evals/mocks
 
   # Plugins install straight from main, and `claude plugin update` only sees a change when the version changes.
   # So a release is: bump the version, merge to main. This tags it and publishes a GitHub release.
@@ -62,14 +62,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version="$(jq -r .version .claude-plugin/plugin.json)"
+          version="$(jq -r .version package.json)"
           tag="v$version"
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "$tag is already released; nothing to do."
             exit 0
           fi
-          sha256sum dist/admobctl.mjs > admobctl.mjs.sha256
+          (cd plugin/dist && sha256sum admobctl.mjs) > admobctl.mjs.sha256
           gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --generate-notes \
-            dist/admobctl.mjs admobctl.mjs.sha256
+            plugin/dist/admobctl.mjs admobctl.mjs.sha256
       # Later: npm publish and the Homebrew formula hang off `on: release: types: [published]`
       # in their own workflow, once the repository is public.

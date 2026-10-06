@@ -1,8 +1,8 @@
 node_modules/
-# The bundle is committed: Claude/Codex install plugins straight from git.
-dist/*
-!dist/admobctl.mjs
-evals/results/
+# Build scratch (record-fixtures). The plugin bundle, plugin/dist/admobctl.mjs, is committed:
+# Claude Code and Codex install the plugin straight from git.
+/dist/
+plugin/evals/results/
 coverage/
 *.log
 .DS_Store
