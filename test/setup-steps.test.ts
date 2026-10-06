@@ -48,7 +48,7 @@ function world(w: World = {}) {
     svc,
     cloud: new CloudClient({ getToken: async () => "t", fetch: f.fetch, sleep: noSleep }),
     exec,
-    isTTY: w.isTTY ?? true,
+    interactive: w.isTTY ?? true,
     tokenInfo: async () => {
       if (w.scopes === "signed-out") throw new Error("no credentials");
       return { scopes: w.scopes ?? READ_SCOPES };

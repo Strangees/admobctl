@@ -5,6 +5,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it } from "vitest";
 import { createMcpServer, MAX_TEXT_CHARS } from "../src/mcp/server.js";
+import { saveConfig } from "../src/core/config.js";
 import { AdmobctlError } from "../src/core/errors.js";
 import { BALANCE_NOTE } from "../src/core/payments.js";
 import { AdmobService } from "../src/core/service.js";
@@ -56,7 +57,7 @@ async function connect(routes: Parameters<typeof fakeFetch>[0] = {}, opts: { ser
   await server.connect(serverT);
   const client = new Client({ name: "test", version: "0" });
   await client.connect(clientT);
-  return { client, calls: f.calls, created };
+  return { client, calls: f.calls, created, dir };
 }
 
 type ToolResult = { isError?: boolean; content: Array<{ type: string; text: string }>; structuredContent?: Record<string, unknown> };
@@ -127,6 +128,36 @@ describe("mcp server", () => {
     const r = (await client.callTool({ name: "admobctl_setup_status", arguments: {} })) as ToolResult;
     expect(r.isError).toBeFalsy();
     expect(r.structuredContent).toMatchObject({ ok: false, next_command: "admobctl setup apis --yes" });
+  });
+
+  const setupRoutes = {
+    "POST /tokeninfo": () => jsonResponse({ scope: "https://www.googleapis.com/auth/admob.readonly https://www.googleapis.com/auth/cloud-platform" }),
+    "GET serviceusage.googleapis.com/v1/projects/": () => jsonResponse({ state: "DISABLED" }),
+    "GET /adSources": () => jsonResponse(fixture("ad-sources.json")),
+    "GET /mediationGroups": () => jsonResponse(fixture("mediation-groups.json")),
+  };
+  const quotaCheck = (r: ToolResult) => (r.structuredContent!.checks as Array<{ id: string; summary: string }>).find((c) => c.id === "quota-project");
+
+  it("admobctl_setup_status sees setup changed in a terminal since the previous call", async () => {
+    const { client, dir } = await connect(setupRoutes);
+    const before = (await client.callTool({ name: "admobctl_setup_status", arguments: {} })) as ToolResult;
+    expect(quotaCheck(before)).toMatchObject({ summary: "Quota project: qp" });
+    // The user runs `admobctl setup project use example-a --yes` in a terminal.
+    saveConfig(dir, { profiles: { default: { quotaProject: "example-a" } } });
+    const after = (await client.callTool({ name: "admobctl_setup_status", arguments: {} })) as ToolResult;
+    expect(quotaCheck(after)).toMatchObject({ summary: "Quota project: example-a" });
+  });
+
+  it("tools after admobctl_setup_status reuse its fresh service", async () => {
+    const { client, dir, calls, created } = await connect(setupRoutes);
+    await client.callTool({ name: "admobctl_list_apps", arguments: {} });
+    saveConfig(dir, { profiles: { default: { quotaProject: "example-a" } } });
+    await client.callTool({ name: "admobctl_setup_status", arguments: {} });
+    calls.length = 0;
+    await client.callTool({ name: "admobctl_network_report", arguments: { from: "2026-09", by: ["app"] } });
+    expect(created).toHaveLength(2);
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every((c) => c.headers["x-goog-user-project"] === "example-a")).toBe(true);
   });
 
   it("returns the unpaid balance from admobctl_finance_balance", async () => {

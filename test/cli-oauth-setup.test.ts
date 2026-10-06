@@ -23,7 +23,7 @@ it("setup OAuth reuses the saved Desktop client secret and requests the setup sc
   const f = fakeFetch({ "POST /tokeninfo": () => jsonResponse({ scope: "https://www.googleapis.com/auth/admob.readonly" }) });
   let stderr = "";
   const code = await run(["node", "admobctl", "setup", "login", "--yes"], {
-    stdout: () => {}, stderr: (s) => { stderr += s; }, isTTY: true,
+    stdout: () => {}, stderr: (s) => { stderr += s; }, isTTY: true, stdinIsTTY: true,
     service: {
       configDir: dir, fetch: f.fetch,
       tokenProvider: { mode: "oauth", getToken: async () => "example-token", quotaProject: () => undefined },

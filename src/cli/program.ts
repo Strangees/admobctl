@@ -88,7 +88,10 @@ import {
 export interface CliIO {
   stdout: (s: string) => void;
   stderr: (s: string) => void;
+  /** stdout is a terminal: picks the default output format (table, else JSON). */
   isTTY: boolean;
+  /** stdin is a terminal: a person can complete the interactive sign-in. Default false. */
+  stdinIsTTY?: boolean;
   service?: ServiceDeps;
   /**
    * Starts the MCP server for `admobctl mcp`. Injected by the composition root (src/bin.ts) so that
@@ -235,7 +238,7 @@ export function buildProgram(io: CliIO): Command {
       svc: s,
       cloud: new CloudClient({ getToken: () => tp.getToken(), fetch: io.service?.fetch, sleep: io.service?.sleep }),
       exec: io.service?.exec ?? defaultExec,
-      isTTY: io.isTTY,
+      interactive: io.stdinIsTTY ?? false,
       tokenInfo: async () => fetchTokenInfo(await tp.getToken(), io.service?.fetch),
       oauthLogin: (o) => oauthSignIn(cmd, o),
     };
