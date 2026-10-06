@@ -31,8 +31,8 @@ called the tool. That assistant's provider handles them under its own terms.
 
 In `~/.admobctl/` (or the folder in `ADMOBCTL_HOME`), readable only by you: `config.json` (settings, no secrets),
 `audit.log` (one line for each change a write command applied) and, on systems other than macOS, your OAuth
-credentials. `admobctl auth logout` removes the stored OAuth credentials and revokes them at Google. Deleting the folder
-removes everything else.
+credentials. It writes anywhere else only when you name a file with `--out`. `admobctl auth logout` removes the
+stored OAuth credentials and revokes them at Google. Deleting the folder removes everything else.
 
 ## Changes and questions
 

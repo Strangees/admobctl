@@ -291,7 +291,8 @@ It connects only to:
 It runs `gcloud` to get an access token from Application Default Credentials and for `setup login`, `security` on macOS
 to keep OAuth tokens in the Keychain, and your system's browser opener for the OAuth sign-in, which then listens on a
 `127.0.0.1` port for Google's redirect. It writes only to `~/.admobctl/` (or `ADMOBCTL_HOME`): the config, an audit
-log of applied writes and, on systems other than macOS, OAuth credentials, all readable only by you.
+log of applied writes and, on systems other than macOS, OAuth credentials, all readable only by you. The one exception
+is a file you name with `--out` (`finance export`, `mediation-groups export`).
 
 Through the MCP server, tool results (your AdMob data) go to the AI assistant that called the tool, under that
 assistant's own terms.
