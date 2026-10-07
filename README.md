@@ -121,11 +121,11 @@ Global flags:
 
 Network and mediation reports take `--sort <field>[:asc|desc]` (any dimension or metric in the report) and `--compare previous`, which adds each row's value in the equal-length period just before and the change.
 
-Reports, `insights` and `analyze consent|waterfall` take `--currency USD` (any ISO 4217 code) to convert earnings at
-Google's daily average rate; the default is the account currency. Combinations the AdMob API rejects (two time
-dimensions, `ad-type` with requests, match rate or RPM) fail before any API call, and default metrics that do not
-fit the chosen dimensions are left out with a note. Reports also note when they include data that is still arriving
-(today's AdMob data; the last day of third-party mediation data).
+Network and mediation reports, `insights` and `analyze consent|waterfall|geo|trend` take `--currency USD` (any ISO 4217
+code) to convert earnings at Google's daily average rate; the default is the account currency. Combinations the AdMob
+API rejects (two time dimensions, `ad-type` with requests, match rate or RPM) fail before any API call, and default
+metrics that do not fit the chosen dimensions are left out with a note. Reports also note when they include data that
+is still arriving (today's AdMob data; the last day of third-party mediation data).
 
 Dates are `YYYY-MM` (whole month) or `YYYY-MM-DD`. Dimensions and metrics accept friendly names
 (`app`, `ad-unit`, `country`, `format`, `platform`, `date`, `month`; `earnings`, `requests`, `impressions`,
@@ -270,7 +270,9 @@ admobctl config set quotaProject my-project
 admobctl config set websites.game-android example.com   # developer website for the app-ads.txt check (Android)
 admobctl config set aliases.game ca-app-pub-XXXXXXXXXXXXXXXX~NNNNNNNNNN
 admobctl config set finance.revenueAccount 3120
-admobctl config get
+admobctl config get                      # the resolved profile; `config get <key>` shows one key
+admobctl config unset website
+admobctl config path                     # where the file is (ADMOBCTL_HOME moves it)
 ```
 
 ## Data and privacy

@@ -16,7 +16,9 @@ npm run eval:mocks                     # regenerate plugin/evals/mocks/ after ch
 npm run eval -- --runs 3               # plugin evals against the mocks (uses Claude credentials)
 ```
 
-There is no linter; `tsc --noEmit` (strict, `noUncheckedIndexedAccess`) covers `src/`, `test/` and `scripts/`.
+There is no linter; `npm run typecheck` runs `tsc --noEmit` (strict, `noUncheckedIndexedAccess`) over `src/`, `test/`,
+`scripts/` (the `.mjs` scripts too, through `checkJs`) and `vitest.config.ts`, then over `src/` again with Node 20's
+types (`tsconfig.node20.json`).
 
 ## Rules
 

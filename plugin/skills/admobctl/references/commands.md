@@ -124,7 +124,7 @@ admobctl finance export (--month YYYY-MM | --from YYYY-MM --to YYYY-MM) [--as re
 ## Insights
 
 ```bash
-admobctl insights [--last 30d | --from … --to …] [--by ad-unit|app|country|format|platform] [--swing 30]
+admobctl insights [--last 30d | --from … --to …] [--by ad-unit|app|country|format|platform] [--swing 30] [--currency X]
 ```
 
 Returns rows (earnings, share, change vs the previous equal-length period, eCPM, request RPM, match rate, show rate, CTR),
@@ -208,10 +208,17 @@ admobctl_insights, admobctl_check, admobctl_lint,
 admobctl_analyze_versions, admobctl_analyze_consent, admobctl_analyze_waterfall, admobctl_analyze_geo, admobctl_analyze_trend (`include_days` for the daily rows), admobctl_campaign_report,
 admobctl_list_ad_sources, admobctl_list_adapters (`ad_source`), admobctl_list_mediation_groups,
 admobctl_list_ad_unit_mappings (`ad_unit`), admobctl_check_app_ads.
-They take the same arguments as the CLI, in snake_case: `max_rows`, `sort`, `compare`, `include_journal`, `last_days`.
-`admobctl_check` takes `window_days`, `baseline_days`, `drop_percent`, `min_requests`, `app`.
-`admobctl_finance_export` takes `month` or `from`+`to`, `as` (`json` or `csv`), `integer_amounts`, `scale`, and returns
-the file as `content`.
+Most arguments are the CLI's options in snake_case (`max_rows`, `sort`, `compare`, `currency`, `min_requests`, `app`,
+`account`). The exceptions:
+- `--last 30d` is `last_days: 30`.
+- Report filters are one `filters` object, e.g. `{"country": ["NO","SE"], "app": ["my-game-ios"]}`, not `--filter`.
+- `admobctl_finance_month` returns journal rows with `include_journal: true` (not `--as journal`);
+  `admobctl_finance_range` has no journal option.
+- `admobctl_insights` has no `swing` (a 30% change counts as a swing).
+- `admobctl_check` takes `window_days`, `baseline_days`, `drop_percent`, `min_requests`, `app`.
+- `admobctl_finance_export` takes `month` or `from`+`to`, `as` (`json` or `csv`), `integer_amounts`, `scale`, and returns
+  the file as `content` (no `--out`).
+- No output options (`-o`, `--as`): tools return JSON. The profile is the one `admobctl mcp` started with.
 Reports default to 200 rows.
 
 ## Write commands (v1beta; CLI only)
@@ -235,6 +242,17 @@ With `--yes` it applies them in order (JSON: `{applied: true, plans, results}`) 
 
 `admobctl audit-log [--last <n>] [--failed]` reads that log back, newest first: time, action, request, outcome
 (the created resource, or `failed: <code>`), profile. It is local and calls no API.
+
+## Config
+
+`~/.admobctl/config.json` (or `$ADMOBCTL_HOME/config.json`) holds no secrets. `--profile <name>` picks a profile.
+
+| Command | Does |
+|---|---|
+| `admobctl config get [key]` | The resolved profile, or one key (dotted, e.g. `finance.revenueAccount`) |
+| `admobctl config set <key> <value>` | Set a key: account, quotaProject, website, `websites.<alias>`, `aliases.<alias>`, features, `finance.<key>`, `check.<key>` (the error for an unknown key lists them all) |
+| `admobctl config unset <key>` | Remove a key |
+| `admobctl config path` | Print the config file's path |
 
 ## Errors
 
