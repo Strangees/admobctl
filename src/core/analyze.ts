@@ -4,7 +4,7 @@ import { usageError } from "./errors.js";
 import { ESTIMATE_LABEL } from "./finance.js";
 import { pct, perMille, ratio, resolveInsightRange } from "./insights.js";
 import { formatMicros, microsToAmount, sumMicros } from "./money.js";
-import type { DimensionValue, Report } from "./report.js";
+import { hitRowCap, rowCapNotices, type DimensionValue, type Report } from "./report.js";
 import type { AdmobService, StreamedReportKind } from "./service.js";
 
 /** Curated analyses on report dimensions the plain reports leave to the user. */
@@ -48,7 +48,7 @@ export async function fetchReport(
   opts: AnalyzeRange & { by: string[]; metrics: string[]; filters?: Record<string, string[]>; currency?: string },
 ) {
   const acct = await svc.account();
-  const range = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
+  const { range, notices: rangeNotices } = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
   const { report, notices } = await svc.rawReport(kind, {
     dateRange: range,
     by: opts.by,
@@ -63,7 +63,9 @@ export async function fetchReport(
     to: formatDate(range.endDate),
     currency: report.currency ?? acct.currencyCode,
     timeZone: report.timeZone ?? acct.reportingTimeZone,
-    notices: [...report.warnings.map((w) => `API warning: ${w}`), ...notices],
+    /** The API stopped at its row limit: rows are missing (see the notice). */
+    capped: hitRowCap(report),
+    notices: [...rangeNotices, ...report.warnings.map((w) => `API warning: ${w}`), ...notices, ...rowCapNotices(report)],
   };
 }
 

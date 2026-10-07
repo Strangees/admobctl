@@ -22,6 +22,10 @@ in one call), `admobctl_analyze_waterfall` (which mediation lines earn, which si
 eCPM per country and format in one call) and `admobctl_analyze_trend`
 (the day a change started, weekday patterns, the first day an app had traffic).
 
+Insights and the analyses use complete days only: a period that reaches today ends at yesterday. Pass on what
+`notices` says (a period cut at yesterday, API warnings, a report cut off at the API's row limit) before drawing
+conclusions from the numbers.
+
 Rows marked `enough_data: false` in the versions, consent and geo analyses have too few requests to judge. Show them if
 asked, but do not report their rates as problems. Compare restricted and unrestricted eCPM within one app, never
 across apps.
@@ -47,7 +51,7 @@ facts about the user's account. If something does not add up, say what and stop;
 | `low-fill` (low match rate, many requests) | Demand does not match the requests | Check mediation and bidding sources, eCPM floors, blocked categories, request frequency |
 | `low-show-rate` | Ads load but are not shown | Check that ads are shown soon after loading and are not loaded for screens the user never sees |
 | `swing-down` / `gone` | Revenue drop | Find the day it started with `admobctl_analyze_trend` (`by: "app"`), break down by country or format with `admobctl_network_report`, and check app releases around that day |
-| `swing-up` / `new` | Revenue gain | Name it; confirm it is not a one-off spike |
+| `swing-up` / `new` / `started-earning` | Revenue gain | Name it; confirm it is not a one-off spike. `started-earning` had traffic before but earned nothing: check what changed (fill, mediation, a new ad source) |
 | `bottom` | Traffic with little revenue | Consider the format or placement, or removing the unit |
 | `low-show-rate` / `low-match-rate` on a version | The SDK or app release behaves differently | Compare release notes and the ad-loading code between that version and the others; check adapter versions |
 | `restricted` (consent) | Restricted traffic earns less | Review the consent message (UMP) and its acceptance rate; numbers only, no legal advice |

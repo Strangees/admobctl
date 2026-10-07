@@ -2,7 +2,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { run } from "../src/cli/program.js";
 import { insights } from "../src/core/insights.js";
+import { API_MAX_ROWS } from "../src/core/report.js";
 import { AdmobService } from "../src/core/service.js";
 import type { TokenProvider } from "../src/core/auth/types.js";
 import { fakeFetch, fixture, jsonResponse, noSleep, type RecordedCall } from "./helpers.js";
@@ -11,7 +13,7 @@ const token: TokenProvider = { mode: "adc", getToken: async () => "t", quotaProj
 
 type Unit = { id: string; label: string; earn: number; req: number; matched: number; imp: number; clicks: number };
 
-function report(units: Unit[]) {
+function report(units: Unit[], warnings: string[] = []) {
   return [
     { header: { localizationSettings: { currencyCode: "NOK" }, reportingTimeZone: "Europe/Oslo" } },
     ...units.map((u) => ({
@@ -26,7 +28,7 @@ function report(units: Unit[]) {
         },
       },
     })),
-    { footer: { matchingRowCount: String(units.length) } },
+    { footer: { matchingRowCount: String(units.length), ...(warnings.length ? { warnings: warnings.map((description) => ({ type: "DATA_DELAYED", description })) } : {}) } },
   ];
 }
 
@@ -164,5 +166,70 @@ describe("insights", () => {
     const r = await insights(svc, { last: 30, by: "ad-unit" });
     expect(r.rows.map((x) => x.label)).toEqual(["example-quiz-ios / ad", "example-quiz-android / ad"]);
     expect(r.summary.join("\n")).toMatch(/example-quiz-android \/ ad rose/);
+  });
+});
+
+describe("insights periods", () => {
+  type Range = { startDate: { year: number; month: number; day: number }; endDate: { year: number; month: number; day: number } };
+  /** `current` answers the report that starts on `start` (YYYY-MM-DD); every other range gets `previous`. */
+  function setup(start: string, cur: () => unknown, prev: () => unknown, now: string) {
+    const f = fakeFetch({
+      "GET /v1/accounts?": () => jsonResponse(fixture("accounts.json")),
+      "GET /apps": (c) => jsonResponse(fixture(c.url.includes("pageToken=page2") ? "apps-page2.json" : "apps-page1.json")),
+      "GET /adUnits": () => jsonResponse(fixture("ad-units.json")),
+      "POST /networkReport:generate": (c: RecordedCall) => {
+        const { startDate: d } = (c.body as { reportSpec: { dateRange: Range } }).reportSpec.dateRange;
+        const iso = `${d.year}-${String(d.month).padStart(2, "0")}-${String(d.day).padStart(2, "0")}`;
+        return jsonResponse(iso === start ? cur() : prev());
+      },
+    });
+    const deps = { configDir: mkdtempSync(join(tmpdir(), "admobctl-ins-")), tokenProvider: token, fetch: f.fetch, sleep: noSleep, now: () => new Date(now) };
+    return { svc: AdmobService.create({}, deps), deps, calls: f.calls };
+  }
+  const ranges = (calls: RecordedCall[]) => calls.filter((c) => c.url.includes("networkReport")).map((c) => (c.body as { reportSpec: { dateRange: Range } }).reportSpec.dateRange);
+
+  it("ends the current period at yesterday and compares it with as many days before", async () => {
+    // 2026-10-07: October has six complete days, so they are compared with the six days before.
+    const { svc, calls } = setup("2026-10-01", () => report(current), () => report(previous), "2026-10-07T08:00:00Z");
+    const r = await insights(svc, { from: "2026-10", by: "ad-unit" });
+    expect(ranges(calls)).toEqual(
+      expect.arrayContaining([
+        { startDate: { year: 2026, month: 10, day: 1 }, endDate: { year: 2026, month: 10, day: 6 } },
+        { startDate: { year: 2026, month: 9, day: 25 }, endDate: { year: 2026, month: 9, day: 30 } },
+      ]),
+    );
+    expect(r).toMatchObject({ from: "2026-10-01", to: "2026-10-06", previous: { from: "2026-09-25", to: "2026-09-30" } });
+    expect(r.notices).toContain("Ends at 2026-10-06 (yesterday) instead of 2026-10-31: today's figures are partial and later days have none.");
+  });
+
+  it("refuses a period with no complete day yet", async () => {
+    const { svc } = setup("2026-10-07", () => report(current), () => report(previous), "2026-10-07T08:00:00Z");
+    await expect(insights(svc, { from: "2026-10-07", by: "ad-unit" })).rejects.toThrow(/no complete day/);
+  });
+
+  it("passes API warnings on as notices, in the CLI notes too", async () => {
+    const { svc, deps } = setup("2026-09-02", () => report(current, ["Data for 2026-10-01 is delayed."]), () => report(previous), "2026-10-02T08:00:00Z");
+    const r = await insights(svc, { last: 30, by: "ad-unit" });
+    expect(r.notices).toEqual(["API warning: Data for 2026-10-01 is delayed."]);
+    let stdout = "";
+    const code = await run(["node", "admobctl", "insights", "--last", "30d"], { stdout: (s) => (stdout += s), stderr: () => {}, isTTY: true, service: deps });
+    expect(code).toBe(0);
+    expect(stdout).toContain("API warning: Data for 2026-10-01 is delayed.");
+  });
+
+  it("says when a period hit the API's row limit", { timeout: 20_000 }, async () => {
+    const many = Array.from({ length: API_MAX_ROWS }, (_, i): Unit => ({ id: `u/${i}`, label: `Unit ${i}`, earn: 1, req: 1, matched: 1, imp: 1, clicks: 0 }));
+    const { svc } = setup("2026-09-02", () => report(many), () => report(previous), "2026-10-02T08:00:00Z");
+    const r = await insights(svc, { last: 30, by: "ad-unit" });
+    expect(r.notices.join("\n")).toMatch(/100000 rows/);
+  });
+
+  it("calls a row new only when the previous period lacks it; one that earned nothing there started earning", async () => {
+    const unit = (id: string, earn: number): Unit => ({ id, label: id, earn, req: 5000, matched: 4000, imp: 3000, clicks: 10 });
+    const { svc } = setup("2026-09-02", () => report([unit("u/fill", 20_000_000), unit("u/new", 10_000_000)]), () => report([unit("u/fill", 0)]), "2026-10-02T08:00:00Z");
+    const r = await insights(svc, { last: 30, by: "ad-unit" });
+    const kinds = Object.fromEntries(r.highlights.filter((h) => h.kind === "new" || h.kind === "started-earning").map((h) => [h.label, h]));
+    expect(kinds["u/new"]).toMatchObject({ kind: "new", message: "u/new is new this period: 10.00 NOK." });
+    expect(kinds["u/fill"]).toMatchObject({ kind: "started-earning", message: "u/fill started earning this period: 20.00 NOK, after earning nothing from 5000 requests the period before." });
   });
 });

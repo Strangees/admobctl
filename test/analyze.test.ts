@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { analyzeConsent, analyzeVersions, analyzeWaterfall } from "../src/core/analyze.js";
+import { API_MAX_ROWS } from "../src/core/report.js";
 import { AdmobService } from "../src/core/service.js";
 import type { TokenProvider } from "../src/core/auth/types.js";
 import { fakeFetch, fixture, jsonResponse, noSleep, synthReport, type RecordedCall } from "./helpers.js";
@@ -43,6 +44,24 @@ describe("analyzeVersions", () => {
     const s = spec(calls.find((c) => c.url.includes("networkReport"))!);
     expect(s.dimensions).toEqual(["PLATFORM", "GMA_SDK_VERSION"]);
     expect(s.metrics).not.toContain("ESTIMATED_EARNINGS");
+  });
+
+  it("says when the API cut the report off at its row limit", { timeout: 20_000 }, async () => {
+    const many = Array.from({ length: API_MAX_ROWS }, (_, i) => r("IOS", `ios-${i}`, 1, 1, 1));
+    const { svc } = service({ "POST /networkReport:generate": () => jsonResponse(synthReport(many)) });
+    const res = await analyzeVersions(svc, { by: "sdk", last: 30 });
+    expect(res.notices).toContain("The AdMob API returned its maximum of 100000 rows, so some rows are probably missing and totals are too low. Use a shorter range.");
+  });
+
+  it("ends the period at yesterday, with a notice", async () => {
+    const { svc, calls } = service({ "POST /networkReport:generate": () => jsonResponse(synthReport(rows)) });
+    const res = await analyzeVersions(svc, { by: "sdk", from: "2026-09-15", to: "2026-10-15" });
+    expect((calls.find((c) => c.url.includes("networkReport"))!.body as { reportSpec: { dateRange: unknown } }).reportSpec.dateRange).toEqual({
+      startDate: { year: 2026, month: 9, day: 15 },
+      endDate: { year: 2026, month: 10, day: 1 },
+    });
+    expect(res).toMatchObject({ from: "2026-09-15", to: "2026-10-01" });
+    expect(res.notices[0]).toBe("Ends at 2026-10-01 (yesterday) instead of 2026-10-15: today's figures are partial and later days have none.");
   });
 
   it("compares each version with the rest of its platform and flags regressions", async () => {

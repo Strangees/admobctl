@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { run } from "../src/cli/program.js";
 import type { TokenProvider } from "../src/core/auth/types.js";
+import { API_MAX_ROWS } from "../src/core/report.js";
 import { AdmobService } from "../src/core/service.js";
 import { analyzeTrend, levelShift } from "../src/core/trend.js";
 import { fakeFetch, fixture, jsonResponse, noSleep, synthReport, type RecordedCall } from "./helpers.js";
@@ -37,13 +38,28 @@ const spec = (c: RecordedCall) => (c.body as { reportSpec: { dimensions: string[
 describe("levelShift", () => {
   it("finds the day a series moves to a new level", () => {
     expect(levelShift([10, 11, 9, 10, 10, 11, 9, 5, 5, 6, 4, 5, 5, 5])).toMatchObject({ index: 7, before: 10, after: 5 });
-    expect(levelShift([5, 5, 5, 5, 10, 10, 10, 10])).toMatchObject({ index: 4, before: 5, after: 10 });
+    expect(levelShift([5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 10, 10, 10, 10])).toMatchObject({ index: 10, before: 5, after: 10 });
+    // A step in the last three days of two weeks still counts.
+    expect(levelShift([10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 4, 4, 4])).toMatchObject({ index: 11, before: 10, after: 4 });
   });
 
   it("ignores noise, flat series and short series", () => {
-    expect(levelShift([10, 12, 9, 11, 10, 12, 9, 11, 10, 12])).toBeUndefined();
-    expect(levelShift([7, 7, 7, 7, 7, 7, 7, 7])).toBeUndefined();
+    expect(levelShift([10, 12, 9, 11, 10, 12, 9, 11, 10, 12, 9, 11, 10, 12])).toBeUndefined();
+    expect(levelShift([7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7])).toBeUndefined();
     expect(levelShift([10, 10, 5, 5])).toBeUndefined();
+    expect(levelShift([5, 5, 5, 5, 5, 5, 5, 10, 10, 10, 10, 10, 10])).toBeUndefined();
+  });
+
+  it("does not take a weekly pattern for a level change", () => {
+    // Mon-Thu 10, Fri-Sun 14: one week looks like a step, two weeks do not.
+    const week = [10, 10, 10, 10, 14, 14, 14];
+    expect(levelShift(week)).toBeUndefined();
+    expect(levelShift([...week, ...week])).toBeUndefined();
+    expect(levelShift([...week, ...week, ...week, 10, 10])).toBeUndefined();
+  });
+
+  it("finds the day a series started earning", () => {
+    expect(levelShift([0, 0, 0, 0, 0, 10, 10, 10, 10, 10, 10, 10, 10, 10])).toEqual({ index: 5, before: 0, after: 10 });
   });
 });
 
@@ -106,6 +122,49 @@ describe("analyzeTrend", () => {
     expect(r.notices.join(" ")).toMatch(/10 of 12/);
   });
 
+  it("stops at yesterday when the range reaches today or later", async () => {
+    // Flat 10 a day from 2026-09-18, and today's partial figure (2026-10-02).
+    const { svc, calls } = setup(days([...Array.from({ length: 14 }, () => 10), 3]));
+    const r = await analyzeTrend(svc, { from: "2026-09-18", to: "2026-10" });
+    const sent = (calls.find((c) => c.url.includes("networkReport"))!.body as { reportSpec: { dateRange: unknown } }).reportSpec.dateRange;
+    expect(sent).toEqual({ startDate: { year: 2026, month: 9, day: 18 }, endDate: { year: 2026, month: 10, day: 1 } });
+    expect(r).toMatchObject({ from: "2026-09-18", to: "2026-10-01" });
+    const s = r.rows[0]!;
+    expect(s).toMatchObject({ active_days: 14, average_per_day: 10 });
+    expect(s.shift).toBeUndefined();
+    expect(s.days!.at(-1)!.date).toBe("2026-10-01");
+    expect(r.highlights.filter((h) => h.kind.startsWith("shift"))).toEqual([]);
+    expect(r.notices.join("\n")).toMatch(/2026-10-01 \(yesterday\).*instead of 2026-10-31/);
+  });
+
+  it("refuses a range with no complete day yet", async () => {
+    await expect(analyzeTrend(setup([]).svc, { from: "2026-10-02", to: "2026-10" })).rejects.toThrow(/no complete day/);
+  });
+
+  it("finds no level change in one week of a weekly pattern", async () => {
+    // 2026-09-25 is a Friday: Fri-Sun 14, Mon-Thu 10.
+    const r = await analyzeTrend(setup(days([null, null, null, null, null, null, null, 14, 14, 14, 10, 10, 10, 10])).svc, { last: 7 });
+    expect(r.rows[0]!.shift).toBeUndefined();
+    expect(r.highlights).toEqual([]);
+  });
+
+  it("reports a series that started earning instead of a rise from zero", async () => {
+    // Requests from the first day, but no earnings for five days.
+    const { svc } = setup(days([0, 0, 0, 0, 0, 10, 10, 10, 10, 10, 10, 10, 10, 10]));
+    const r = await analyzeTrend(svc, { last: 14 });
+    const s = r.rows[0]!;
+    expect(s.first_active).toBe("2026-09-18");
+    expect(s.shift).toEqual({ date: "2026-09-23", before_per_day: 0, after_per_day: 10 });
+    expect(r.highlights.map((h) => h.kind)).toEqual(["started-earning"]);
+    expect(r.highlights[0]!.message).toBe("All apps started earning around 2026-09-23: nothing before, then 10.00 NOK per day.");
+  });
+
+  it("refuses a series the API cut off at its row limit", { timeout: 20_000 }, async () => {
+    // The rows come back by date, so the ones cut off are the latest days and would look like a drop.
+    const rows = Array.from({ length: API_MAX_ROWS }, (_, i): Row => [{ DATE: ["20260918"], COUNTRY: [`C${i}`] }, { ESTIMATED_EARNINGS: 1 }]);
+    await expect(analyzeTrend(setup(rows).svc, { last: 14, by: "country" })).rejects.toThrow(/100000 rows.*shorter range/);
+  });
+
   it("rejects an unknown split", async () => {
     await expect(analyzeTrend(setup([]).svc, { by: "colour" as never })).rejects.toThrow(/--by must be one of/);
   });
@@ -119,5 +178,14 @@ describe("cli analyze trend", () => {
     expect(code).toBe(0);
     expect(stdout).toMatch(/2026-09-18\s+Fri\s+10\.00/);
     expect(stdout).toMatch(/fell from 10\.00 to 5\.00/);
+  });
+
+  it("says when the range was cut at yesterday", async () => {
+    const { deps } = setup(days(Array.from({ length: 14 }, () => 10)));
+    let stdout = "";
+    const code = await run(["node", "admobctl", "analyze", "trend", "--from", "2026-09-18", "--to", "2026-10"], { stdout: (s) => (stdout += s), stderr: () => {}, isTTY: true, service: deps });
+    expect(code).toBe(0);
+    expect(stdout).toMatch(/Ends at 2026-10-01 \(yesterday\)/);
+    expect(stdout).not.toMatch(/2026-10-02/);
   });
 });
