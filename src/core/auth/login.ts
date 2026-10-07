@@ -20,6 +20,8 @@ export interface LoginOptions {
   payments?: boolean;
   /** Also ask for cloud-platform, for setup project and API management. */
   cloudPlatform?: boolean;
+  /** How long to wait for the browser sign-in (default 5 minutes). */
+  timeoutMs?: number;
 }
 
 export function systemBrowser(exec: Exec = defaultExec) {
@@ -30,7 +32,8 @@ export function systemBrowser(exec: Exec = defaultExec) {
         : process.platform === "win32"
           ? ["rundll32", ["url.dll,FileProtocolHandler", url]]
           : ["xdg-open", [url]];
-    await exec(cmd as string, args as string[]).catch(() => undefined);
+    // In the background: an opener such as xdg-open can keep running (and would hold admobctl's stdio) until the browser closes.
+    await exec(cmd as string, args as string[], { background: true }).catch(() => undefined);
   };
 }
 
@@ -38,11 +41,15 @@ export function systemBrowser(exec: Exec = defaultExec) {
 export async function login(o: LoginOptions): Promise<{ profile: string; scope?: string }> {
   const pkce = createPkce();
   const state = randomBytes(16).toString("hex");
-  const wait = waitForLoopbackCode({ state });
+  const wait = waitForLoopbackCode({ state, timeoutMs: o.timeoutMs });
   const { redirectUri } = await wait.ready;
   const url = buildAuthUrl({ clientId: o.clientId, redirectUri, pkce, state, write: o.write, payments: o.payments, cloudPlatform: o.cloudPlatform });
   o.print(`Opening your browser to sign in to Google. If it does not open, visit:\n\n  ${url}\n\n`);
-  await (o.openBrowser ?? systemBrowser())(url);
+  // Not awaited: the sign-in completes through the redirect, and the printed URL works without the browser launch.
+  const open = o.openBrowser ?? systemBrowser();
+  void Promise.resolve()
+    .then(() => open(url))
+    .catch(() => undefined);
   const code = await wait.code;
   const t = await exchangeCode({ clientId: o.clientId, clientSecret: o.clientSecret, code, verifier: pkce.verifier, redirectUri }, o.fetch);
   const stored: StoredOAuth = { clientId: o.clientId, refreshToken: t.refreshToken };

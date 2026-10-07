@@ -3,9 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { resolveTokenProvider } from "../src/core/auth/index.js";
-import { login, logout } from "../src/core/auth/login.js";
+import { login, logout, systemBrowser, type LoginOptions } from "../src/core/auth/login.js";
 import type { SecretStore } from "../src/core/auth/oauth.js";
 import { loadConfig, resolveProfile, saveConfig } from "../src/core/config.js";
+import type { Exec } from "../src/core/exec.js";
 import { fakeFetch, jsonResponse } from "./helpers.js";
 
 function memoryStore(): SecretStore & { data: Map<string, string> } {
@@ -57,6 +58,42 @@ describe("login", () => {
     expect(store.data.has("default")).toBe(false);
     expect(f.calls[0]!.body).toBe("token=r1");
     expect(loadConfig(dir).profiles.default!.authMode).toBe("auto");
+  });
+});
+
+describe("login process handling", () => {
+  const READ = "https://www.googleapis.com/auth/admob.readonly";
+  /** What the browser does after consent: follow the consent URL's redirect_uri with a code. */
+  const consent = (url: string) => {
+    const u = new URL(url);
+    return fetch(`${u.searchParams.get("redirect_uri")}/?code=auth-code&state=${u.searchParams.get("state")}`);
+  };
+  const options = (o: Partial<LoginOptions>): LoginOptions => ({
+    configDir: mkdtempSync(join(tmpdir(), "admobctl-login-")),
+    profile: "default",
+    clientId: "cid",
+    store: memoryStore(),
+    fetch: fakeFetch({ "POST /token": () => jsonResponse({ access_token: "a", refresh_token: "r1", expires_in: 3600, scope: READ }) }).fetch,
+    print: () => {},
+    ...o,
+  });
+
+  it("does not wait for the browser program to exit", async () => {
+    const r = await login(options({ openBrowser: (url) => (void consent(url), new Promise<void>(() => {})) }));
+    expect(r.profile).toBe("default");
+  });
+
+  it("fails cleanly when the sign-in times out while the browser launch is still pending", async () => {
+    const err = await login(options({ timeoutMs: 50, openBrowser: () => new Promise<void>(() => {}) })).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: "AUTH_NO_CREDENTIALS", message: expect.stringMatching(/Timed out/) });
+  });
+
+  it("starts the system browser in the background, not tied to admobctl's output", async () => {
+    const calls: Array<Parameters<Exec>> = [];
+    await systemBrowser(async (...a) => (calls.push(a), { code: 0, stdout: "", stderr: "" }))("https://example.com/consent");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]![1]).toContain("https://example.com/consent");
+    expect(calls[0]![2]).toMatchObject({ background: true });
   });
 });
 

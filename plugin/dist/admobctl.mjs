@@ -10923,8 +10923,27 @@ async function runChecks(d) {
 
 // src/core/exec.ts
 import { spawn } from "node:child_process";
+import { statSync } from "node:fs";
+import { win32 } from "node:path";
 var exec = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
-  const child = spawn(cmd, args, { stdio: opts.interactive ? ["inherit", 2, "inherit"] : ["pipe", "pipe", "pipe"], shell: false, env: opts.env ?? process.env });
+  const env = opts.env ?? process.env;
+  const { file: file2, args: argv, windowsVerbatimArguments } = spawnTarget(cmd, args, { env });
+  if (opts.background) {
+    const child2 = spawn(file2, argv, { stdio: "ignore", detached: true, shell: false, env, windowsVerbatimArguments });
+    child2.once("error", reject);
+    child2.once("spawn", () => {
+      child2.unref();
+      resolve({ code: 0, stdout: "", stderr: "" });
+    });
+    return;
+  }
+  const stdin = opts.input === void 0 ? "ignore" : "pipe";
+  const child = spawn(file2, argv, {
+    stdio: opts.interactive ? ["inherit", 2, "inherit"] : [stdin, "pipe", "pipe"],
+    shell: false,
+    env,
+    windowsVerbatimArguments
+  });
   let stdout = "";
   let stderr = "";
   const timer = opts.timeoutMs ? setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs) : void 0;
@@ -10938,8 +10957,48 @@ var exec = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
     if (timer) clearTimeout(timer);
     resolve({ code: code2 ?? 1, stdout, stderr });
   });
-  child.stdin?.end(opts.input ?? "");
+  child.stdin?.on("error", () => {
+  });
+  child.stdin?.end(opts.input);
 });
+var isFile = (p) => {
+  try {
+    return statSync(p).isFile();
+  } catch {
+    return false;
+  }
+};
+var envValue = (env, name) => Object.entries(env).find(([k]) => k.toUpperCase() === name.toUpperCase())?.[1];
+function findBatchFile(cmd, env, exists) {
+  const batch = (p) => /\.(cmd|bat)$/i.test(p) ? p : void 0;
+  if (/[\\/]/.test(cmd)) return batch(cmd);
+  const exts = (envValue(env, "PATHEXT") ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+  const names = win32.extname(cmd) ? [cmd] : exts.map((e) => cmd + e);
+  for (const dir of (envValue(env, "PATH") ?? "").split(";")) {
+    const d = dir.replace(/"/g, "").trim();
+    if (!d) continue;
+    for (const name of names) {
+      const p = win32.join(d, name);
+      if (exists(p)) return batch(p);
+    }
+  }
+  return void 0;
+}
+var CMD_META = /([()[\]%!^"`<>&|;, *?])/g;
+function batchArg(arg) {
+  if (/[%!\r\n\0]/.test(arg)) throw new Error(`Argument ${JSON.stringify(arg)} cannot be passed safely to a Windows batch file.`);
+  const quoted = `"${arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, "$1$1")}"`;
+  return quoted.replace(CMD_META, "^$1").replace(CMD_META, "^$1");
+}
+function spawnTarget(cmd, args, o = {}) {
+  const env = o.env ?? process.env;
+  if ((o.platform ?? process.platform) !== "win32") return { file: cmd, args };
+  const batch = findBatchFile(cmd, env, o.isFile ?? isFile);
+  if (!batch) return { file: cmd, args };
+  if (/[%!"\r\n\0]/.test(batch)) throw new Error(`The path ${batch} cannot be passed safely to cmd.exe.`);
+  const line = [`"${batch}"`, ...args.map(batchArg)].join(" ");
+  return { file: envValue(env, "ComSpec") ?? "cmd.exe", args: ["/d", "/s", "/c", `"${line}"`], windowsVerbatimArguments: true };
+}
 
 // src/core/log.ts
 var verbose = Boolean(process.env.ADMOBCTL_DEBUG);
@@ -11150,7 +11209,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 // src/core/fs.ts
-import { chmodSync, mkdirSync, statSync } from "node:fs";
+import { chmodSync, mkdirSync, statSync as statSync2 } from "node:fs";
 import { basename } from "node:path";
 function ensurePrivateDir(dir) {
   if (mkdirSync(dir, { recursive: true, mode: 448 }) !== void 0) {
@@ -11158,7 +11217,7 @@ function ensurePrivateDir(dir) {
     return;
   }
   if (process.platform === "win32" || typeof process.getuid !== "function") return;
-  const st = statSync(dir);
+  const st = statSync2(dir);
   if ((st.mode & 63) === 0) return;
   const warning = `${dir} is accessible to other users (mode ${(st.mode & 511).toString(8)}). Fix: chmod 700 ${dir}`;
   if (basename(dir) === ".admobctl" && st.uid === process.getuid()) {
@@ -11601,7 +11660,11 @@ var DONE_PAGE = `<!doctype html><meta charset="utf-8"><title>admobctl</title>
 <body style="font:16px system-ui;margin:3em">Signed in. You can close this tab and return to the terminal.</body>`;
 function waitForLoopbackCode(o) {
   let resolveReady;
-  const ready = new Promise((r) => resolveReady = r);
+  let rejectReady;
+  const ready = new Promise((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
   const code2 = new Promise((resolve, reject) => {
     const server = createServer((req, res) => {
       const url2 = new URL(req.url ?? "/", "http://127.0.0.1");
@@ -11629,7 +11692,19 @@ function waitForLoopbackCode(o) {
       const port = typeof addr === "object" && addr ? addr.port : 0;
       resolveReady({ redirectUri: `http://127.0.0.1:${port}` });
     });
-    server.on("error", reject);
+    server.on("error", (err) => {
+      clearTimeout(timer);
+      const e = new AdmobctlError("AUTH_NO_CREDENTIALS", `Could not listen on 127.0.0.1 for Google's sign-in redirect: ${err.message}`, {
+        cause: err,
+        fix: "admobctl auth login"
+      });
+      rejectReady(e);
+      reject(e);
+    });
+  });
+  ready.catch(() => {
+  });
+  code2.catch(() => {
   });
   return { ready, code: code2 };
 }
@@ -11722,13 +11797,13 @@ var OAuthTokenProvider = class {
 function systemBrowser(exec2 = exec) {
   return async (url2) => {
     const [cmd, args] = process.platform === "darwin" ? ["open", [url2]] : process.platform === "win32" ? ["rundll32", ["url.dll,FileProtocolHandler", url2]] : ["xdg-open", [url2]];
-    await exec2(cmd, args).catch(() => void 0);
+    await exec2(cmd, args, { background: true }).catch(() => void 0);
   };
 }
 async function login(o) {
   const pkce = createPkce();
   const state = randomBytes2(16).toString("hex");
-  const wait = waitForLoopbackCode({ state });
+  const wait = waitForLoopbackCode({ state, timeoutMs: o.timeoutMs });
   const { redirectUri } = await wait.ready;
   const url2 = buildAuthUrl({ clientId: o.clientId, redirectUri, pkce, state, write: o.write, payments: o.payments, cloudPlatform: o.cloudPlatform });
   o.print(`Opening your browser to sign in to Google. If it does not open, visit:
@@ -11736,7 +11811,8 @@ async function login(o) {
   ${url2}
 
 `);
-  await (o.openBrowser ?? systemBrowser())(url2);
+  const open2 = o.openBrowser ?? systemBrowser();
+  void Promise.resolve().then(() => open2(url2)).catch(() => void 0);
   const code2 = await wait.code;
   const t = await exchangeCode({ clientId: o.clientId, clientSecret: o.clientSecret, code: code2, verifier: pkce.verifier, redirectUri }, o.fetch);
   const stored = { clientId: o.clientId, refreshToken: t.refreshToken };

@@ -126,10 +126,17 @@ export function buildAuthUrl(o: {
 const DONE_PAGE = `<!doctype html><meta charset="utf-8"><title>admobctl</title>
 <body style="font:16px system-ui;margin:3em">Signed in. You can close this tab and return to the terminal.</body>`;
 
-/** Listen on 127.0.0.1:<random> for Google's redirect and resolve with the authorization code. */
+/**
+ * Listen on 127.0.0.1:<random> for Google's redirect and resolve with the authorization code. A listen error rejects
+ * both promises; neither rejection goes unhandled while the caller awaits the other one.
+ */
 export function waitForLoopbackCode(o: { state: string; timeoutMs?: number }) {
   let resolveReady!: (v: { redirectUri: string }) => void;
-  const ready = new Promise<{ redirectUri: string }>((r) => (resolveReady = r));
+  let rejectReady!: (err: unknown) => void;
+  const ready = new Promise<{ redirectUri: string }>((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
   const code = new Promise<string>((resolve, reject) => {
     const server = createServer((req, res) => {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
@@ -157,8 +164,18 @@ export function waitForLoopbackCode(o: { state: string; timeoutMs?: number }) {
       const port = typeof addr === "object" && addr ? addr.port : 0;
       resolveReady({ redirectUri: `http://127.0.0.1:${port}` });
     });
-    server.on("error", reject);
+    server.on("error", (err) => {
+      clearTimeout(timer);
+      const e = new AdmobctlError("AUTH_NO_CREDENTIALS", `Could not listen on 127.0.0.1 for Google's sign-in redirect: ${err.message}`, {
+        cause: err,
+        fix: "admobctl auth login",
+      });
+      rejectReady(e);
+      reject(e);
+    });
   });
+  ready.catch(() => {});
+  code.catch(() => {});
   return { ready, code };
 }
 

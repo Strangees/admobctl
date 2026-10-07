@@ -44,8 +44,9 @@ It connects only to:
 - **For the app-ads.txt check only:** Apple's iTunes lookup API (`itunes.apple.com`), which receives your apps' App
   Store IDs, and each app's developer website, which receives a request for `/app-ads.txt`.
 
-It runs `gcloud` to get an access token from Application Default Credentials and for `setup login`, `security` on macOS
-to keep OAuth tokens in the Keychain, and your system's browser opener for the OAuth sign-in, which then listens on a
+It runs `gcloud` to get an access token from Application Default Credentials and for `setup login` (on Windows through
+`cmd.exe`, since `gcloud` is a batch file there), `security` on macOS to keep OAuth tokens in the Keychain, and your
+system's browser opener for the OAuth sign-in, which then listens on a
 `127.0.0.1` port for Google's redirect. It writes only to `~/.admobctl/` (or `ADMOBCTL_HOME`): the config, an audit
 log of applied writes and, on systems other than macOS, OAuth credentials, all readable only by you. The one exception
 is a file you name with `--out` (`finance export`, `mediation-groups export`).
