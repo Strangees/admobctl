@@ -169,6 +169,23 @@ describe("runDoctor setup checks", () => {
     expect(checks.credentials!.fix_command).toBeUndefined();
   });
 
+  it("gives the manual step instead of setup login when a sign-in cannot replace the credentials in use", async () => {
+    const UNSET = "Unset GOOGLE_APPLICATION_CREDENTIALS in the terminal that runs admobctl, then run admobctl setup login --yes.";
+    const checks = byId(
+      await runDoctor({
+        ...okDeps(),
+        signInBlocked: UNSET,
+        features: ["read", "payments"],
+        tokenInfo: async () => ({ scopes: ["openid"] }),
+        listAccounts: async () => Promise.reject(new AdmobctlError("AUTH_SCOPE_MISSING", "no AdMob scope", { fix: "admobctl setup login --yes" })),
+      }),
+    );
+    for (const id of ["scope", "features", "api"] as const) {
+      expect(checks[id]!.fix, id).toBe(UNSET);
+      expect(checks[id]!.fix_command, id).toBeUndefined();
+    }
+  });
+
   it("fails when a needed API is disabled, with the setup apis fix", async () => {
     const checks = byId(
       await runDoctor({

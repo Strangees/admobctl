@@ -54,8 +54,9 @@ const INSTRUCTIONS = `Read-only access to the user's Google AdMob account via ad
 - For any sign-in, scope, quota project or API error, call admobctl_setup_status and run its next_command (an admobctl
   command) in the terminal exactly as given. Never improvise gcloud commands. Commands with --yes change the user's setup:
   show them first. The browser sign-in (admobctl setup login --yes) must run in the user's own terminal.
-  If a service-account credential override prevents sign-in, pass on the full manual fix; the user must unset
-  GOOGLE_APPLICATION_CREDENTIALS in their terminal before login. Do not repeatedly run login while it is set.`;
+  If GOOGLE_APPLICATION_CREDENTIALS prevents sign-in (it selects a service account, or credentials a sign-in cannot
+  replace), pass on the full manual fix; the user must unset it in their terminal before login. Do not repeatedly run
+  login while it is set.`;
 
 const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } as const;
 

@@ -2986,7 +2986,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve.call(this, root, ref);
+      let _sch = resolve2.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a3 = root.localRefs) === null || _a3 === void 0 ? void 0 : _a3[ref];
         const { schemaId } = this.opts;
@@ -3013,7 +3013,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve(root, ref) {
+    function resolve2(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3843,7 +3843,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve(baseURI, relativeURI, options) {
+    function resolve2(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const {
         parsed: baseParsed,
@@ -4212,7 +4212,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize,
-      resolve,
+      resolve: resolve2,
       resolveComponent,
       equal,
       serialize,
@@ -10881,7 +10881,7 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { statSync } from "node:fs";
 import { win32 } from "node:path";
-var exec = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
+var exec = (cmd, args, opts = {}) => new Promise((resolve2, reject) => {
   const env = opts.env ?? process.env;
   const { file: file2, args: argv, windowsVerbatimArguments } = spawnTarget(cmd, args, { env });
   if (opts.background) {
@@ -10889,7 +10889,7 @@ var exec = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
     child2.once("error", reject);
     child2.once("spawn", () => {
       child2.unref();
-      resolve({ code: 0, stdout: "", stderr: "" });
+      resolve2({ code: 0, stdout: "", stderr: "" });
     });
     return;
   }
@@ -10911,7 +10911,7 @@ var exec = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
   });
   child.on("close", (code2) => {
     if (timer) clearTimeout(timer);
-    resolve({ code: code2 ?? 1, stdout, stderr });
+    resolve2({ code: code2 ?? 1, stdout, stderr });
   });
   child.stdin?.on("error", () => {
   });
@@ -11074,11 +11074,11 @@ function waitForLoopbackCode(o) {
   const fix = o.fix ?? "admobctl setup login --yes";
   let resolveReady;
   let rejectReady;
-  const ready = new Promise((resolve, reject) => {
-    resolveReady = resolve;
+  const ready = new Promise((resolve2, reject) => {
+    resolveReady = resolve2;
     rejectReady = reject;
   });
-  const code2 = new Promise((resolve, reject) => {
+  const code2 = new Promise((resolve2, reject) => {
     const server = createServer((req, res) => {
       const url2 = new URL(req.url ?? "/", "http://127.0.0.1");
       const err = url2.searchParams.get("error");
@@ -11094,7 +11094,7 @@ function waitForLoopbackCode(o) {
         return finish(400, "State mismatch.", () => reject(new AdmobctlError("AUTH_NO_CREDENTIALS", "OAuth state mismatch; login aborted.", { fix })));
       }
       if (err) return finish(400, `Login failed: ${err}`, () => reject(new AdmobctlError("AUTH_NO_CREDENTIALS", `Google returned an error: ${err}`, { fix })));
-      finish(200, DONE_PAGE, () => resolve(got));
+      finish(200, DONE_PAGE, () => resolve2(got));
     });
     const timer = setTimeout(() => {
       server.close();
@@ -11258,6 +11258,7 @@ async function fetchTokenInfo(token, doFetch = fetch, sleep) {
 async function runDoctor(d) {
   const checks = await runChecks(d);
   for (const c of checks) {
+    if (d.signInBlocked && c.fix?.startsWith("admobctl setup login")) c.fix = d.signInBlocked;
     const command = c.fix?.split("  (")[0];
     if (command?.startsWith("admobctl ") && !/<[^>]*>/.test(command)) c.fix_command = command;
   }
@@ -11601,7 +11602,8 @@ async function setupStatus(svc, deps = {}) {
     listAccounts: () => svc.listAccounts(),
     account: () => svc.account(),
     listApps: () => svc.apps(),
-    betaProbes: { "ad sources": () => svc.adSources(), "mediation groups": () => svc.mediationGroups() }
+    betaProbes: { "ad sources": () => svc.adSources(), "mediation groups": () => svc.mediationGroups() },
+    signInBlocked: tp.signInBlocked?.()
   });
   const configuredDefault = loadConfig(svc.configDir).defaultProfile;
   for (const check3 of checks) {
@@ -11692,7 +11694,7 @@ async function planLogin(ctx, requested) {
   try {
     await ctx.svc.tokenProvider.checkCredentials?.();
   } catch (err) {
-    if (err instanceof AdmobctlError && err.code === "AUTH_SERVICE_ACCOUNT" && !err.fix?.startsWith("admobctl ")) throw err;
+    if (err instanceof AdmobctlError && err.fix && !err.fix.startsWith("admobctl ")) throw err;
   }
   let granted;
   try {
@@ -11705,13 +11707,20 @@ async function planLogin(ctx, requested) {
   if (granted && scopes.every((s) => granted.includes(s))) {
     return { step: "login", status: "done", features, scopes, summary: [`Signed in with the scopes for: ${features.join(", ")}`] };
   }
+  const lacking = granted ? `Your sign-in lacks scopes: ${scopes.filter((s) => !granted.includes(s)).map((s) => s.split("/").pop()).join(", ")}` : "Not signed in.";
+  const blocked = ctx.svc.tokenProvider.signInBlocked?.();
+  if (blocked) {
+    throw new AdmobctlError(granted ? "AUTH_SCOPE_MISSING" : "AUTH_NO_CREDENTIALS", `${lacking.replace(/\.$/, "")}, and GOOGLE_APPLICATION_CREDENTIALS selects credentials that a gcloud sign-in does not replace.`, {
+      fix: blocked
+    });
+  }
   const how = ctx.svc.tokenProvider.mode === "oauth" ? `Sign in with your own OAuth client: ${commandFor(ctx, `admobctl auth login${features.includes("write") ? " --write" : ""}${features.includes("payments") ? " --payments" : ""} --cloud-platform`)}` : `Sign in with gcloud (it opens your browser): ${loginCommand(scopes)}`;
   return {
     step: "login",
     status: "planned",
     features,
     scopes,
-    summary: [granted ? `Your sign-in lacks scopes: ${scopes.filter((s) => !granted.includes(s)).map((s) => s.split("/").pop()).join(", ")}` : "Not signed in.", how, ...ctx.svc.tokenProvider.mode === "adc" ? [`Requires Google Cloud CLI (gcloud): ${GCLOUD_INSTALL_URL}`] : []],
+    summary: [lacking, how, ...ctx.svc.tokenProvider.mode === "adc" ? [`Requires Google Cloud CLI (gcloud): ${GCLOUD_INSTALL_URL}`] : []],
     next_command: commandFor(ctx, `admobctl setup login${featuresFlag(features)} --yes`)
   };
 }
@@ -13850,7 +13859,7 @@ function audit(svc, e) {
 // src/core/auth/adc.ts
 import { readFileSync as readFileSync4 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { join as join4 } from "node:path";
+import { join as join4, resolve } from "node:path";
 function adcPath(env = process.env, platform = process.platform, home = homedir2()) {
   if (env.GOOGLE_APPLICATION_CREDENTIALS) return env.GOOGLE_APPLICATION_CREDENTIALS;
   const file2 = "application_default_credentials.json";
@@ -13876,6 +13885,7 @@ function readAdcInfo(path2 = adcPath(), read = (p) => readFileSync4(p, "utf8")) 
   }
 }
 var TOKEN_TTL_MS = 45 * 60 * 1e3;
+var UNSET_FIX = "Unset GOOGLE_APPLICATION_CREDENTIALS in the terminal that runs admobctl, then run admobctl setup login --yes.";
 var AdcTokenProvider = class {
   mode = "adc";
   cached;
@@ -13892,19 +13902,34 @@ var AdcTokenProvider = class {
   resetCache() {
     this.cached = void 0;
   }
+  /**
+   * `gcloud auth application-default login` always writes the default ADC file. When GOOGLE_APPLICATION_CREDENTIALS
+   * selects another file, admobctl keeps reading that one, so a sign-in cannot fix it: this returns the manual step.
+   */
+  signInBlocked() {
+    const selected = this.env.GOOGLE_APPLICATION_CREDENTIALS;
+    if (!selected || resolve(selected) === resolve(adcPath({ ...this.env, GOOGLE_APPLICATION_CREDENTIALS: void 0 }))) return void 0;
+    return UNSET_FIX;
+  }
+  /** The fix when the credentials in use are the problem. */
+  loginFix() {
+    return this.signInBlocked() ?? "admobctl setup login --yes";
+  }
   checkCredentials() {
     const info = this.info();
     if (!info) {
-      throw new AdmobctlError("AUTH_NO_CREDENTIALS", "No gcloud Application Default Credentials found.", {
-        fix: "admobctl setup login --yes"
-      });
+      const selected = this.signInBlocked() && this.env.GOOGLE_APPLICATION_CREDENTIALS;
+      throw new AdmobctlError(
+        "AUTH_NO_CREDENTIALS",
+        selected ? `GOOGLE_APPLICATION_CREDENTIALS points at ${selected}, which cannot be read.` : "No gcloud Application Default Credentials found.",
+        { fix: this.loginFix() }
+      );
     }
     if (info.type && info.type !== "authorized_user") {
-      const fix = this.env.GOOGLE_APPLICATION_CREDENTIALS ? "Unset GOOGLE_APPLICATION_CREDENTIALS in the terminal that runs admobctl, then run admobctl setup login --yes." : "admobctl setup login --yes";
       throw new AdmobctlError(
         "AUTH_SERVICE_ACCOUNT",
         `Your Application Default Credentials are a ${info.type}; the AdMob API only accepts user credentials (service accounts are not supported).`,
-        { fix }
+        { fix: this.loginFix() }
       );
     }
     return info;
@@ -13926,9 +13951,9 @@ var AdcTokenProvider = class {
     if (res.code !== 0 || !token) {
       const detail = res.stderr.trim().split("\n").pop() ?? "";
       if (/reauth|invalid_grant|refresh|expired/i.test(res.stderr)) {
-        throw new AdmobctlError("AUTH_TOKEN_EXPIRED", `gcloud could not refresh your credentials: ${detail}`, { fix: "admobctl setup login --yes" });
+        throw new AdmobctlError("AUTH_TOKEN_EXPIRED", `gcloud could not refresh your credentials: ${detail}`, { fix: this.loginFix() });
       }
-      throw new AdmobctlError("AUTH_NO_CREDENTIALS", `gcloud failed to print an access token: ${detail}`, { fix: "admobctl setup login --yes" });
+      throw new AdmobctlError("AUTH_NO_CREDENTIALS", `gcloud failed to print an access token: ${detail}`, { fix: this.loginFix() });
     }
     this.cached = { token, at: this.now() };
     return token;
@@ -14177,9 +14202,9 @@ function parseSort(input2, kind, dimensions, metrics) {
   if (rest.length || order !== void 0 && order !== "asc" && order !== "desc") {
     throw usageError(`--sort expects <field>[:asc|desc] with asc or desc, got "${input2}"`);
   }
-  const named = (resolve) => {
+  const named = (resolve2) => {
     try {
-      return resolve();
+      return resolve2();
     } catch {
       return void 0;
     }
@@ -16211,7 +16236,7 @@ function buildProgram(io) {
     await io.runMcp({
       service: (opts) => AdmobService.create({ profile, account: opts.account ?? account }, io.service)
     });
-    await new Promise((resolve) => process.stdin.on("close", resolve));
+    await new Promise((resolve2) => process.stdin.on("close", resolve2));
   });
   program2.command("audit-log").description("Show the writes applied with --yes (from the local audit log), newest first").option("--last <n>", "only the newest n entries", positiveInt).option("--failed", "only writes the API rejected").action((o, cmd) => emit(cmd, auditLogView(readAudit(dir(), o))));
   const config2 = program2.command("config").description("Read and write ~/.admobctl/config.json (no secrets)");
@@ -24937,7 +24962,7 @@ var recursive = /* @__PURE__ */ new WeakMap();
 var NONE = 0;
 var ASSUMED = 1;
 var PROVEN = 2;
-function isRecursive(inst, stack, resolve) {
+function isRecursive(inst, stack, resolve2) {
   const cached2 = recursive.get(inst);
   if (cached2 !== void 0)
     return cached2 ? PROVEN : NONE;
@@ -24947,7 +24972,7 @@ function isRecursive(inst, stack, resolve) {
   let result = NONE;
   const check3 = (child) => {
     if (result !== PROVEN && child?._zod) {
-      const answer = isRecursive(child, stack, resolve);
+      const answer = isRecursive(child, stack, resolve2);
       if (answer > result)
         result = answer;
     }
@@ -24958,7 +24983,7 @@ function isRecursive(inst, stack, resolve) {
       const desc = Object.getOwnPropertyDescriptor(sh, key);
       if (spread && !desc.enumerable)
         continue;
-      const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve) : NONE;
+      const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve2) : NONE;
       if (child > answer)
         answer = child;
     }
@@ -25022,7 +25047,7 @@ function isRecursive(inst, stack, resolve) {
       break;
     // `$ZodLazy` caches its inner on the def, so a resolved edge is followed exactly
     case "lazy": {
-      const inner = def._cachedInner ?? (resolve ? inst._zod.innerType : void 0);
+      const inner = def._cachedInner ?? (resolve2 ? inst._zod.innerType : void 0);
       merge2(inner ? isRecursive(inner, stack, false) : ASSUMED);
       break;
     }
@@ -43430,7 +43455,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+        await new Promise((resolve2) => setTimeout(resolve2, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error62) {
@@ -43447,7 +43472,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       const earlyReject = (error62) => {
         reject(error62);
       };
@@ -43525,7 +43550,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve(parseResult.data);
+            resolve2(parseResult.data);
           }
         } catch (error62) {
           reject(error62);
@@ -43786,12 +43811,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve, interval);
+      const timeoutId = setTimeout(resolve2, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -44882,7 +44907,7 @@ var McpServer = class {
     let task = createTaskResult.task;
     const pollInterval = task.pollInterval ?? 5e3;
     while (task.status !== "completed" && task.status !== "failed" && task.status !== "cancelled") {
-      await new Promise((resolve) => setTimeout(resolve, pollInterval));
+      await new Promise((resolve2) => setTimeout(resolve2, pollInterval));
       const updatedTask = await extra.taskStore.getTask(taskId);
       if (!updatedTask) {
         throw new McpError(ErrorCode.InternalError, `Task ${taskId} not found during polling`);
@@ -45546,12 +45571,12 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve) => {
+    return new Promise((resolve2) => {
       const json2 = serializeMessage(message);
       if (this._stdout.write(json2)) {
-        resolve();
+        resolve2();
       } else {
-        this._stdout.once("drain", resolve);
+        this._stdout.once("drain", resolve2);
       }
     });
   }
@@ -45581,8 +45606,9 @@ var INSTRUCTIONS = `Read-only access to the user's Google AdMob account via admo
 - For any sign-in, scope, quota project or API error, call admobctl_setup_status and run its next_command (an admobctl
   command) in the terminal exactly as given. Never improvise gcloud commands. Commands with --yes change the user's setup:
   show them first. The browser sign-in (admobctl setup login --yes) must run in the user's own terminal.
-  If a service-account credential override prevents sign-in, pass on the full manual fix; the user must unset
-  GOOGLE_APPLICATION_CREDENTIALS in their terminal before login. Do not repeatedly run login while it is set.`;
+  If GOOGLE_APPLICATION_CREDENTIALS prevents sign-in (it selects a service account, or credentials a sign-in cannot
+  replace), pass on the full manual fix; the user must unset it in their terminal before login. Do not repeatedly run
+  login while it is set.`;
 var annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 var appArg = { app: external_exports.string().optional().describe("Only this app (alias, app ID or name)") };
 var accountArg = { account: external_exports.string().optional().describe("Publisher ID (pub-\u2026). Defaults to the configured or only account.") };

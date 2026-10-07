@@ -30,6 +30,7 @@ export async function setupStatus(svc: AdmobService, deps: { fetch?: typeof fetc
     account: () => svc.account(),
     listApps: () => svc.apps(),
     betaProbes: { "ad sources": () => svc.adSources(), "mediation groups": () => svc.mediationGroups() },
+    signInBlocked: tp.signInBlocked?.(),
   });
   const configuredDefault = loadConfig(svc.configDir).defaultProfile;
   for (const check of checks) {

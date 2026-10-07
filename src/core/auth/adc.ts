@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { AdmobctlError } from "../errors.js";
 import { exec as defaultExec, type Exec } from "../exec.js";
 import type { TokenProvider } from "./types.js";
@@ -41,6 +41,8 @@ export function readAdcInfo(path = adcPath(), read: (p: string) => string = (p) 
 
 const TOKEN_TTL_MS = 45 * 60 * 1000;
 
+const UNSET_FIX = "Unset GOOGLE_APPLICATION_CREDENTIALS in the terminal that runs admobctl, then run admobctl setup login --yes.";
+
 export interface AdcDeps {
   info?: () => AdcInfo | undefined;
   env?: NodeJS.ProcessEnv;
@@ -71,21 +73,36 @@ export class AdcTokenProvider implements TokenProvider {
     this.cached = undefined;
   }
 
+  /**
+   * `gcloud auth application-default login` always writes the default ADC file. When GOOGLE_APPLICATION_CREDENTIALS
+   * selects another file, admobctl keeps reading that one, so a sign-in cannot fix it: this returns the manual step.
+   */
+  signInBlocked(): string | undefined {
+    const selected = this.env.GOOGLE_APPLICATION_CREDENTIALS;
+    if (!selected || resolve(selected) === resolve(adcPath({ ...this.env, GOOGLE_APPLICATION_CREDENTIALS: undefined }))) return undefined;
+    return UNSET_FIX;
+  }
+
+  /** The fix when the credentials in use are the problem. */
+  private loginFix(): string {
+    return this.signInBlocked() ?? "admobctl setup login --yes";
+  }
+
   checkCredentials(): AdcInfo {
     const info = this.info();
     if (!info) {
-      throw new AdmobctlError("AUTH_NO_CREDENTIALS", "No gcloud Application Default Credentials found.", {
-        fix: "admobctl setup login --yes",
-      });
+      const selected = this.signInBlocked() && this.env.GOOGLE_APPLICATION_CREDENTIALS;
+      throw new AdmobctlError(
+        "AUTH_NO_CREDENTIALS",
+        selected ? `GOOGLE_APPLICATION_CREDENTIALS points at ${selected}, which cannot be read.` : "No gcloud Application Default Credentials found.",
+        { fix: this.loginFix() },
+      );
     }
     if (info.type && info.type !== "authorized_user") {
-      const fix = this.env.GOOGLE_APPLICATION_CREDENTIALS
-        ? "Unset GOOGLE_APPLICATION_CREDENTIALS in the terminal that runs admobctl, then run admobctl setup login --yes."
-        : "admobctl setup login --yes";
       throw new AdmobctlError(
         "AUTH_SERVICE_ACCOUNT",
         `Your Application Default Credentials are a ${info.type}; the AdMob API only accepts user credentials (service accounts are not supported).`,
-        { fix },
+        { fix: this.loginFix() },
       );
     }
     return info;
@@ -110,9 +127,9 @@ export class AdcTokenProvider implements TokenProvider {
     if (res.code !== 0 || !token) {
       const detail = res.stderr.trim().split("\n").pop() ?? "";
       if (/reauth|invalid_grant|refresh|expired/i.test(res.stderr)) {
-        throw new AdmobctlError("AUTH_TOKEN_EXPIRED", `gcloud could not refresh your credentials: ${detail}`, { fix: "admobctl setup login --yes" });
+        throw new AdmobctlError("AUTH_TOKEN_EXPIRED", `gcloud could not refresh your credentials: ${detail}`, { fix: this.loginFix() });
       }
-      throw new AdmobctlError("AUTH_NO_CREDENTIALS", `gcloud failed to print an access token: ${detail}`, { fix: "admobctl setup login --yes" });
+      throw new AdmobctlError("AUTH_NO_CREDENTIALS", `gcloud failed to print an access token: ${detail}`, { fix: this.loginFix() });
     }
     this.cached = { token, at: this.now() };
     return token;

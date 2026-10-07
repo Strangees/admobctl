@@ -10,7 +10,7 @@ import { fakeFetch, fixture, jsonResponse, noSleep } from "./helpers.js";
 
 const token: TokenProvider = { mode: "adc", getToken: async () => "t", quotaProject: () => "example-project", checkCredentials: () => ({}) };
 
-function service(adsense: "ENABLED" | "DISABLED", scopes: string, profileName = "default") {
+function service(adsense: "ENABLED" | "DISABLED", scopes: string, profileName = "default", tokenProvider: TokenProvider = token) {
   const dir = mkdtempSync(join(tmpdir(), "admobctl-status-"));
   saveConfig(dir, { profiles: { [profileName]: { features: ["read", "payments"] } } });
   const f = fakeFetch({
@@ -22,7 +22,7 @@ function service(adsense: "ENABLED" | "DISABLED", scopes: string, profileName = 
     "GET /services/admob.googleapis.com": () => jsonResponse({ state: "ENABLED" }),
     "GET /services/adsense.googleapis.com": () => jsonResponse({ state: adsense }),
   });
-  return { svc: AdmobService.create({ profile: profileName }, { configDir: dir, tokenProvider: token, fetch: f.fetch, sleep: noSleep }), fetch: f.fetch, calls: f.calls };
+  return { svc: AdmobService.create({ profile: profileName }, { configDir: dir, tokenProvider, fetch: f.fetch, sleep: noSleep }), fetch: f.fetch, calls: f.calls };
 }
 
 const ALL = "https://www.googleapis.com/auth/admob.readonly https://www.googleapis.com/auth/adsense.readonly https://www.googleapis.com/auth/cloud-platform";
@@ -57,4 +57,16 @@ it("fix commands preserve a named profile instead of modifying default", async (
   const s = await setupStatus(svc, { fetch });
   expect(s.next_command).toBe("admobctl --profile work setup apis --features payments --yes");
   expect(s.checks.find((c) => c.id === "apis")!.fix_command).toBe(s.next_command);
+});
+
+it("gives the manual GOOGLE_APPLICATION_CREDENTIALS step instead of a setup login that cannot help", async () => {
+  const UNSET = "Unset GOOGLE_APPLICATION_CREDENTIALS in the terminal that runs admobctl, then run admobctl setup login --yes.";
+  const { svc, fetch } = service("ENABLED", "https://www.googleapis.com/auth/admob.readonly https://www.googleapis.com/auth/cloud-platform", "default", {
+    ...token,
+    signInBlocked: () => UNSET,
+  });
+  const s = await setupStatus(svc, { fetch });
+  expect(s.checks.find((c) => c.id === "features")).toMatchObject({ status: "warn", fix: UNSET });
+  expect(s.checks.find((c) => c.id === "features")!.fix_command).toBeUndefined();
+  expect(s.next_command).toBeUndefined();
 });

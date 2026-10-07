@@ -1,8 +1,9 @@
 /**
- * Setup errors provide a runnable command except for service-account credentials, which require clearing an environment override first.
+ * Setup errors provide a runnable command except for credentials selected by GOOGLE_APPLICATION_CREDENTIALS, which require
+ * clearing that environment override first.
  */
 import { describe, expect, it } from "vitest";
-import { AdcTokenProvider } from "../src/core/auth/adc.js";
+import { adcPath, AdcTokenProvider } from "../src/core/auth/adc.js";
 import { fetchTokenInfo } from "../src/core/auth/doctor.js";
 import { AdmobClient } from "../src/core/client.js";
 import { AdmobctlError, diagnoseApiError } from "../src/core/errors.js";
@@ -63,6 +64,30 @@ describe("setup fix commands", () => {
     const serviceAccount = await rejection(sa.getToken());
     expect(serviceAccount.code).toBe("AUTH_SERVICE_ACCOUNT");
     expect(serviceAccount.fix).toBe("Unset GOOGLE_APPLICATION_CREDENTIALS in the terminal that runs admobctl, then run admobctl setup login --yes.");
+  });
+
+  const UNSET = "Unset GOOGLE_APPLICATION_CREDENTIALS in the terminal that runs admobctl, then run admobctl setup login --yes.";
+
+  it("gives the manual fix when GOOGLE_APPLICATION_CREDENTIALS points at a missing file", () => {
+    const p = new AdcTokenProvider({ info: () => undefined, env: { GOOGLE_APPLICATION_CREDENTIALS: "/synthetic/missing.json" } });
+    expect(() => p.checkCredentials()).toThrow(expect.objectContaining({ code: "AUTH_NO_CREDENTIALS", message: expect.stringContaining("/synthetic/missing.json"), fix: UNSET }));
+    expect(p.signInBlocked()).toBe(UNSET);
+  });
+
+  it("gives the manual fix when gcloud cannot refresh credentials that GOOGLE_APPLICATION_CREDENTIALS selects", async () => {
+    const env = { GOOGLE_APPLICATION_CREDENTIALS: "/synthetic/user.json" };
+    const info = () => ({ path: "/synthetic/user.json", type: "authorized_user" });
+    const expired = new AdcTokenProvider({ info, env, exec: async () => ({ code: 1, stdout: "", stderr: "Reauthentication required" }) });
+    expect((await rejection(expired.getToken())).fix).toBe(UNSET);
+    const broken = new AdcTokenProvider({ info, env, exec: async () => ({ code: 1, stdout: "", stderr: "boom" }) });
+    expect((await rejection(broken.getToken())).fix).toBe(UNSET);
+  });
+
+  it("lets setup replace credentials when GOOGLE_APPLICATION_CREDENTIALS names the default ADC file", () => {
+    const env = { GOOGLE_APPLICATION_CREDENTIALS: adcPath({}) };
+    const p = new AdcTokenProvider({ info: () => undefined, env });
+    expect(p.signInBlocked()).toBeUndefined();
+    expect(() => p.checkCredentials()).toThrow(expect.objectContaining({ fix: "admobctl setup login --yes" }));
   });
 
   it("lets setup replace a service account in the default ADC file", async () => {

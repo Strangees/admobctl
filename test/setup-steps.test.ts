@@ -312,3 +312,30 @@ it("manual OAuth hints also keep the named profile", async () => {
   expect(apis.summary.join(" ")).toContain("admobctl --profile work setup status");
   expect(apis.summary.join(" ")).toContain("admobctl --profile work setup apis --project");
 });
+
+describe("credentials selected by GOOGLE_APPLICATION_CREDENTIALS", () => {
+  const UNSET = "Unset GOOGLE_APPLICATION_CREDENTIALS in the terminal that runs admobctl, then run admobctl setup login --yes.";
+
+  it("refuses a gcloud sign-in that would write a file admobctl does not read", async () => {
+    const w = world({ scopes: [S("admob.readonly")] });
+    w.ctx.svc.tokenProvider.signInBlocked = () => UNSET;
+    await expect(planLogin(w.ctx, ["read"])).rejects.toMatchObject({ code: "AUTH_SCOPE_MISSING", message: expect.stringContaining("GOOGLE_APPLICATION_CREDENTIALS"), fix: UNSET });
+    await expect(runSetup(w.ctx, { features: ["read"], yes: true })).rejects.toMatchObject({ fix: UNSET });
+    expect(w.execCalls).toEqual([]);
+    expect(w.profile().features).toBeUndefined();
+  });
+
+  it("passes on the manual fix for a missing credentials file", async () => {
+    const w = world({ scopes: "signed-out" });
+    w.ctx.svc.tokenProvider.checkCredentials = () => {
+      throw new AdmobctlError("AUTH_NO_CREDENTIALS", "GOOGLE_APPLICATION_CREDENTIALS points at /synthetic/missing.json, which cannot be read.", { fix: UNSET });
+    };
+    await expect(planLogin(w.ctx, ["read"])).rejects.toMatchObject({ code: "AUTH_NO_CREDENTIALS", fix: UNSET });
+  });
+
+  it("is still done when the selected credentials have every scope", async () => {
+    const w = world();
+    w.ctx.svc.tokenProvider.signInBlocked = () => UNSET;
+    expect((await planLogin(w.ctx, ["read"])).status).toBe("done");
+  });
+});

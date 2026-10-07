@@ -61,12 +61,12 @@ function store(ctx: SetupContext, key: string, value: string): void {
 
 /** Features to set up: always read, plus stored, already granted and requested ones (a fix never drops a scope). */
 export async function planLogin(ctx: SetupContext, requested: Feature[]): Promise<LoginPlan> {
-  // A browser login cannot replace an environment-selected service account.
-  // Surface its manual prerequisite before opening any sign-in flow.
+  // A credentials problem whose fix is a manual step (credentials selected by GOOGLE_APPLICATION_CREDENTIALS, a locked
+  // keychain) cannot be fixed by a browser sign-in: surface it before opening one.
   try {
     await ctx.svc.tokenProvider.checkCredentials?.();
   } catch (err) {
-    if (err instanceof AdmobctlError && err.code === "AUTH_SERVICE_ACCOUNT" && !err.fix?.startsWith("admobctl ")) throw err;
+    if (err instanceof AdmobctlError && err.fix && !err.fix.startsWith("admobctl ")) throw err;
   }
   let granted: string[] | undefined;
   try {
@@ -79,6 +79,13 @@ export async function planLogin(ctx: SetupContext, requested: Feature[]): Promis
   if (granted && scopes.every((s) => granted!.includes(s))) {
     return { step: "login", status: "done", features, scopes, summary: [`Signed in with the scopes for: ${features.join(", ")}`] };
   }
+  const lacking = granted ? `Your sign-in lacks scopes: ${scopes.filter((s) => !granted!.includes(s)).map((s) => s.split("/").pop()).join(", ")}` : "Not signed in.";
+  const blocked = ctx.svc.tokenProvider.signInBlocked?.();
+  if (blocked) {
+    throw new AdmobctlError(granted ? "AUTH_SCOPE_MISSING" : "AUTH_NO_CREDENTIALS", `${lacking.replace(/\.$/, "")}, and GOOGLE_APPLICATION_CREDENTIALS selects credentials that a gcloud sign-in does not replace.`, {
+      fix: blocked,
+    });
+  }
   const how =
     ctx.svc.tokenProvider.mode === "oauth"
       ? `Sign in with your own OAuth client: ${commandFor(ctx, `admobctl auth login${features.includes("write") ? " --write" : ""}${features.includes("payments") ? " --payments" : ""} --cloud-platform`)}`
@@ -88,7 +95,7 @@ export async function planLogin(ctx: SetupContext, requested: Feature[]): Promis
     status: "planned",
     features,
     scopes,
-    summary: [granted ? `Your sign-in lacks scopes: ${scopes.filter((s) => !granted!.includes(s)).map((s) => s.split("/").pop()).join(", ")}` : "Not signed in.", how, ...(ctx.svc.tokenProvider.mode === "adc" ? [`Requires Google Cloud CLI (gcloud): ${GCLOUD_INSTALL_URL}`] : [])],
+    summary: [lacking, how, ...(ctx.svc.tokenProvider.mode === "adc" ? [`Requires Google Cloud CLI (gcloud): ${GCLOUD_INSTALL_URL}`] : [])],
     next_command: commandFor(ctx, `admobctl setup login${featuresFlag(features)} --yes`),
   };
 }

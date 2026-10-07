@@ -39,6 +39,8 @@ export interface DoctorDeps {
   features?: Feature[];
   /** State of each API the features need, in the quota project. */
   serviceStates?: () => Promise<Record<string, string>>;
+  /** When a sign-in cannot replace the credentials in use, the manual step that replaces every `setup login` fix. */
+  signInBlocked?: string;
 }
 
 const ADMOB_SCOPES = ["https://www.googleapis.com/auth/admob.readonly", "https://www.googleapis.com/auth/admob.report"];
@@ -74,6 +76,7 @@ export async function fetchTokenInfo(token: string, doFetch: typeof fetch = fetc
 export async function runDoctor(d: DoctorDeps): Promise<Check[]> {
   const checks = await runChecks(d);
   for (const c of checks) {
+    if (d.signInBlocked && c.fix?.startsWith("admobctl setup login")) c.fix = d.signInBlocked;
     const command = c.fix?.split("  (")[0];
     // Only a command that runs as given: never one with a <placeholder> to fill in.
     if (command?.startsWith("admobctl ") && !/<[^>]*>/.test(command)) c.fix_command = command;
