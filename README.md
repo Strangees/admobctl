@@ -320,7 +320,7 @@ When CI passes on `main`, it tags `v<version>` and publishes a GitHub release wi
 A push that does not change the version releases nothing.
 
 Dependabot ([.github/dependabot.yml](.github/dependabot.yml)) opens weekly grouped updates. The `dev-tools` group
-(TypeScript, vitest, `@types/node`) passes CI as it is. The `bundled` group holds esbuild and the packages it builds
+(TypeScript, vitest, the Node.js types) passes CI as it is. The `bundled` group holds esbuild and the packages it builds
 into the bundle (commander, zod, the MCP SDK, ajv). Dependabot does not rebuild the bundle, so when it changes, CI
 fails "Committed bundle is up to date" until you finish the pull request:
 
@@ -333,6 +333,12 @@ git add plugin/dist plugin/evals/mocks && git commit -m "Rebuild the bundle" && 
 
 The new packages reach users only with a release, so bump the version as well when they should get them (a security
 fix, say).
+
+`npm run typecheck` also checks `src/` against the types of Node.js 20, the oldest version admobctl runs on
+([tsconfig.node20.json](tsconfig.node20.json)), so code that needs a newer Node.js fails it. Those types are
+`@types/node@20` installed as `@types-node20/node`, because vitest needs `@types/node` 22 or later; keep that alias on
+the 20 line (Dependabot skips its major updates). On Node.js 20, where vitest does not run, CI runs the bundle instead:
+`--help` for every command (`scripts/smoke-bundle.mjs`) and the MCP tool list.
 
 ## License
 

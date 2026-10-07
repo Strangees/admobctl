@@ -84,4 +84,7 @@ There is no linter; `tsc --noEmit` (strict, `noUncheckedIndexedAccess`) covers `
   `createMcpServer` over `InMemoryTransport`.
 - `test/e2e.test.ts` runs the built bundle (skipped without `dist/`); `test/golden.test.ts` replays private cassettes
   from `npm run record-fixtures` (skipped without them).
-- CI runs the tests on Node 22 and 24; Node 20 only runs the bundle.
+- CI runs the tests on Node 22 and 24. Node 20 (vitest needs 22.12+) only smoke-tests the bundle:
+  `scripts/smoke-bundle.mjs` (`--help` for every command) and the MCP tool list (`scripts/dump-tools.mjs`).
+  `npm run typecheck` also checks `src/` against Node 20's types (`tsconfig.node20.json`, with `@types/node@20`
+  installed as `@types-node20/node`), so a newer Node.js API in `src/` fails it.

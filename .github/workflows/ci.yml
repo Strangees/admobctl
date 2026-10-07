@@ -20,7 +20,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 20 is past end-of-life but still the bundle's target; it only has to run the bundle.
+        # 20 is past end-of-life but still the bundle's target. vitest needs 22.12+, so on 20 CI only smoke-tests the
+        # bundle; the typecheck also checks src/ against Node 20's types (tsconfig.node20.json).
         node: [20, 22, 24]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -44,7 +45,11 @@ jobs:
             exit 1
           fi
       - name: Bundle runs on this Node version
-        run: node plugin/dist/admobctl.mjs --version
+        run: node scripts/smoke-bundle.mjs
+      - name: MCP server on this Node version lists the committed tools
+        run: |
+          node scripts/dump-tools.mjs "$RUNNER_TEMP/tools.json"
+          diff -u plugin/evals/mocks/admobctl/_tools.json "$RUNNER_TEMP/tools.json"
       - run: npm test
         if: matrix.node != 20
       # `npm run eval` itself needs Claude credentials and is run by hand.

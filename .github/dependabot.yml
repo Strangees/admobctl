@@ -4,12 +4,16 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # @types/node@20 under another name, for tsconfig.node20.json: it must stay on the Node.js 20 line (engines: >=20).
+      - dependency-name: "@types-node20/node"
+        update-types: ["version-update:semver-major"]
     groups:
       # esbuild and the packages it puts into plugin/dist/admobctl.mjs (ajv comes in through the MCP SDK). Dependabot
       # does not rebuild the bundle, so when it changes, CI fails until someone does (README, "CI and releases").
       bundled:
         patterns: ["@modelcontextprotocol/sdk", "ajv", "ajv-formats", "commander", "esbuild", "zod"]
-      # Development tools only (typescript, vitest, @types/node): CI passes on these PRs as they are.
+      # Development tools only (typescript, vitest, the Node.js types): CI passes on these PRs as they are.
       dev-tools:
         patterns: ["*"]
         exclude-patterns: ["@modelcontextprotocol/sdk", "ajv", "ajv-formats", "commander", "esbuild", "zod"]
