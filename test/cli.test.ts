@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { run } from "../src/cli/program.js";
 import { reportView } from "../src/cli/views.js";
 import type { ReportResult } from "../src/core/service.js";
@@ -124,6 +124,26 @@ describe("cli", () => {
     expect(r.code).toBe(2);
     expect(r.stderr).toContain("mcp command is not available");
     expect(r.stdout).toBe("");
+  });
+
+  it("gives every service of the MCP server the same token provider, so gcloud does not run per service", async () => {
+    let factory: ((o: { account?: string }) => { tokenProvider: TokenProvider }) | undefined;
+    // runMcp never returns here: the real server runs until stdin closes.
+    void run(["node", "admobctl", "mcp"], {
+      stdout: () => {},
+      stderr: () => {},
+      isTTY: false,
+      service: { configDir: mkdtempSync(join(tmpdir(), "admobctl-cli-")) },
+      runMcp: (deps) => {
+        factory = deps.service;
+        return new Promise(() => {});
+      },
+    });
+    await vi.waitFor(() => expect(factory).toBeDefined());
+    const first = factory!({}).tokenProvider;
+    expect(first.mode).toBe("adc");
+    expect(factory!({ account: "pub-0000000000000001" }).tokenProvider).toBe(first);
+    expect(factory!({}).tokenProvider).toBe(first);
   });
 
   it("runs auth doctor and reports each check", async () => {

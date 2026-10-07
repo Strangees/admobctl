@@ -27,7 +27,10 @@ function bigReport(n: number) {
   ];
 }
 
-async function connect(routes: Parameters<typeof fakeFetch>[0] = {}, opts: { serviceTtlMs?: number; now?: () => number } = {}) {
+async function connect(
+  routes: Parameters<typeof fakeFetch>[0] = {},
+  { tokenProvider = token, ...opts }: { serviceTtlMs?: number; now?: () => number; tokenProvider?: TokenProvider } = {},
+) {
   const f = fakeFetch({
     "GET /v1/accounts?": () => jsonResponse(fixture("accounts.json")),
     "GET /apps": (c) => jsonResponse(fixture(c.url.includes("pageToken=page2") ? "apps-page2.json" : "apps-page1.json")),
@@ -49,7 +52,7 @@ async function connect(routes: Parameters<typeof fakeFetch>[0] = {}, opts: { ser
   const server = createMcpServer({
     service: (o) => {
       created.push(o.account);
-      return AdmobService.create(o, { configDir: dir, tokenProvider: token, fetch: f.fetch, sleep: noSleep, now: () => new Date("2026-10-02T08:00:00Z") });
+      return AdmobService.create(o, { configDir: dir, tokenProvider, fetch: f.fetch, sleep: noSleep, now: () => new Date("2026-10-02T08:00:00Z") });
     },
     ...opts,
   });
@@ -146,6 +149,15 @@ describe("mcp server", () => {
     saveConfig(dir, { profiles: { default: { quotaProject: "example-a" } } });
     const after = (await client.callTool({ name: "admobctl_setup_status", arguments: {} })) as ToolResult;
     expect(quotaCheck(after)).toMatchObject({ summary: "Quota project: example-a" });
+  });
+
+  it("admobctl_setup_status drops the cached access token, so it sees a sign-in done in a terminal", async () => {
+    let resets = 0;
+    const { client } = await connect(setupRoutes, { tokenProvider: { ...token, resetCache: () => void resets++ } });
+    await client.callTool({ name: "admobctl_list_apps", arguments: {} });
+    expect(resets).toBe(0);
+    await client.callTool({ name: "admobctl_setup_status", arguments: {} });
+    expect(resets).toBe(1);
   });
 
   it("tools after admobctl_setup_status reuse its fresh service", async () => {

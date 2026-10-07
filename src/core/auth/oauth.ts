@@ -231,6 +231,7 @@ export interface OAuthProviderDeps {
 export class OAuthTokenProvider implements TokenProvider {
   readonly mode = "oauth" as const;
   private cached?: { token: string; expiresAt: number };
+  private pending?: Promise<string>;
 
   constructor(private readonly deps: OAuthProviderDeps) {}
 
@@ -261,6 +262,12 @@ export class OAuthTokenProvider implements TokenProvider {
   async getToken(): Promise<string> {
     const now = (this.deps.now ?? Date.now)();
     if (this.cached && now < this.cached.expiresAt) return this.cached.token;
+    // Concurrent callers share one refresh. A failure is not kept: the next call tries again.
+    this.pending ??= this.refresh(now).finally(() => (this.pending = undefined));
+    return this.pending;
+  }
+
+  private async refresh(now: number): Promise<string> {
     const s = await this.stored();
     const params: Record<string, string> = { grant_type: "refresh_token", refresh_token: s.refreshToken, client_id: s.clientId };
     if (s.clientSecret) params.client_secret = s.clientSecret;

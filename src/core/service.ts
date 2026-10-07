@@ -34,6 +34,11 @@ export interface ServiceOptions {
 export interface ServiceDeps {
   configDir?: string;
   tokenProvider?: TokenProvider;
+  /**
+   * Token providers to share between services (the MCP server's), keyed by profile and auth mode. A provider keeps
+   * its token until near expiry, so a new service then does not run gcloud or refresh a token again.
+   */
+  tokenProviders?: Map<string, TokenProvider>;
   fetch?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   exec?: Exec;
@@ -175,6 +180,16 @@ export interface ReportResult {
   notices: string[];
 }
 
+/** The profile's token provider, taken from (or added to) deps.tokenProviders when the caller shares them. */
+function sharedTokenProvider(profile: ResolvedProfile, dir: string, deps: ServiceDeps): TokenProvider {
+  const key = `${profile.name}\0${profile.authMode}`;
+  const known = deps.tokenProviders?.get(key);
+  if (known) return known;
+  const created = resolveTokenProvider(profile, { configDir: dir, exec: deps.exec, fetch: deps.fetch });
+  deps.tokenProviders?.set(key, created);
+  return created;
+}
+
 /**
  * The single core used by both the CLI and the MCP server.
  * Everything user-facing is resolved here: profile, auth, account, aliases.
@@ -198,7 +213,7 @@ export class AdmobService {
   static create(opts: ServiceOptions = {}, deps: ServiceDeps = {}): AdmobService {
     const dir = deps.configDir ?? configDir();
     const profile = resolveProfile(loadConfig(dir), opts.profile);
-    const tokenProvider = deps.tokenProvider ?? resolveTokenProvider(profile, { configDir: dir, exec: deps.exec, fetch: deps.fetch });
+    const tokenProvider = deps.tokenProvider ?? sharedTokenProvider(profile, dir, deps);
     const client = new AdmobClient({
       getToken: () => tokenProvider.getToken(),
       quotaProject: profile.quotaProject ?? tokenProvider.quotaProject(),

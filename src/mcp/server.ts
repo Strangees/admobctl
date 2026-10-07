@@ -366,9 +366,10 @@ export function createMcpServer(deps: McpDeps): McpServer {
       annotations,
     },
     wrap(async (a: { account?: string }) => {
-      // Never the cached service: the user may just have run a setup command (sign-in, quota project, features) in a
-      // terminal. Replacing the cache entry also lets the next tool call use the new setup.
+      // Never the cached service or token: the user may just have run a setup command (sign-in, quota project, features)
+      // in a terminal. Replacing the cache entry and the shared token also lets the next tool call use the new setup.
       const s = freshSvc(a);
+      s.tokenProvider.resetCache?.();
       return { ...(await setupStatus(s, { fetch: s.fetch })) };
     }),
   );

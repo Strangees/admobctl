@@ -11682,6 +11682,7 @@ var OAuthTokenProvider = class {
   deps;
   mode = "oauth";
   cached;
+  pending;
   loginFix() {
     return `admobctl auth login --client-id <id>${this.deps.profile === "default" ? "" : ` --profile ${this.deps.profile}`}`;
   }
@@ -11705,6 +11706,10 @@ var OAuthTokenProvider = class {
   async getToken() {
     const now = (this.deps.now ?? Date.now)();
     if (this.cached && now < this.cached.expiresAt) return this.cached.token;
+    this.pending ??= this.refresh(now).finally(() => this.pending = void 0);
+    return this.pending;
+  }
+  async refresh(now) {
     const s = await this.stored();
     const params = { grant_type: "refresh_token", refresh_token: s.refreshToken, client_id: s.clientId };
     if (s.clientSecret) params.client_secret = s.clientSecret;
@@ -13775,6 +13780,7 @@ var TOKEN_TTL_MS = 45 * 60 * 1e3;
 var AdcTokenProvider = class {
   mode = "adc";
   cached;
+  pending;
   info;
   env;
   exec;
@@ -13807,6 +13813,10 @@ var AdcTokenProvider = class {
   }
   async getToken() {
     if (this.cached && this.now() - this.cached.at < TOKEN_TTL_MS) return this.cached.token;
+    this.pending ??= this.printToken().finally(() => this.pending = void 0);
+    return this.pending;
+  }
+  async printToken() {
     const info = this.checkCredentials();
     let res;
     try {
@@ -14460,6 +14470,14 @@ var DEFAULT_METRICS = {
 var CAMPAIGN_MAX_DAYS = 30;
 var filterValue = (v) => `"${v.replace(/["\\]/g, (c) => `\\${c}`)}"`;
 var COMPARISONS = ["previous"];
+function sharedTokenProvider(profile, dir, deps) {
+  const key = `${profile.name}\0${profile.authMode}`;
+  const known = deps.tokenProviders?.get(key);
+  if (known) return known;
+  const created = resolveTokenProvider(profile, { configDir: dir, exec: deps.exec, fetch: deps.fetch });
+  deps.tokenProviders?.set(key, created);
+  return created;
+}
 var AdmobService = class _AdmobService {
   constructor(profile, client, tokenProvider, accountOverride, now, configDir2, fetch2) {
     this.profile = profile;
@@ -14482,7 +14500,7 @@ var AdmobService = class _AdmobService {
   static create(opts = {}, deps = {}) {
     const dir = deps.configDir ?? configDir();
     const profile = resolveProfile(loadConfig(dir), opts.profile);
-    const tokenProvider = deps.tokenProvider ?? resolveTokenProvider(profile, { configDir: dir, exec: deps.exec, fetch: deps.fetch });
+    const tokenProvider = deps.tokenProvider ?? sharedTokenProvider(profile, dir, deps);
     const client = new AdmobClient({
       getToken: () => tokenProvider.getToken(),
       quotaProject: profile.quotaProject ?? tokenProvider.quotaProject(),
@@ -16119,8 +16137,9 @@ function buildProgram(io) {
   program2.command("mcp").description("Run the MCP server over stdio (for Claude Code, Codex and other MCP clients)").action(async (_o, cmd) => {
     if (!io.runMcp) throw new AdmobctlError("USAGE", "The mcp command is not available in this build (no MCP server wired in).");
     const { profile, account } = g(cmd);
+    const tokenProviders = /* @__PURE__ */ new Map();
     await io.runMcp({
-      service: (opts) => AdmobService.create({ profile, account: opts.account ?? account }, io.service)
+      service: (opts) => AdmobService.create({ profile, account: opts.account ?? account }, { ...io.service, tokenProviders })
     });
     await new Promise((resolve) => process.stdin.on("close", resolve));
   });
@@ -45748,6 +45767,7 @@ function createMcpServer(deps) {
     },
     wrap(async (a) => {
       const s = freshSvc(a);
+      s.tokenProvider.resetCache?.();
       return { ...await setupStatus(s, { fetch: s.fetch }) };
     })
   );

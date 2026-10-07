@@ -20,6 +20,7 @@ import {
 } from "../core/setup/steps.js";
 import { login, logout } from "../core/auth/login.js";
 import { defaultSecretStore, type StoredOAuth } from "../core/auth/oauth.js";
+import type { TokenProvider } from "../core/auth/types.js";
 import { configDir, configPath, loadConfig, resolveProfile, saveConfig, setProfileValue } from "../core/config.js";
 import { analyzeConsent, analyzeVersions, analyzeWaterfall, VERSION_KINDS, type VersionKind } from "../core/analyze.js";
 import { checkAppAds } from "../core/app-ads.js";
@@ -803,8 +804,11 @@ export function buildProgram(io: CliIO): Command {
     .action(async (_o, cmd: Command) => {
       if (!io.runMcp) throw new AdmobctlError("USAGE", "The mcp command is not available in this build (no MCP server wired in).");
       const { profile, account } = g(cmd);
+      // The server builds a service per account and rebuilds it every few minutes; they share token providers, so
+      // ADC does not run gcloud for each one.
+      const tokenProviders = new Map<string, TokenProvider>();
       await io.runMcp({
-        service: (opts) => AdmobService.create({ profile, account: opts.account ?? account }, io.service),
+        service: (opts) => AdmobService.create({ profile, account: opts.account ?? account }, { ...io.service, tokenProviders }),
       });
       // Keep running until the client closes stdin.
       await new Promise<void>((resolve) => process.stdin.on("close", resolve));
