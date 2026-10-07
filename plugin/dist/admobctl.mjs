@@ -46009,6 +46009,12 @@ async function runStdioServer(deps) {
 }
 
 // src/bin.ts
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on("error", (err) => {
+    if (err.code !== "EPIPE") throw err;
+    process.exit(process.exitCode);
+  });
+}
 var code = await run(process.argv, {
   stdout: (s) => process.stdout.write(s),
   stderr: (s) => process.stderr.write(s),
