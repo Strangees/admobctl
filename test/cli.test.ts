@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { linkSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -459,5 +459,19 @@ describe("cli robustness", () => {
     const r = await cli(["auth", "status", "-o", "json"], { routes: { "POST /tokeninfo": () => jsonResponse({ error: "invalid_token" }, 400) } });
     expect(r.code).toBe(1);
     expect(JSON.parse(r.stdout).error).toMatch(/Google rejected the access token/);
+  });
+
+  it("replaces an existing --out file instead of writing earnings into it while others can read it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "admobctl-cli-"));
+    const out = join(dir, "sept.rj.json");
+    writeFileSync(out, "old", { mode: 0o644 });
+    linkSync(out, join(dir, "other-link"));
+    const r = await cli(["finance", "export", "--month", "2026-09", "--out", out]);
+    expect(r.code, r.stderr).toBe(0);
+    expect(JSON.parse(readFileSync(out, "utf8")).format).toBe("revenue-journal/1");
+    expect(statSync(out).mode & 0o777).toBe(0o600);
+    // A new file was renamed over the target; the old inode (still readable through the link) never got the data.
+    expect(readFileSync(join(dir, "other-link"), "utf8")).toBe("old");
+    expect(readdirSync(dir).sort()).toEqual(["other-link", "sept.rj.json"]);
   });
 });

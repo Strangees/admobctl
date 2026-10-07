@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, statSync } from "node:fs";
+import { chmodSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 import { log } from "./log.js";
 
@@ -29,4 +29,22 @@ export function ensurePrivateDir(dir: string): void {
     }
   }
   log.warn(warning);
+}
+
+/**
+ * Write `content` to `file` readable only by the current user (0600), atomically. `mode` only applies when a file is
+ * created, so writing in place would put the data into an existing 0644 file before any chmod: write a fresh temp file
+ * next to it instead (wx: never reuse a stale one) and rename it over the target.
+ */
+export function writePrivateFile(file: string, content: string): void {
+  const tmp = `${file}.${process.pid}.tmp`;
+  rmSync(tmp, { force: true });
+  try {
+    writeFileSync(tmp, content, { mode: 0o600, flag: "wx" });
+    renameSync(tmp, file);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
+  chmodSync(file, 0o600);
 }

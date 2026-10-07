@@ -7202,7 +7202,7 @@ var require_dist = __commonJS({
 });
 
 // src/cli/program.ts
-import { chmodSync as chmodSync5, readFileSync as readFileSync5, writeFileSync as writeFileSync3 } from "node:fs";
+import { readFileSync as readFileSync5 } from "node:fs";
 
 // node_modules/commander/lib/error.js
 var CommanderError = class extends Error {
@@ -10941,6 +10941,10 @@ var exec = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
   child.stdin?.end(opts.input ?? "");
 });
 
+// src/core/fs.ts
+import { chmodSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename } from "node:path";
+
 // src/core/log.ts
 var verbose = Boolean(process.env.ADMOBCTL_DEBUG);
 var log = {
@@ -10956,6 +10960,38 @@ var log = {
 `);
   }
 };
+
+// src/core/fs.ts
+function ensurePrivateDir(dir) {
+  if (mkdirSync(dir, { recursive: true, mode: 448 }) !== void 0) {
+    chmodSync(dir, 448);
+    return;
+  }
+  if (process.platform === "win32" || typeof process.getuid !== "function") return;
+  const st = statSync(dir);
+  if ((st.mode & 63) === 0) return;
+  const warning = `${dir} is accessible to other users (mode ${(st.mode & 511).toString(8)}). Fix: chmod 700 ${dir}`;
+  if (basename(dir) === ".admobctl" && st.uid === process.getuid()) {
+    try {
+      chmodSync(dir, 448);
+      return;
+    } catch {
+    }
+  }
+  log.warn(warning);
+}
+function writePrivateFile(file2, content) {
+  const tmp = `${file2}.${process.pid}.tmp`;
+  rmSync(tmp, { force: true });
+  try {
+    writeFileSync(tmp, content, { mode: 384, flag: "wx" });
+    renameSync(tmp, file2);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
+  chmodSync(file2, 384);
+}
 
 // src/core/http.ts
 var DEFAULT_TIMEOUT_MS = 3e4;
@@ -11145,33 +11181,9 @@ var CloudClient = class {
 };
 
 // src/core/config.ts
-import { chmodSync as chmodSync2, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync as chmodSync2, existsSync, readFileSync, renameSync as renameSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-
-// src/core/fs.ts
-import { chmodSync, mkdirSync, statSync } from "node:fs";
-import { basename } from "node:path";
-function ensurePrivateDir(dir) {
-  if (mkdirSync(dir, { recursive: true, mode: 448 }) !== void 0) {
-    chmodSync(dir, 448);
-    return;
-  }
-  if (process.platform === "win32" || typeof process.getuid !== "function") return;
-  const st = statSync(dir);
-  if ((st.mode & 63) === 0) return;
-  const warning = `${dir} is accessible to other users (mode ${(st.mode & 511).toString(8)}). Fix: chmod 700 ${dir}`;
-  if (basename(dir) === ".admobctl" && st.uid === process.getuid()) {
-    try {
-      chmodSync(dir, 448);
-      return;
-    } catch {
-    }
-  }
-  log.warn(warning);
-}
-
-// src/core/config.ts
 var DEFAULT_FINANCE = {
   receivableAccount: "1509",
   revenueAccount: "3120",
@@ -11203,9 +11215,9 @@ function saveConfig(dir, config2) {
   ensurePrivateDir(dir);
   const file2 = configPath(dir);
   const tmp = `${file2}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(config2, null, 2)}
+  writeFileSync2(tmp, `${JSON.stringify(config2, null, 2)}
 `, { mode: 384 });
-  renameSync(tmp, file2);
+  renameSync2(tmp, file2);
   chmodSync2(file2, 384);
 }
 function resolveProfile(config2, name) {
@@ -11518,7 +11530,7 @@ import { randomBytes as randomBytes2 } from "node:crypto";
 
 // src/core/auth/oauth.ts
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync as chmodSync4, existsSync as existsSync2, readFileSync as readFileSync3, renameSync as renameSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { chmodSync as chmodSync4, existsSync as existsSync2, readFileSync as readFileSync3, renameSync as renameSync3, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "node:fs";
 import { createServer } from "node:http";
 import { join as join3 } from "node:path";
 var AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -11565,13 +11577,13 @@ var FileSecretStore = class {
     ensurePrivateDir(this.dir);
     const file2 = this.file(profile);
     const tmp = `${file2}.${process.pid}.tmp`;
-    rmSync(tmp, { force: true });
-    writeFileSync2(tmp, value, { mode: 384, flag: "wx" });
-    renameSync2(tmp, file2);
+    rmSync2(tmp, { force: true });
+    writeFileSync3(tmp, value, { mode: 384, flag: "wx" });
+    renameSync3(tmp, file2);
     chmodSync4(file2, 384);
   }
   async delete(profile) {
-    rmSync(this.file(profile), { force: true });
+    rmSync2(this.file(profile), { force: true });
   }
 };
 function defaultSecretStore(configDir2, exec2) {
@@ -15950,8 +15962,7 @@ function buildProgram(io) {
     const content = `${JSON.stringify(group ? r.groups[0] : r.groups, null, 2)}
 `;
     if (o.out) {
-      writeFileSync3(o.out, content, { mode: 384 });
-      chmodSync5(o.out, 384);
+      writePrivateFile(o.out, content);
       io.stderr(`Wrote ${o.out}
 `);
     } else io.stdout(content);
@@ -16042,8 +16053,7 @@ function buildProgram(io) {
     async (o, cmd) => {
       const { content, notes } = await exportJournal(svc(cmd), o);
       if (o.out) {
-        writeFileSync3(o.out, content, { mode: 384 });
-        chmodSync5(o.out, 384);
+        writePrivateFile(o.out, content);
         io.stderr(`Wrote ${o.out}
 `);
       } else io.stdout(content);

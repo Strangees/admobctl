@@ -1,7 +1,8 @@
-import { chmodSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { Command, CommanderError, Option } from "commander";
 import { fetchTokenInfo } from "../core/auth/doctor.js";
 import { exec as defaultExec } from "../core/exec.js";
+import { writePrivateFile } from "../core/fs.js";
 import { CloudClient } from "../core/setup/cloud.js";
 import { parseFeatures } from "../core/setup/features.js";
 import { setupStatus } from "../core/setup/status.js";
@@ -507,8 +508,7 @@ export function buildProgram(io: CliIO): Command {
       // Always JSON, whatever -o says: the output is a file for `create --file`. One group is one object.
       const content = `${JSON.stringify(group ? r.groups[0] : r.groups, null, 2)}\n`;
       if (o.out) {
-        writeFileSync(o.out, content, { mode: 0o600 });
-        chmodSync(o.out, 0o600);
+        writePrivateFile(o.out, content);
         io.stderr(`Wrote ${o.out}\n`);
       } else io.stdout(content);
       for (const n of r.notes) io.stderr(`${n}\n`);
@@ -685,8 +685,7 @@ export function buildProgram(io: CliIO): Command {
       ) => {
         const { content, notes } = await exportJournal(svc(cmd), o);
         if (o.out) {
-          writeFileSync(o.out, content, { mode: 0o600 });
-          chmodSync(o.out, 0o600);
+          writePrivateFile(o.out, content);
           io.stderr(`Wrote ${o.out}\n`);
         } else io.stdout(content);
         for (const n of notes) io.stderr(`${n}\n`);
