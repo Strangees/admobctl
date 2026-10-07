@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cloudScopeFix } from "../src/core/setup/commands.js";
+import { cloudScopeFix, oauthLoginCommand } from "../src/core/setup/commands.js";
 import { apisFor, featureForService, featuresFromScopes, parseFeatures, scopesFor } from "../src/core/setup/features.js";
 
 const READ = "https://www.googleapis.com/auth/admob.readonly";
@@ -45,5 +45,12 @@ describe("cloudScopeFix", () => {
     expect(cloudScopeFix("adc", ["read", "payments"])).toBe("admobctl setup login --yes");
     expect(cloudScopeFix("oauth", ["read"])).toBe("admobctl auth login --cloud-platform");
     expect(cloudScopeFix("oauth", ["read", "write", "payments"])).toBe("admobctl auth login --write --payments --cloud-platform");
+  });
+});
+
+describe("oauthLoginCommand", () => {
+  it("names the client when given, quoted for the shell if it needs to be", () => {
+    expect(oauthLoginCommand(["read", "write"], false, "123-abc.apps.googleusercontent.com")).toBe("admobctl auth login --client-id 123-abc.apps.googleusercontent.com --write");
+    expect(oauthLoginCommand(["read"], true, "odd id'x")).toBe("admobctl auth login --client-id 'odd id'\\''x' --cloud-platform");
   });
 });

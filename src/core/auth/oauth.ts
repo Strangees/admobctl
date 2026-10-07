@@ -212,8 +212,8 @@ export function googleUnavailable(what: string, status: number, hints: DiagnoseH
 }
 
 /** Only 400/401 or an OAuth `error` code says the credentials are wrong; invalid_grant means the grant itself is gone. */
-function tokenError(json: TokenResponse, status: number, grantType: string | undefined, loginFix: string): AdmobctlError {
-  const msg = `${json.error ?? status}${json.error_description ? `: ${json.error_description}` : ""}`;
+function tokenError(json: TokenResponse, status: number | undefined, grantType: string | undefined, loginFix: string): AdmobctlError {
+  const msg = `${json.error ?? `HTTP ${status}`}${json.error_description ? `: ${json.error_description}` : ""}`;
   if (json.error === "invalid_grant") {
     const what = grantType === "refresh_token" ? "Your saved login is no longer valid" : "Google did not accept the sign-in";
     return new AdmobctlError("AUTH_TOKEN_EXPIRED", `${what} (${msg}).`, { status, fix: loginFix });
@@ -243,7 +243,7 @@ async function postToken(params: Record<string, string>, http: TokenHttp, loginF
             : tokenError(typeof body === "object" && body ? (body as TokenResponse) : {}, status, params.grant_type, loginFix),
       },
     )) ?? {};
-  if (json.error) throw tokenError(json, 200, params.grant_type, loginFix);
+  if (json.error) throw tokenError(json, undefined, params.grant_type, loginFix);
   return json;
 }
 

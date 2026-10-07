@@ -10992,8 +10992,9 @@ function profileCommand(command, profile, configuredDefault = "default") {
   const quoted = /^[A-Za-z0-9._-]+$/.test(profile) ? profile : `'${profile.replace(/'/g, "'\\''")}'`;
   return command.replace(/\badmobctl /, () => `admobctl --profile ${quoted} `);
 }
-function oauthLoginCommand(features, cloudPlatform) {
-  return `admobctl auth login${features.includes("write") ? " --write" : ""}${features.includes("payments") ? " --payments" : ""}${cloudPlatform ? " --cloud-platform" : ""}`;
+function oauthLoginCommand(features, cloudPlatform, clientId) {
+  const id = clientId === void 0 ? "" : ` --client-id ${/^[A-Za-z0-9._-]+$/.test(clientId) ? clientId : `'${clientId.replace(/'/g, "'\\''")}'`}`;
+  return `admobctl auth login${id}${features.includes("write") ? " --write" : ""}${features.includes("payments") ? " --payments" : ""}${cloudPlatform ? " --cloud-platform" : ""}`;
 }
 function cloudScopeFix(mode, features) {
   return mode === "oauth" ? oauthLoginCommand(features, true) : "admobctl setup login --yes";
@@ -11141,7 +11142,7 @@ function googleUnavailable(what, status, hints) {
   });
 }
 function tokenError(json2, status, grantType, loginFix) {
-  const msg = `${json2.error ?? status}${json2.error_description ? `: ${json2.error_description}` : ""}`;
+  const msg = `${json2.error ?? `HTTP ${status}`}${json2.error_description ? `: ${json2.error_description}` : ""}`;
   if (json2.error === "invalid_grant") {
     const what = grantType === "refresh_token" ? "Your saved login is no longer valid" : "Google did not accept the sign-in";
     return new AdmobctlError("AUTH_TOKEN_EXPIRED", `${what} (${msg}).`, { status, fix: loginFix });
@@ -11165,7 +11166,7 @@ async function postToken(params, http, loginFix) {
       diagnose: (status, body, hints) => status === 429 || status >= 500 ? googleUnavailable("Google's sign-in service (oauth2.googleapis.com)", status, hints) : tokenError(typeof body === "object" && body ? body : {}, status, params.grant_type, loginFix)
     }
   ) ?? {};
-  if (json2.error) throw tokenError(json2, 200, params.grant_type, loginFix);
+  if (json2.error) throw tokenError(json2, void 0, params.grant_type, loginFix);
   return json2;
 }
 async function exchangeCode(o, doFetch = fetch, sleep) {
@@ -11885,14 +11886,11 @@ function systemBrowser(exec2 = exec) {
     await exec2(cmd, args, { background: true }).catch(() => void 0);
   };
 }
-function authLoginCommand(o) {
-  const id = /^[A-Za-z0-9._-]+$/.test(o.clientId) ? o.clientId : `'${o.clientId.replace(/'/g, "'\\''")}'`;
-  return `admobctl auth login --client-id ${id}${o.write ? " --write" : ""}${o.payments ? " --payments" : ""}${o.cloudPlatform ? " --cloud-platform" : ""}`;
-}
 async function login(o) {
   const pkce = createPkce();
   const state = randomBytes2(16).toString("hex");
-  const fix = `${authLoginCommand(o)}${o.clientSecret ? "  (with --client-secret too if you passed it)" : ""}`;
+  const requested = ["read", ...o.write ? ["write"] : [], ...o.payments ? ["payments"] : []];
+  const fix = `${oauthLoginCommand(requested, Boolean(o.cloudPlatform), o.clientId)}${o.clientSecret ? "  (with --client-secret too if you passed it)" : ""}`;
   const wait = waitForLoopbackCode({ state, timeoutMs: o.timeoutMs, fix });
   const { redirectUri } = await wait.ready;
   const url2 = buildAuthUrl({ clientId: o.clientId, redirectUri, pkce, state, write: o.write, payments: o.payments, cloudPlatform: o.cloudPlatform });
@@ -11911,7 +11909,6 @@ async function login(o) {
   const cfg = loadConfig(o.configDir);
   setProfileValue(cfg, o.profile, "oauthClientId", o.clientId);
   setProfileValue(cfg, o.profile, "authMode", "oauth");
-  const requested = ["read", ...o.write ? ["write"] : [], ...o.payments ? ["payments"] : []];
   setProfileValue(cfg, o.profile, "features", (t.scope ? featuresFromScopes(t.scope.split(" ")) : requested).join(","));
   saveConfig(o.configDir, cfg);
   return { profile: o.profile, scope: t.scope };

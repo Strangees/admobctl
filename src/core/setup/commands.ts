@@ -8,9 +8,10 @@ export function profileCommand(command: string, profile: string, configuredDefau
   return command.replace(/\badmobctl /, () => `admobctl --profile ${quoted} `);
 }
 
-/** The own-OAuth-client sign-in for these features; it reuses the profile's client ID and saved secret. */
-export function oauthLoginCommand(features: Feature[], cloudPlatform: boolean): string {
-  return `admobctl auth login${features.includes("write") ? " --write" : ""}${features.includes("payments") ? " --payments" : ""}${cloudPlatform ? " --cloud-platform" : ""}`;
+/** The own-OAuth-client sign-in for these features; without `clientId` it reuses the profile's client and saved secret. */
+export function oauthLoginCommand(features: Feature[], cloudPlatform: boolean, clientId?: string): string {
+  const id = clientId === undefined ? "" : ` --client-id ${/^[A-Za-z0-9._-]+$/.test(clientId) ? clientId : `'${clientId.replace(/'/g, "'\\''")}'`}`;
+  return `admobctl auth login${id}${features.includes("write") ? " --write" : ""}${features.includes("payments") ? " --payments" : ""}${cloudPlatform ? " --cloud-platform" : ""}`;
 }
 
 /**
