@@ -139,6 +139,19 @@ describe("KeychainSecretStore", () => {
     expect(JSON.parse((await store.get("default"))!)).toEqual(stored);
     expect(await store.get("missing")).toBeUndefined();
   });
+
+  it("reports a locked or unreachable keychain as such, not as a missing login", async () => {
+    for (const [code, stderr] of [
+      [36, "security: SecKeychainSearchCopyNext: User interaction is not allowed."],
+      [51, "security: SecKeychainSearchCopyNext: The user name or passphrase you entered is not correct."],
+    ] as const) {
+      const store = new KeychainSecretStore(async () => ({ code, stdout: "", stderr }));
+      const err = (await store.get("default").catch((e: unknown) => e)) as AdmobctlError;
+      expect(err).toMatchObject({ code: "CONFIG", message: expect.stringContaining(stderr) });
+      expect(err.message).toMatch(/Keychain/);
+      expect(err.fix).toMatch(/unlock/i);
+    }
+  });
 });
 
 describe("FileSecretStore", () => {
@@ -293,6 +306,15 @@ describe("OAuthTokenProvider", () => {
     const out = lines.join("");
     expect(out).toContain("oauth2.googleapis.com/token");
     for (const secret of ["rtoken", "csecret", "ya29.secret-access"]) expect(out).not.toContain(secret);
+  });
+
+  it("rejects a saved login of the wrong shape with a clear error", async () => {
+    for (const raw of ["null", "5", '"x"', "[]", '{"clientId":"cid"}', '{"clientId":5,"refreshToken":"r"}', '{"clientId":"cid","refreshToken":"r","clientSecret":7}', "{"]) {
+      const p = new OAuthTokenProvider({ profile: "default", store: store(raw) });
+      await expect(p.getToken(), raw).rejects.toMatchObject({ name: "AdmobctlError", code: "AUTH_NO_CREDENTIALS", message: expect.stringMatching(/corrupt/) });
+    }
+    const ok = new OAuthTokenProvider({ profile: "default", store: store('{"clientId":"cid","refreshToken":"r"}') });
+    expect(await ok.stored()).toEqual({ clientId: "cid", refreshToken: "r" });
   });
 
   it("explains how to log in when nothing is stored", async () => {

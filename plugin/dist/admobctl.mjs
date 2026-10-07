@@ -10990,7 +10990,12 @@ var KeychainSecretStore = class {
   exec;
   async get(profile) {
     const r = await this.exec("security", ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", profile, "-w"]);
-    if (r.code !== 0) return void 0;
+    if (r.code === 44) return void 0;
+    if (r.code !== 0) {
+      throw new AdmobctlError("CONFIG", `Could not read admobctl's saved login from the macOS Keychain: ${r.stderr.trim() || `security exited with code ${r.code}`}`, {
+        fix: "Unlock your login keychain (over SSH: security unlock-keychain), then retry."
+      });
+    }
     return r.stdout.replace(/\n$/, "") || void 0;
   }
   async set(profile, value) {
@@ -11180,11 +11185,20 @@ var OAuthTokenProvider = class {
     if (!raw) {
       throw new AdmobctlError("AUTH_NO_CREDENTIALS", `No saved admobctl login for profile "${this.deps.profile}".`, { fix: this.loginFix() });
     }
+    let parsed;
     try {
-      return JSON.parse(raw);
+      parsed = JSON.parse(raw);
     } catch {
+      parsed = void 0;
+    }
+    const s = typeof parsed === "object" && parsed !== null ? parsed : void 0;
+    const text = (v) => typeof v === "string" && v !== "";
+    if (!s || !text(s.clientId) || !text(s.refreshToken) || s.clientSecret != null && typeof s.clientSecret !== "string") {
       throw new AdmobctlError("AUTH_NO_CREDENTIALS", "The saved login is corrupt.", { fix: this.loginFix() });
     }
+    const stored = { clientId: s.clientId, refreshToken: s.refreshToken };
+    if (s.clientSecret) stored.clientSecret = s.clientSecret;
+    return stored;
   }
   async checkCredentials() {
     return this.stored();

@@ -34,7 +34,13 @@ export class KeychainSecretStore implements SecretStore {
 
   async get(profile: string): Promise<string | undefined> {
     const r = await this.exec("security", ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", profile, "-w"]);
-    if (r.code !== 0) return undefined;
+    // 44 is "item not found". Anything else (a locked keychain, no user interaction over SSH) is not a missing login.
+    if (r.code === 44) return undefined;
+    if (r.code !== 0) {
+      throw new AdmobctlError("CONFIG", `Could not read admobctl's saved login from the macOS Keychain: ${r.stderr.trim() || `security exited with code ${r.code}`}`, {
+        fix: "Unlock your login keychain (over SSH: security unlock-keychain), then retry.",
+      });
+    }
     return r.stdout.replace(/\n$/, "") || undefined;
   }
 
@@ -294,11 +300,20 @@ export class OAuthTokenProvider implements TokenProvider {
     if (!raw) {
       throw new AdmobctlError("AUTH_NO_CREDENTIALS", `No saved admobctl login for profile "${this.deps.profile}".`, { fix: this.loginFix() });
     }
+    let parsed: unknown;
     try {
-      return JSON.parse(raw) as StoredOAuth;
+      parsed = JSON.parse(raw);
     } catch {
+      parsed = undefined;
+    }
+    const s = typeof parsed === "object" && parsed !== null ? (parsed as Partial<Record<keyof StoredOAuth, unknown>>) : undefined;
+    const text = (v: unknown) => typeof v === "string" && v !== "";
+    if (!s || !text(s.clientId) || !text(s.refreshToken) || (s.clientSecret != null && typeof s.clientSecret !== "string")) {
       throw new AdmobctlError("AUTH_NO_CREDENTIALS", "The saved login is corrupt.", { fix: this.loginFix() });
     }
+    const stored: StoredOAuth = { clientId: s.clientId as string, refreshToken: s.refreshToken as string };
+    if (s.clientSecret) stored.clientSecret = s.clientSecret as string;
+    return stored;
   }
 
   async checkCredentials(): Promise<StoredOAuth> {
