@@ -114,7 +114,7 @@ Global flags:
 
 | Flag | Meaning |
 |---|---|
-| `-o, --output json\|table\|csv\|markdown` | Default: `table` on a terminal, `json` when piped |
+| `-o, --output json\|table\|csv\|markdown` | Default: `table` on a terminal, `json` when piped. With `csv`, notes (truncation, API warnings, the estimate reminder) go to stderr |
 | `--profile <name>` | Use a named profile from the config |
 | `--account pub-…` | Pick the publisher account (otherwise auto-selected when there is only one) |
 | `-v, --verbose` | Debug logs to stderr |

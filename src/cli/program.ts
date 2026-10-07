@@ -168,7 +168,12 @@ export function buildProgram(io: CliIO): Command {
   const g = (cmd: Command) => cmd.optsWithGlobals<GlobalOpts>();
   const svc = (cmd: Command) => AdmobService.create({ profile: g(cmd).profile, account: g(cmd).account }, io.service);
   const dir = () => io.service?.configDir ?? configDir();
-  const emit = (cmd: Command, out: Output) => io.stdout(render(out, g(cmd).output ?? defaultFormat(io.isTTY)));
+  /** CSV has no place for notes (truncation, API warnings, the estimate disclaimer), so they go to stderr. */
+  const print = (out: Output, format: OutputFormat) => {
+    io.stdout(render(out, format));
+    if (format === "csv") for (const n of out.notes ?? []) io.stderr(`${n}\n`);
+  };
+  const emit = (cmd: Command, out: Output) => print(out, g(cmd).output ?? defaultFormat(io.isTTY));
   const repeat = (v: string, p: string[] = []) => [...p, v];
   /** Writes are dry runs unless --yes: print the plan, or apply each plan in order and print what the API returned. */
   const runWrite = async (cmd: Command, s: AdmobService, plans: WritePlan[], yes: boolean | undefined) => {
@@ -612,7 +617,7 @@ export function buildProgram(io: CliIO): Command {
     const explicit = g(cmd).output;
     if (as === "journal") {
       const out = journal();
-      if (explicit) io.stdout(render(out, explicit));
+      if (explicit) print(out, explicit);
       else {
         io.stdout(renderTsv(out.table));
         for (const n of out.notes ?? []) io.stderr(`${n}\n`);
@@ -620,7 +625,7 @@ export function buildProgram(io: CliIO): Command {
       return;
     }
     const format = as === "csv" || as === "json" ? as : (explicit ?? defaultFormat(io.isTTY));
-    io.stdout(render(summary, format));
+    print(summary, format);
   };
 
   const finance = program.command("finance").description("Monthly earnings for bookkeeping (estimates)");

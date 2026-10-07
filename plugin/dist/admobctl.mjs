@@ -15750,7 +15750,12 @@ function buildProgram(io) {
   const g = (cmd) => cmd.optsWithGlobals();
   const svc = (cmd) => AdmobService.create({ profile: g(cmd).profile, account: g(cmd).account }, io.service);
   const dir = () => io.service?.configDir ?? configDir();
-  const emit = (cmd, out) => io.stdout(render(out, g(cmd).output ?? defaultFormat(io.isTTY)));
+  const print = (out, format) => {
+    io.stdout(render(out, format));
+    if (format === "csv") for (const n of out.notes ?? []) io.stderr(`${n}
+`);
+  };
+  const emit = (cmd, out) => print(out, g(cmd).output ?? defaultFormat(io.isTTY));
   const repeat = (v, p = []) => [...p, v];
   const runWrite = async (cmd, s, plans, yes) => {
     if (!yes) {
@@ -15995,7 +16000,7 @@ function buildProgram(io) {
     const explicit = g(cmd).output;
     if (as === "journal") {
       const out = journal();
-      if (explicit) io.stdout(render(out, explicit));
+      if (explicit) print(out, explicit);
       else {
         io.stdout(renderTsv(out.table));
         for (const n of out.notes ?? []) io.stderr(`${n}
@@ -16004,7 +16009,7 @@ function buildProgram(io) {
       return;
     }
     const format = as === "csv" || as === "json" ? as : explicit ?? defaultFormat(io.isTTY);
-    io.stdout(render(summary, format));
+    print(summary, format);
   };
   const finance = program2.command("finance").description("Monthly earnings for bookkeeping (estimates)");
   finance.command("month <YYYY-MM>").description("Estimated earnings per app for one month, optionally as journal rows").addOption(asOption()).action(async (month, o, cmd) => {

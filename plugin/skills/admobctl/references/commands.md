@@ -1,7 +1,7 @@
 # admobctl command reference
 
-Global flags (any command): `-o json|table|csv|markdown` (default: table on a TTY, json when piped),
-`--profile <name>`, `--account pub-…`, `-v` (debug logs to stderr). Run `admobctl <cmd> --help` for details.
+Global flags (any command): `-o json|table|csv|markdown` (default: table on a TTY, json when piped; with csv the notes
+go to stderr), `--profile <name>`, `--account pub-…`, `-v` (debug logs to stderr). Run `admobctl <cmd> --help` for details.
 
 ## Setup and auth
 

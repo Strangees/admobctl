@@ -410,3 +410,23 @@ describe("cli", () => {
     expect(r.stdout.split("\n")[1]).toBe("Quiz cross-promo,50000,500,1.0%,40,80.00,2.00");
   });
 });
+
+describe("cli robustness", () => {
+  it("sends notes to stderr with -o csv, which has no place for them", async () => {
+    const r = await cli(["report", "network", "--from", "2026-09", "--max-rows", "1", "-o", "csv"]);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout.trim().split("\n")).toHaveLength(2);
+    expect(r.stdout).not.toMatch(/Truncated/);
+    expect(r.stderr).toMatch(/Truncated: /);
+    expect(r.stderr).toMatch(/reconcile against AdMob Payments/);
+    const fin = await cli(["finance", "month", "2026-09", "--as", "csv"]);
+    expect(fin.code, fin.stderr).toBe(0);
+    expect(fin.stderr).toMatch(/booking date/);
+  });
+
+  it("keeps notes out of stderr for the formats that show them", async () => {
+    const r = await cli(["report", "network", "--from", "2026-09", "--max-rows", "1", "-o", "markdown"]);
+    expect(r.stdout).toMatch(/> Truncated: /);
+    expect(r.stderr).toBe("");
+  });
+});
