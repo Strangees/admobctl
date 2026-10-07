@@ -73,7 +73,11 @@ export async function fetchTokenInfo(token: string, doFetch: typeof fetch = fetc
 /** Run the auth checks in order. Later checks are skipped when an earlier one makes them meaningless. */
 export async function runDoctor(d: DoctorDeps): Promise<Check[]> {
   const checks = await runChecks(d);
-  for (const c of checks) if (c.fix?.startsWith("admobctl ")) c.fix_command = c.fix.split("  (")[0];
+  for (const c of checks) {
+    const command = c.fix?.split("  (")[0];
+    // Only a command that runs as given: never one with a <placeholder> to fill in.
+    if (command?.startsWith("admobctl ") && !/<[^>]*>/.test(command)) c.fix_command = command;
+  }
   return checks;
 }
 

@@ -182,6 +182,14 @@ describe("runDoctor setup checks", () => {
     expect(checks.apis!.fix_command).toBe("admobctl setup apis --features payments --yes");
   });
 
+  it("never turns a fix with a <placeholder> into a fix_command", async () => {
+    const checks = byId(
+      await runDoctor({ ...okDeps(), account: async () => Promise.reject(new AdmobctlError("USAGE", "pick one", { fix: "admobctl config set account <pub-id>" })) }),
+    );
+    expect(checks.account!.fix).toBe("admobctl config set account <pub-id>");
+    expect(checks.account!.fix_command).toBeUndefined();
+  });
+
   it("only sets fix_command for admobctl commands", async () => {
     const checks = await runDoctor({ ...okDeps(), quotaProject: undefined, listApps: async () => [{ alias: "a", appId: "a~1", name: "A", platform: "IOS", resource: "r", approval: "ACTION_REQUIRED" }] as never });
     const byIdx = byId(checks);

@@ -238,7 +238,9 @@ describe("OAuthTokenProvider", () => {
   it("asks the user to log in again when the refresh token is revoked", async () => {
     const f = fakeFetch({ "POST /token": () => jsonResponse({ error: "invalid_grant", error_description: "Token has been expired or revoked." }, 400) });
     const p = new OAuthTokenProvider({ profile: "default", store: store(JSON.stringify(stored)), fetch: f.fetch });
-    await expect(p.getToken()).rejects.toMatchObject({ code: "AUTH_TOKEN_EXPIRED", fix: expect.stringContaining("admobctl auth login") });
+    await expect(p.getToken()).rejects.toMatchObject({ code: "AUTH_TOKEN_EXPIRED", fix: "admobctl setup login --yes" });
+    const work = new OAuthTokenProvider({ profile: "work", store: store(JSON.stringify(stored)), fetch: f.fetch });
+    await expect(work.getToken()).rejects.toMatchObject({ fix: "admobctl --profile work setup login --yes" });
   });
 
   it("retries a transient 5xx from the token endpoint", async () => {
@@ -317,8 +319,8 @@ describe("OAuthTokenProvider", () => {
     expect(await ok.stored()).toEqual({ clientId: "cid", refreshToken: "r" });
   });
 
-  it("explains how to log in when nothing is stored", async () => {
+  it("explains how to log in when nothing is stored, keeping the profile's client and features", async () => {
     const p = new OAuthTokenProvider({ profile: "work", store: store(undefined) });
-    await expect(p.getToken()).rejects.toMatchObject({ code: "AUTH_NO_CREDENTIALS", fix: expect.stringContaining("--profile work") });
+    await expect(p.getToken()).rejects.toMatchObject({ code: "AUTH_NO_CREDENTIALS", fix: "admobctl --profile work setup login --yes" });
   });
 });

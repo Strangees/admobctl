@@ -248,7 +248,11 @@ export class AdmobService {
       const wanted = this.accountOverride?.replace(/^accounts\//, "");
       if (wanted) {
         const hit = accounts.find((a) => a.publisherId === wanted);
-        if (!hit) throw new AdmobctlError("NOT_FOUND", `Account ${wanted} is not accessible. Accessible accounts: ${ids}`);
+        if (!hit) {
+          throw new AdmobctlError("NOT_FOUND", `Account ${wanted} is not accessible. Accessible accounts: ${ids}`, {
+            fix: "admobctl accounts list  (then set the account to use with admobctl config set account, or pass --account)",
+          });
+        }
         return hit;
       }
       if (accounts.length === 1) return accounts[0]!;
@@ -258,7 +262,7 @@ export class AdmobService {
         });
       }
       throw new AdmobctlError("USAGE", `Several AdMob accounts are accessible (${ids}). Pick one.`, {
-        fix: "admobctl config set account <pub-…>  (or pass --account)",
+        fix: "admobctl accounts list  (then set the one to use with admobctl config set account, or pass --account)",
       });
     });
   }

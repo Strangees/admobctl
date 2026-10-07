@@ -88,6 +88,38 @@ describe("login process handling", () => {
     expect(err).toMatchObject({ code: "AUTH_NO_CREDENTIALS", message: expect.stringMatching(/Timed out/) });
   });
 
+  it("a failed sign-in's fix repeats it with the same client and scopes", async () => {
+    const err = await login(options({ timeoutMs: 50, write: true, payments: true, cloudPlatform: true, openBrowser: () => new Promise<void>(() => {}) })).catch((e: unknown) => e);
+    expect(err).toMatchObject({ fix: "admobctl auth login --client-id cid --write --payments --cloud-platform" });
+    const withSecret = await login(options({ timeoutMs: 50, clientSecret: "cs", openBrowser: () => new Promise<void>(() => {}) })).catch((e: unknown) => e);
+    expect((withSecret as { fix: string }).fix).toMatch(/^admobctl auth login --client-id cid {2}\(.*--client-secret/);
+    expect((withSecret as { fix: string }).fix).not.toContain("cs ");
+  });
+
+  it("a sign-in code Google no longer accepts points at the same sign-in", async () => {
+    const f = fakeFetch({ "POST /token": () => jsonResponse({ error: "invalid_grant", error_description: "Bad Request" }, 400) });
+    const err = await login(options({ fetch: f.fetch, write: true, openBrowser: async (url) => void (await consent(url)) })).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: "AUTH_TOKEN_EXPIRED", fix: "admobctl auth login --client-id cid --write" });
+  });
+
+  it("saves the features the granted scopes allow, so a later setup login keeps them", async () => {
+    const scope = [READ, "https://www.googleapis.com/auth/admob.monetization", "https://www.googleapis.com/auth/adsense.readonly"].join(" ");
+    const o = options({
+      fetch: fakeFetch({ "POST /token": () => jsonResponse({ access_token: "a", refresh_token: "r1", expires_in: 3600, scope }) }).fetch,
+      write: true,
+      payments: true,
+      openBrowser: async (url) => void (await consent(url)),
+    });
+    await login(o);
+    expect(loadConfig(o.configDir).profiles.default!.features).toEqual(["read", "write", "payments"]);
+  });
+
+  it("saves only the features whose scopes the user granted", async () => {
+    const o = options({ write: true, openBrowser: async (url) => void (await consent(url)) });
+    await login(o);
+    expect(loadConfig(o.configDir).profiles.default!.features).toEqual(["read"]);
+  });
+
   it("starts the system browser in the background, not tied to admobctl's output", async () => {
     const calls: Array<Parameters<Exec>> = [];
     await systemBrowser(async (...a) => (calls.push(a), { code: 0, stdout: "", stderr: "" }))("https://example.com/consent");

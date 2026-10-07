@@ -45,6 +45,16 @@ describe("AdmobService", () => {
   it("errors clearly when the requested account is not accessible", async () => {
     const { svc } = service({ account: "pub-999" });
     await expect(svc.account()).rejects.toThrow(/pub-999.*pub-0000000000000001/);
+    await expect(svc.account()).rejects.toMatchObject({ fix: expect.stringMatching(/^admobctl accounts list {2}\(/) });
+  });
+
+  it("asks to pick one of several accounts with a runnable fix, not a placeholder", async () => {
+    const two = { account: [...fixture<{ account: object[] }>("accounts.json").account, { name: "accounts/pub-0000000000000002", publisherId: "pub-0000000000000002", reportingTimeZone: "UTC", currencyCode: "USD" }] };
+    const { svc } = service({ routes: { "GET /v1/accounts?": () => jsonResponse(two) } });
+    const err = (await svc.account().catch((e: unknown) => e)) as Error & { fix?: string };
+    expect(err.message).toMatch(/pub-0000000000000001, pub-0000000000000002/);
+    expect(err.fix).toMatch(/^admobctl accounts list {2}\(/);
+    expect(err.fix).not.toMatch(/</);
   });
 
   it("retries accounts.list after a failure instead of caching the rejection", async () => {

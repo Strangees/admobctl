@@ -6,6 +6,7 @@ import { AdmobctlError, ADMOB_SCOPE, ADSENSE_SCOPE, CLOUD_PLATFORM_SCOPE, format
 import { exec as defaultExec, type Exec } from "../exec.js";
 import { ensurePrivateDir } from "../fs.js";
 import { requestJson } from "../http.js";
+import { profileCommand } from "../setup/commands.js";
 import type { TokenProvider } from "./types.js";
 
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -137,7 +138,8 @@ const DONE_PAGE = `<!doctype html><meta charset="utf-8"><title>admobctl</title>
  * Listen on 127.0.0.1:<random> for Google's redirect and resolve with the authorization code. A listen error rejects
  * both promises; neither rejection goes unhandled while the caller awaits the other one.
  */
-export function waitForLoopbackCode(o: { state: string; timeoutMs?: number }) {
+export function waitForLoopbackCode(o: { state: string; timeoutMs?: number; fix?: string }) {
+  const fix = o.fix ?? "admobctl setup login --yes";
   let resolveReady!: (v: { redirectUri: string }) => void;
   let rejectReady!: (err: unknown) => void;
   const ready = new Promise<{ redirectUri: string }>((resolve, reject) => {
@@ -157,14 +159,14 @@ export function waitForLoopbackCode(o: { state: string; timeoutMs?: number }) {
       };
       if (!got && !err) return void res.writeHead(404).end();
       if (url.searchParams.get("state") !== o.state) {
-        return finish(400, "State mismatch.", () => reject(new AdmobctlError("AUTH_NO_CREDENTIALS", "OAuth state mismatch; login aborted.")));
+        return finish(400, "State mismatch.", () => reject(new AdmobctlError("AUTH_NO_CREDENTIALS", "OAuth state mismatch; login aborted.", { fix })));
       }
-      if (err) return finish(400, `Login failed: ${err}`, () => reject(new AdmobctlError("AUTH_NO_CREDENTIALS", `Google returned an error: ${err}`)));
+      if (err) return finish(400, `Login failed: ${err}`, () => reject(new AdmobctlError("AUTH_NO_CREDENTIALS", `Google returned an error: ${err}`, { fix })));
       finish(200, DONE_PAGE, () => resolve(got!));
     });
     const timer = setTimeout(() => {
       server.close();
-      reject(new AdmobctlError("AUTH_NO_CREDENTIALS", "Timed out waiting for the browser login.", { fix: "admobctl auth login" }));
+      reject(new AdmobctlError("AUTH_NO_CREDENTIALS", "Timed out waiting for the browser login.", { fix }));
     }, o.timeoutMs ?? 300_000);
     server.listen(0, "127.0.0.1", () => {
       const addr = server.address();
@@ -175,7 +177,7 @@ export function waitForLoopbackCode(o: { state: string; timeoutMs?: number }) {
       clearTimeout(timer);
       const e = new AdmobctlError("AUTH_NO_CREDENTIALS", `Could not listen on 127.0.0.1 for Google's sign-in redirect: ${err.message}`, {
         cause: err,
-        fix: "admobctl auth login",
+        fix,
       });
       rejectReady(e);
       reject(e);
@@ -219,7 +221,7 @@ function tokenError(json: TokenResponse, status: number, grantType: string | und
   if (status === 400 || status === 401 || json.error) {
     return new AdmobctlError("AUTH_NO_CREDENTIALS", `Google token endpoint error: ${msg}`, {
       status,
-      fix: "Check the OAuth client ID/secret (a Desktop app client in Google Cloud Console), then: admobctl auth login",
+      fix: "Check the OAuth client ID and secret (a Desktop app client in Google Cloud Console → APIs & Services → Credentials), then sign in again with admobctl auth login and that client's --client-id and --client-secret.",
     });
   }
   return new AdmobctlError("API_ERROR", `Google token endpoint error: HTTP ${status}`, { status, fix: "Wait a minute and retry." });
@@ -245,8 +247,9 @@ async function postToken(params: Record<string, string>, http: TokenHttp, loginF
   return json;
 }
 
+/** `fix` is the command that repeats the sign-in. */
 export async function exchangeCode(
-  o: { clientId: string; clientSecret?: string; code: string; verifier: string; redirectUri: string },
+  o: { clientId: string; clientSecret?: string; code: string; verifier: string; redirectUri: string; fix?: string },
   doFetch: typeof fetch = fetch,
   sleep?: (ms: number) => Promise<void>,
 ): Promise<{ refreshToken: string; accessToken?: string; scope?: string }> {
@@ -258,10 +261,11 @@ export async function exchangeCode(
     redirect_uri: o.redirectUri,
   };
   if (o.clientSecret) params.client_secret = o.clientSecret;
-  const t = await postToken(params, { fetch: doFetch, sleep }, "admobctl auth login");
+  const fix = o.fix ?? "admobctl setup login --yes";
+  const t = await postToken(params, { fetch: doFetch, sleep }, fix);
   if (!t.refresh_token) {
     throw new AdmobctlError("AUTH_NO_CREDENTIALS", "Google did not return a refresh token.", {
-      fix: "Remove admobctl's access at https://myaccount.google.com/permissions and run admobctl auth login again.",
+      fix: `Remove admobctl's access at https://myaccount.google.com/permissions, then run ${fix}`,
     });
   }
   return { refreshToken: t.refresh_token, accessToken: t.access_token, scope: t.scope };
@@ -291,8 +295,9 @@ export class OAuthTokenProvider implements TokenProvider {
 
   constructor(private readonly deps: OAuthProviderDeps) {}
 
+  /** Sign in again with the profile's saved client and features (`auth login` alone would ask for read access only). */
   private loginFix(): string {
-    return `admobctl auth login --client-id <id>${this.deps.profile === "default" ? "" : ` --profile ${this.deps.profile}`}`;
+    return profileCommand("admobctl setup login --yes", this.deps.profile);
   }
 
   async stored(): Promise<StoredOAuth> {
@@ -330,7 +335,7 @@ export class OAuthTokenProvider implements TokenProvider {
     const s = await this.stored();
     const params: Record<string, string> = { grant_type: "refresh_token", refresh_token: s.refreshToken, client_id: s.clientId };
     if (s.clientSecret) params.client_secret = s.clientSecret;
-    const t = await postToken(params, { fetch: this.deps.fetch, sleep: this.deps.sleep }, "admobctl auth login");
+    const t = await postToken(params, { fetch: this.deps.fetch, sleep: this.deps.sleep }, this.loginFix());
     if (!t.access_token) throw new AdmobctlError("AUTH_NO_CREDENTIALS", "Google returned no access token.", { fix: this.loginFix() });
     // Refresh a minute early.
     this.cached = { token: t.access_token, expiresAt: now + ((t.expires_in ?? 3600) - 60) * 1000 };

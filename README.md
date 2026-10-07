@@ -65,8 +65,9 @@ admobctl auth login --client-id <id> --client-secret <secret> --cloud-platform [
 ```
 
 The refresh token is stored in the macOS Keychain (on other OSes, a `0600` file in `~/.admobctl/`). `admobctl auth logout` revokes it.
-After that, `admobctl setup login` uses this OAuth client and its saved secret, including `cloud-platform` for the
-setup APIs. Browser sign-in requires a terminal in both modes. A quota project is optional for your own OAuth
+`auth login` also saves the features its granted scopes allow. After that, `admobctl setup login` uses this OAuth client,
+its saved secret and those features, including `cloud-platform` for the setup APIs; it is also the fix when the saved
+login expires (every 7 days while the client's consent screen is in "Testing"). Browser sign-in requires a terminal in both modes. A quota project is optional for your own OAuth
 client: without one, setup leaves API enablement to the client project and `setup status` probes actual API access.
 To enable APIs in a specific project without changing your profile, use
 `admobctl setup apis --project <client-project-id> --features payments --yes`. Google errors that name an API

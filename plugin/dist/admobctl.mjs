@@ -10978,6 +10978,14 @@ function ensurePrivateDir(dir) {
   log.warn(warning);
 }
 
+// src/core/setup/commands.ts
+function profileCommand(command, profile, configuredDefault = "default") {
+  if (profile === "default" && configuredDefault === "default") return command;
+  if (/--profile(?:[=\s]|$)/.test(command)) return command;
+  const quoted = /^[A-Za-z0-9._-]+$/.test(profile) ? profile : `'${profile.replace(/'/g, "'\\''")}'`;
+  return command.replace(/\badmobctl /, () => `admobctl --profile ${quoted} `);
+}
+
 // src/core/auth/oauth.ts
 var AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 var TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
@@ -11063,6 +11071,7 @@ function buildAuthUrl(o) {
 var DONE_PAGE = `<!doctype html><meta charset="utf-8"><title>admobctl</title>
 <body style="font:16px system-ui;margin:3em">Signed in. You can close this tab and return to the terminal.</body>`;
 function waitForLoopbackCode(o) {
+  const fix = o.fix ?? "admobctl setup login --yes";
   let resolveReady;
   let rejectReady;
   const ready = new Promise((resolve, reject) => {
@@ -11082,14 +11091,14 @@ function waitForLoopbackCode(o) {
       };
       if (!got && !err) return void res.writeHead(404).end();
       if (url2.searchParams.get("state") !== o.state) {
-        return finish(400, "State mismatch.", () => reject(new AdmobctlError("AUTH_NO_CREDENTIALS", "OAuth state mismatch; login aborted.")));
+        return finish(400, "State mismatch.", () => reject(new AdmobctlError("AUTH_NO_CREDENTIALS", "OAuth state mismatch; login aborted.", { fix })));
       }
-      if (err) return finish(400, `Login failed: ${err}`, () => reject(new AdmobctlError("AUTH_NO_CREDENTIALS", `Google returned an error: ${err}`)));
+      if (err) return finish(400, `Login failed: ${err}`, () => reject(new AdmobctlError("AUTH_NO_CREDENTIALS", `Google returned an error: ${err}`, { fix })));
       finish(200, DONE_PAGE, () => resolve(got));
     });
     const timer = setTimeout(() => {
       server.close();
-      reject(new AdmobctlError("AUTH_NO_CREDENTIALS", "Timed out waiting for the browser login.", { fix: "admobctl auth login" }));
+      reject(new AdmobctlError("AUTH_NO_CREDENTIALS", "Timed out waiting for the browser login.", { fix }));
     }, o.timeoutMs ?? 3e5);
     server.listen(0, "127.0.0.1", () => {
       const addr = server.address();
@@ -11100,7 +11109,7 @@ function waitForLoopbackCode(o) {
       clearTimeout(timer);
       const e = new AdmobctlError("AUTH_NO_CREDENTIALS", `Could not listen on 127.0.0.1 for Google's sign-in redirect: ${err.message}`, {
         cause: err,
-        fix: "admobctl auth login"
+        fix
       });
       rejectReady(e);
       reject(e);
@@ -11127,7 +11136,7 @@ function tokenError(json2, status, grantType, loginFix) {
   if (status === 400 || status === 401 || json2.error) {
     return new AdmobctlError("AUTH_NO_CREDENTIALS", `Google token endpoint error: ${msg}`, {
       status,
-      fix: "Check the OAuth client ID/secret (a Desktop app client in Google Cloud Console), then: admobctl auth login"
+      fix: "Check the OAuth client ID and secret (a Desktop app client in Google Cloud Console \u2192 APIs & Services \u2192 Credentials), then sign in again with admobctl auth login and that client's --client-id and --client-secret."
     });
   }
   return new AdmobctlError("API_ERROR", `Google token endpoint error: HTTP ${status}`, { status, fix: "Wait a minute and retry." });
@@ -11155,10 +11164,11 @@ async function exchangeCode(o, doFetch = fetch, sleep) {
     redirect_uri: o.redirectUri
   };
   if (o.clientSecret) params.client_secret = o.clientSecret;
-  const t = await postToken(params, { fetch: doFetch, sleep }, "admobctl auth login");
+  const fix = o.fix ?? "admobctl setup login --yes";
+  const t = await postToken(params, { fetch: doFetch, sleep }, fix);
   if (!t.refresh_token) {
     throw new AdmobctlError("AUTH_NO_CREDENTIALS", "Google did not return a refresh token.", {
-      fix: "Remove admobctl's access at https://myaccount.google.com/permissions and run admobctl auth login again."
+      fix: `Remove admobctl's access at https://myaccount.google.com/permissions, then run ${fix}`
     });
   }
   return { refreshToken: t.refresh_token, accessToken: t.access_token, scope: t.scope };
@@ -11177,8 +11187,9 @@ var OAuthTokenProvider = class {
   deps;
   mode = "oauth";
   cached;
+  /** Sign in again with the profile's saved client and features (`auth login` alone would ask for read access only). */
   loginFix() {
-    return `admobctl auth login --client-id <id>${this.deps.profile === "default" ? "" : ` --profile ${this.deps.profile}`}`;
+    return profileCommand("admobctl setup login --yes", this.deps.profile);
   }
   async stored() {
     const raw = await this.deps.store.get(this.deps.profile);
@@ -11212,7 +11223,7 @@ var OAuthTokenProvider = class {
     const s = await this.stored();
     const params = { grant_type: "refresh_token", refresh_token: s.refreshToken, client_id: s.clientId };
     if (s.clientSecret) params.client_secret = s.clientSecret;
-    const t = await postToken(params, { fetch: this.deps.fetch, sleep: this.deps.sleep }, "admobctl auth login");
+    const t = await postToken(params, { fetch: this.deps.fetch, sleep: this.deps.sleep }, this.loginFix());
     if (!t.access_token) throw new AdmobctlError("AUTH_NO_CREDENTIALS", "Google returned no access token.", { fix: this.loginFix() });
     this.cached = { token: t.access_token, expiresAt: now + ((t.expires_in ?? 3600) - 60) * 1e3 };
     return t.access_token;
@@ -11246,7 +11257,10 @@ async function fetchTokenInfo(token, doFetch = fetch, sleep) {
 }
 async function runDoctor(d) {
   const checks = await runChecks(d);
-  for (const c of checks) if (c.fix?.startsWith("admobctl ")) c.fix_command = c.fix.split("  (")[0];
+  for (const c of checks) {
+    const command = c.fix?.split("  (")[0];
+    if (command?.startsWith("admobctl ") && !/<[^>]*>/.test(command)) c.fix_command = command;
+  }
   return checks;
 }
 async function runChecks(d) {
@@ -11570,14 +11584,6 @@ function setProfileValue(config2, profile, key, value) {
   throw usageError(`Unknown config key "${key}". Settable keys: ${SETTABLE_KEYS.join(", ")}`);
 }
 
-// src/core/setup/commands.ts
-function profileCommand(command, profile, configuredDefault = "default") {
-  if (profile === "default" && configuredDefault === "default") return command;
-  if (/--profile(?:[=\s]|$)/.test(command)) return command;
-  const quoted = /^[A-Za-z0-9._-]+$/.test(profile) ? profile : `'${profile.replace(/'/g, "'\\''")}'`;
-  return command.replace(/\badmobctl /, () => `admobctl --profile ${quoted} `);
-}
-
 // src/core/setup/status.ts
 async function setupStatus(svc, deps = {}) {
   const tp = svc.tokenProvider;
@@ -11831,10 +11837,15 @@ function systemBrowser(exec2 = exec) {
     await exec2(cmd, args, { background: true }).catch(() => void 0);
   };
 }
+function authLoginCommand(o) {
+  const id = /^[A-Za-z0-9._-]+$/.test(o.clientId) ? o.clientId : `'${o.clientId.replace(/'/g, "'\\''")}'`;
+  return `admobctl auth login --client-id ${id}${o.write ? " --write" : ""}${o.payments ? " --payments" : ""}${o.cloudPlatform ? " --cloud-platform" : ""}`;
+}
 async function login(o) {
   const pkce = createPkce();
   const state = randomBytes2(16).toString("hex");
-  const wait = waitForLoopbackCode({ state, timeoutMs: o.timeoutMs });
+  const fix = `${authLoginCommand(o)}${o.clientSecret ? "  (with --client-secret too if you passed it)" : ""}`;
+  const wait = waitForLoopbackCode({ state, timeoutMs: o.timeoutMs, fix });
   const { redirectUri } = await wait.ready;
   const url2 = buildAuthUrl({ clientId: o.clientId, redirectUri, pkce, state, write: o.write, payments: o.payments, cloudPlatform: o.cloudPlatform });
   o.print(`Opening your browser to sign in to Google. If it does not open, visit:
@@ -11845,13 +11856,15 @@ async function login(o) {
   const open2 = o.openBrowser ?? systemBrowser();
   void Promise.resolve().then(() => open2(url2)).catch(() => void 0);
   const code2 = await wait.code;
-  const t = await exchangeCode({ clientId: o.clientId, clientSecret: o.clientSecret, code: code2, verifier: pkce.verifier, redirectUri }, o.fetch);
+  const t = await exchangeCode({ clientId: o.clientId, clientSecret: o.clientSecret, code: code2, verifier: pkce.verifier, redirectUri, fix }, o.fetch);
   const stored = { clientId: o.clientId, refreshToken: t.refreshToken };
   if (o.clientSecret) stored.clientSecret = o.clientSecret;
   await o.store.set(o.profile, JSON.stringify({ clientId: stored.clientId, clientSecret: stored.clientSecret, refreshToken: stored.refreshToken }));
   const cfg = loadConfig(o.configDir);
   setProfileValue(cfg, o.profile, "oauthClientId", o.clientId);
   setProfileValue(cfg, o.profile, "authMode", "oauth");
+  const requested = ["read", ...o.write ? ["write"] : [], ...o.payments ? ["payments"] : []];
+  setProfileValue(cfg, o.profile, "features", (t.scope ? featuresFromScopes(t.scope.split(" ")) : requested).join(","));
   saveConfig(o.configDir, cfg);
   return { profile: o.profile, scope: t.scope };
 }
@@ -14620,7 +14633,11 @@ var AdmobService = class _AdmobService {
       const wanted = this.accountOverride?.replace(/^accounts\//, "");
       if (wanted) {
         const hit = accounts.find((a) => a.publisherId === wanted);
-        if (!hit) throw new AdmobctlError("NOT_FOUND", `Account ${wanted} is not accessible. Accessible accounts: ${ids}`);
+        if (!hit) {
+          throw new AdmobctlError("NOT_FOUND", `Account ${wanted} is not accessible. Accessible accounts: ${ids}`, {
+            fix: "admobctl accounts list  (then set the account to use with admobctl config set account, or pass --account)"
+          });
+        }
         return hit;
       }
       if (accounts.length === 1) return accounts[0];
@@ -14630,7 +14647,7 @@ var AdmobService = class _AdmobService {
         });
       }
       throw new AdmobctlError("USAGE", `Several AdMob accounts are accessible (${ids}). Pick one.`, {
-        fix: "admobctl config set account <pub-\u2026>  (or pass --account)"
+        fix: "admobctl accounts list  (then set the one to use with admobctl config set account, or pass --account)"
       });
     });
   }
@@ -15871,7 +15888,7 @@ function buildProgram(io) {
     const clientId = o.clientId ?? resolveProfile(loadConfig(dir()), g(cmd).profile).oauthClientId;
     if (!clientId) {
       throw new AdmobctlError("USAGE", "An OAuth client ID is required.", {
-        fix: "Create a Desktop app OAuth client in Google Cloud Console (APIs & Services \u2192 Credentials), then: admobctl auth login --client-id <id> --client-secret <secret>"
+        fix: "Create a Desktop app OAuth client in Google Cloud Console (APIs & Services \u2192 Credentials), then run admobctl auth login with its --client-id and --client-secret."
       });
     }
     const store2 = defaultSecretStore(dir(), io.service?.exec);

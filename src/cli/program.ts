@@ -208,7 +208,7 @@ export function buildProgram(io: CliIO): Command {
     const clientId = o.clientId ?? resolveProfile(loadConfig(dir()), g(cmd).profile).oauthClientId;
     if (!clientId) {
       throw new AdmobctlError("USAGE", "An OAuth client ID is required.", {
-        fix: "Create a Desktop app OAuth client in Google Cloud Console (APIs & Services → Credentials), then: admobctl auth login --client-id <id> --client-secret <secret>",
+        fix: "Create a Desktop app OAuth client in Google Cloud Console (APIs & Services → Credentials), then run admobctl auth login with its --client-id and --client-secret.",
       });
     }
     const store = defaultSecretStore(dir(), io.service?.exec);
