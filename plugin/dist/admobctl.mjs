@@ -14861,14 +14861,28 @@ function cell(v) {
   if (Array.isArray(v)) return v.join(", ");
   return String(v);
 }
+var graphemes = new Intl.Segmenter();
+var WIDE = /^[\u1100-\u115f\u2e80-\u303e\u3041-\u33ff\u3400-\u4dbf\u4e00-\u9fff\ua000-\ua4cf\ua960-\ua97f\uac00-\ud7a3\uf900-\ufaff\ufe10-\ufe19\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6\u{1b000}-\u{1b2ff}\u{20000}-\u{3fffd}]/u;
+function displayWidth(s) {
+  if (/^[\x20-\x7e]*$/.test(s)) return s.length;
+  let width = 0;
+  for (const { segment } of graphemes.segment(s)) {
+    if (/^[\p{Mn}\p{Me}\p{Cf}\p{Cc}]+$/u.test(segment)) continue;
+    width += new RegExp("\\p{Emoji_Presentation}|\\ufe0f", "u").test(segment) || WIDE.test(segment) ? 2 : 1;
+  }
+  return width;
+}
 function renderTable({ columns, rows, footer = [] }, notes) {
   const lines = [];
   if (rows.length === 0) lines.push("(no rows)");
   else {
     const grid = rows.map((r) => columns.map((c) => cell(r[c.key])));
     const foot = footer.map((r) => columns.map((c) => cell(r[c.key])));
-    const widths = columns.map((c, i) => Math.max(c.label.length, ...[...grid, ...foot].map((g) => g[i].length)));
-    const fmt = (vals) => vals.map((v, i) => columns[i].align === "right" ? v.padStart(widths[i]) : v.padEnd(widths[i])).join("  ").trimEnd();
+    const widths = columns.map((c, i) => Math.max(displayWidth(c.label), ...[...grid, ...foot].map((g) => displayWidth(g[i]))));
+    const fmt = (vals) => vals.map((v, i) => {
+      const pad = " ".repeat(Math.max(0, widths[i] - displayWidth(v)));
+      return columns[i].align === "right" ? pad + v : v + pad;
+    }).join("  ").trimEnd();
     lines.push(fmt(columns.map((c) => c.label)));
     lines.push(widths.map((w) => "\u2500".repeat(w)).join("  "));
     for (const g of grid) lines.push(fmt(g));
@@ -14891,7 +14905,13 @@ function renderCsv({ columns, rows }) {
 `;
 }
 function mdEscape(v) {
-  return v.replace(/\|/g, "\\|").replace(/\n/g, " ");
+  return v.replace(/\|/g, "\\|").replace(/\r\n|\r|\n/g, " ");
+}
+function mdNote(note) {
+  const lines = note.split(/\r\n|\r|\n/);
+  if (lines.length === 1) return [`> ${note}`];
+  const fence = "`".repeat(Math.max(3, ...[...note.matchAll(/`+/g)].map((m) => m[0].length + 1)));
+  return [fence, ...lines, fence].map((l) => l ? `> ${l}` : ">");
 }
 function renderMarkdown({ columns, rows, footer = [] }, notes) {
   const bold = (v) => v ? `**${v}**` : v;
@@ -14901,7 +14921,7 @@ function renderMarkdown({ columns, rows, footer = [] }, notes) {
     ...rows.map((r) => `| ${columns.map((c) => mdEscape(cell(r[c.key]))).join(" | ")} |`),
     ...footer.map((r) => `| ${columns.map((c) => bold(mdEscape(cell(r[c.key])))).join(" | ")} |`)
   ];
-  if (notes.length) lines.push("", ...notes.map((n) => `> ${n}`));
+  if (notes.length) lines.push("", ...notes.flatMap(mdNote));
   return `${lines.join("\n")}
 `;
 }

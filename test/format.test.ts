@@ -48,6 +48,55 @@ describe("render", () => {
     expect(render(withTotal, "csv")).not.toContain("Total");
   });
 
+  it("table pads by display width, so wide, combining and emoji characters keep the columns aligned", () => {
+    const wide: Output = {
+      data: {},
+      table: {
+        columns: [
+          { key: "app", label: "App" },
+          { key: "earnings", label: "Earnings", align: "right" },
+        ],
+        rows: [
+          { app: "クイズゲーム", earnings: "1.00" }, // 6 wide characters: 12 columns
+          { app: "Café", earnings: "2.00" }, // e + combining accent: 4 columns
+          { app: "🎮 Ｇａｍｅ", earnings: "3.00" }, // emoji, space, fullwidth letters: 11 columns
+          { app: "quiz-ios", earnings: "60.13" },
+        ],
+      },
+    };
+    expect(render(wide, "table").split("\n").slice(0, 6)).toEqual([
+      `App${" ".repeat(11)}Earnings`,
+      `${"─".repeat(12)}  ${"─".repeat(8)}`,
+      `クイズゲーム${" ".repeat(6)}1.00`,
+      `Café${" ".repeat(14)}2.00`,
+      `🎮 Ｇａｍｅ${" ".repeat(7)}3.00`,
+      `quiz-ios${" ".repeat(9)}60.13`,
+    ]);
+  });
+
+  it("markdown keeps every line of a note inside the blockquote, multi-line notes in a code block", () => {
+    const body = JSON.stringify({ displayName: "Quiz ``` banner", state: "ENABLED" }, null, 2);
+    const md = render({ ...out, notes: ["POST https://admob.googleapis.com/v1beta/x", body, "a\rb"] }, "markdown");
+    expect(md.slice(md.indexOf("\n\n") + 2).trimEnd().split("\n")).toEqual([
+      "> POST https://admob.googleapis.com/v1beta/x",
+      "> ````",
+      "> {",
+      '>   "displayName": "Quiz ``` banner",',
+      '>   "state": "ENABLED"',
+      "> }",
+      "> ````",
+      "> ```",
+      "> a",
+      "> b",
+      "> ```",
+    ]);
+  });
+
+  it("markdown turns CR and LF in cells into spaces", () => {
+    const md = render({ ...out, table: { ...out.table, rows: [{ app: "a\r\nb\rc", earnings: "1" }] } }, "markdown");
+    expect(md).toContain("| a b c | 1 |");
+  });
+
   it("table prints a friendly message for no rows", () => {
     expect(render({ ...out, table: { ...out.table, rows: [] } }, "table")).toContain("(no rows)");
   });
