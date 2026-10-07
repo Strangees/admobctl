@@ -88,3 +88,16 @@ describe("plugin folder", () => {
     expect(read("plugin/README.md")).toContain("## Data and privacy");
   });
 });
+
+describe("dependency updates", () => {
+  it("group exactly esbuild and the packages in the bundle apart from the dev tools", () => {
+    // esbuild marks each bundled module with a `// node_modules/<package>/…` comment.
+    const bundled = new Set([...read("plugin/dist/admobctl.mjs").matchAll(/^\/\/ node_modules\/((?:@[^/]+\/)?[^/]+)\//gm)].map((m) => m[1]));
+    const direct = Object.keys((JSON.parse(read("package.json")) as { devDependencies: Record<string, string> }).devDependencies);
+    const expected = [...direct.filter((d) => bundled.has(d)), "esbuild"].sort();
+    const yml = read(".github/dependabot.yml");
+    const list = (re: RegExp) => (JSON.parse(re.exec(yml)?.[1] ?? "null") as string[] | null)?.slice().sort();
+    expect(list(/^ +bundled:\n +patterns: (\[.*\])$/m)).toEqual(expected);
+    expect(list(/^ +dev-tools:\n +patterns: \["\*"\]\n +exclude-patterns: (\[.*\])$/m)).toEqual(expected);
+  });
+});

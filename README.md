@@ -319,6 +319,21 @@ Commit the bundle and `plugin/evals/mocks/` with the version bump; CI fails when
 When CI passes on `main`, it tags `v<version>` and publishes a GitHub release with the bundle and its checksum.
 A push that does not change the version releases nothing.
 
+Dependabot ([.github/dependabot.yml](.github/dependabot.yml)) opens weekly grouped updates. The `dev-tools` group
+(TypeScript, vitest, `@types/node`) passes CI as it is. The `bundled` group holds esbuild and the packages it builds
+into the bundle (commander, zod, the MCP SDK, ajv). Dependabot does not rebuild the bundle, so when it changes, CI
+fails "Committed bundle is up to date" until you finish the pull request:
+
+```bash
+gh pr checkout <number>
+npm ci && npm run check                       # rebuilds plugin/dist/admobctl.mjs
+npm run eval:mocks                            # in case the tool schemas changed
+git add plugin/dist plugin/evals/mocks && git commit -m "Rebuild the bundle" && git push
+```
+
+The new packages reach users only with a release, so bump the version as well when they should get them (a security
+fix, say).
+
 ## License
 
 MIT, except the Revenue Journal specification text in [spec/](spec/), which is CC BY 4.0; the spec's schema, examples

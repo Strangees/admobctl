@@ -5,8 +5,14 @@ updates:
     schedule:
       interval: weekly
     groups:
-      dev-dependencies:
+      # esbuild and the packages it puts into plugin/dist/admobctl.mjs (ajv comes in through the MCP SDK). Dependabot
+      # does not rebuild the bundle, so when it changes, CI fails until someone does (README, "CI and releases").
+      bundled:
+        patterns: ["@modelcontextprotocol/sdk", "ajv", "ajv-formats", "commander", "esbuild", "zod"]
+      # Development tools only (typescript, vitest, @types/node): CI passes on these PRs as they are.
+      dev-tools:
         patterns: ["*"]
+        exclude-patterns: ["@modelcontextprotocol/sdk", "ajv", "ajv-formats", "commander", "esbuild", "zod"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
