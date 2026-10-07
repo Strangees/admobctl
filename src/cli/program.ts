@@ -5,7 +5,7 @@ import { exec as defaultExec } from "../core/exec.js";
 import { CloudClient } from "../core/setup/cloud.js";
 import { parseFeatures } from "../core/setup/features.js";
 import { setupStatus } from "../core/setup/status.js";
-import { profileCommand } from "../core/setup/commands.js";
+import { cloudScopeFix, profileCommand } from "../core/setup/commands.js";
 import {
   applyApis,
   applyLogin,
@@ -236,7 +236,12 @@ export function buildProgram(io: CliIO): Command {
     const tp = s.tokenProvider;
     return {
       svc: s,
-      cloud: new CloudClient({ getToken: () => tp.getToken(), fetch: io.service?.fetch, sleep: io.service?.sleep }),
+      cloud: new CloudClient({
+        getToken: () => tp.getToken(),
+        fetch: io.service?.fetch,
+        sleep: io.service?.sleep,
+        scopeFix: cloudScopeFix(tp.mode, parseFeatures(s.profile.features)),
+      }),
       exec: io.service?.exec ?? defaultExec,
       interactive: io.stdinIsTTY ?? false,
       tokenInfo: async () => fetchTokenInfo(await tp.getToken(), io.service?.fetch, io.service?.sleep),

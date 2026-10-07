@@ -113,10 +113,41 @@ describe("applyLogin", () => {
     await expect(applyLogin(w.ctx, await planLogin(w.ctx, []))).rejects.toMatchObject({ code: "AUTH_NO_CREDENTIALS", message: expect.stringContaining("cloud.google.com/sdk") });
   });
 
-  it("uses admobctl OAuth in OAuth mode", async () => {
+  it("uses admobctl OAuth in OAuth mode, without cloud-platform when no setup step needs it", async () => {
     const w = world({ mode: "oauth", scopes: [S("admob.readonly")] });
-    await applyLogin(w.ctx, await planLogin(w.ctx, ["payments"]));
+    const plan = await planLogin(w.ctx, ["payments"]);
+    expect(plan.scopes).toEqual([S("admob.readonly"), S("adsense.readonly")]);
+    await applyLogin(w.ctx, plan);
+    expect(w.oauthLogins).toEqual([{ write: false, payments: true, cloudPlatform: false }]);
+  });
+
+  it("asks an OAuth sign-in for cloud-platform when a quota project is set (status and setup apis use Service Usage)", async () => {
+    const w = world({ mode: "oauth", scopes: [S("admob.readonly")], profile: { quotaProject: "example-a" } });
+    const plan = await planLogin(w.ctx, ["payments"]);
+    expect(plan.scopes).toContain(S("cloud-platform"));
+    expect(plan.summary.join("\n")).toContain("admobctl auth login --payments --cloud-platform");
+    await applyLogin(w.ctx, plan);
     expect(w.oauthLogins).toEqual([{ write: false, payments: true, cloudPlatform: true }]);
+  });
+
+  it("an OAuth sign-in with every feature scope is done without cloud-platform", async () => {
+    const w = world({ mode: "oauth", scopes: [S("admob.readonly")] });
+    expect((await planLogin(w.ctx, ["read"])).status).toBe("done");
+  });
+
+  it("guided OAuth setup with --project asks for cloud-platform and repeats itself as the next command", async () => {
+    const w = world({ mode: "oauth", scopes: [S("admob.readonly")], isTTY: false });
+    const r = await runSetup(w.ctx, { features: ["payments"], project: "example-a", yes: true });
+    const login = r.steps[0] as Awaited<ReturnType<typeof planLogin>>;
+    expect(login.scopes).toContain(S("cloud-platform"));
+    expect(r.next_command).toBe("admobctl setup --features payments --project example-a --yes");
+    expect(w.oauthLogins).toEqual([]);
+  });
+
+  it("guided OAuth setup with --project signs in once, with cloud-platform, at a terminal", async () => {
+    const w = world({ mode: "oauth", scopes: [S("admob.readonly")] });
+    await runSetup(w.ctx, { features: [], project: "example-a", yes: true });
+    expect(w.oauthLogins).toEqual([{ write: false, payments: false, cloudPlatform: true }]);
   });
 });
 
@@ -307,7 +338,8 @@ it("manual OAuth hints also keep the named profile", async () => {
   saveConfig(w.dir, cfg);
   w.ctx.svc = AdmobService.create({ profile: "work" }, { configDir: w.dir, tokenProvider: w.ctx.svc.tokenProvider });
   const login = await planLogin(w.ctx, ["payments"]);
-  expect(login.summary.join(" ")).toContain("admobctl --profile work auth login --payments --cloud-platform");
+  expect(login.summary.join(" ")).toContain("admobctl --profile work auth login --payments");
+  expect(login.summary.join(" ")).not.toContain("--cloud-platform");
   const apis = await planApis(w.ctx, ["read"]);
   expect(apis.summary.join(" ")).toContain("admobctl --profile work setup status");
   expect(apis.summary.join(" ")).toContain("admobctl --profile work setup apis --project");

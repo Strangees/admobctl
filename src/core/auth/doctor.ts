@@ -138,7 +138,8 @@ async function runChecks(d: DoctorDeps): Promise<Check[]> {
     );
     if (d.features) {
       const missing = d.features.filter((f) => !grantedFeatures.includes(f));
-      const missingCloudPlatform = !info.scopes.includes(CLOUD_PLATFORM_SCOPE);
+      // gcloud's sign-in always includes cloud-platform; an own OAuth client needs it only for a quota project's APIs.
+      const missingCloudPlatform = (d.mode === "adc" || Boolean(d.quotaProject)) && !info.scopes.includes(CLOUD_PLATFORM_SCOPE);
       const missingScopes = [...missing, ...(missingCloudPlatform ? ["cloud-platform"] : [])];
       checks.push(
         missingScopes.length

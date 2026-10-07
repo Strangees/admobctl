@@ -10867,8 +10867,8 @@ function featuresFromScopes(scopes) {
 function mergeFeatures(...lists) {
   return sorted(lists.flat());
 }
-function scopesFor(features) {
-  return [...sorted(features).flatMap((f) => FEATURES[f].scopes), CLOUD_PLATFORM_SCOPE];
+function scopesFor(features, o = {}) {
+  return [...sorted(features).flatMap((f) => FEATURES[f].scopes), ...o.cloudPlatform === false ? [] : [CLOUD_PLATFORM_SCOPE]];
 }
 function apisFor(features) {
   return sorted(features).flatMap((f) => FEATURES[f].apis);
@@ -10991,6 +10991,12 @@ function profileCommand(command, profile, configuredDefault = "default") {
   if (/--profile(?:[=\s]|$)/.test(command)) return command;
   const quoted = /^[A-Za-z0-9._-]+$/.test(profile) ? profile : `'${profile.replace(/'/g, "'\\''")}'`;
   return command.replace(/\badmobctl /, () => `admobctl --profile ${quoted} `);
+}
+function oauthLoginCommand(features, cloudPlatform) {
+  return `admobctl auth login${features.includes("write") ? " --write" : ""}${features.includes("payments") ? " --payments" : ""}${cloudPlatform ? " --cloud-platform" : ""}`;
+}
+function cloudScopeFix(mode, features) {
+  return mode === "oauth" ? oauthLoginCommand(features, true) : "admobctl setup login --yes";
 }
 
 // src/core/auth/oauth.ts
@@ -11317,7 +11323,7 @@ async function runChecks(d) {
     );
     if (d.features) {
       const missing = d.features.filter((f) => !grantedFeatures.includes(f));
-      const missingCloudPlatform = !info.scopes.includes(CLOUD_PLATFORM_SCOPE);
+      const missingCloudPlatform = (d.mode === "adc" || Boolean(d.quotaProject)) && !info.scopes.includes(CLOUD_PLATFORM_SCOPE);
       const missingScopes = [...missing, ...missingCloudPlatform ? ["cloud-platform"] : []];
       checks.push(
         missingScopes.length ? {
@@ -11615,7 +11621,7 @@ async function setupStatus(svc, deps = {}) {
   const tp = svc.tokenProvider;
   const features = parseFeatures(svc.profile.features);
   const quotaProject = svc.profile.quotaProject ?? tp.quotaProject();
-  const cloud = new CloudClient({ getToken: () => tp.getToken(), fetch: deps.fetch });
+  const cloud = new CloudClient({ getToken: () => tp.getToken(), fetch: deps.fetch, scopeFix: cloudScopeFix(tp.mode, features) });
   const checks = await runDoctor({
     mode: tp.mode,
     checkCredentials: () => tp.checkCredentials?.(),
@@ -11715,7 +11721,8 @@ function store(ctx, key, value) {
   setProfileValue(cfg, ctx.svc.profile.name, key, value);
   saveConfig(ctx.svc.configDir, cfg);
 }
-async function planLogin(ctx, requested) {
+var needsCloudPlatform = (ctx, project) => ctx.svc.tokenProvider.mode === "adc" || Boolean(project ?? profileNow(ctx).quotaProject);
+async function planLogin(ctx, requested, o = {}) {
   try {
     await ctx.svc.tokenProvider.checkCredentials?.();
   } catch (err) {
@@ -11728,7 +11735,8 @@ async function planLogin(ctx, requested) {
     granted = void 0;
   }
   const features = mergeFeatures(["read"], profileNow(ctx).features ?? [], granted ? featuresFromScopes(granted) : [], requested);
-  const scopes = scopesFor(features);
+  const cloudPlatform = needsCloudPlatform(ctx, o.project);
+  const scopes = scopesFor(features, { cloudPlatform });
   if (granted && scopes.every((s) => granted.includes(s))) {
     return { step: "login", status: "done", features, scopes, summary: [`Signed in with the scopes for: ${features.join(", ")}`] };
   }
@@ -11739,14 +11747,16 @@ async function planLogin(ctx, requested) {
       fix: blocked
     });
   }
-  const how = ctx.svc.tokenProvider.mode === "oauth" ? `Sign in with your own OAuth client: ${commandFor(ctx, `admobctl auth login${features.includes("write") ? " --write" : ""}${features.includes("payments") ? " --payments" : ""} --cloud-platform`)}` : `Sign in with gcloud (it opens your browser): ${loginCommand(scopes)}`;
+  const oauth = ctx.svc.tokenProvider.mode === "oauth";
+  const how = oauth ? `Sign in with your own OAuth client: ${commandFor(ctx, oauthLoginCommand(features, cloudPlatform))}` : `Sign in with gcloud (it opens your browser): ${loginCommand(scopes)}`;
+  const next = oauth && o.project && !profileNow(ctx).quotaProject ? `admobctl setup${featuresFlag(features)} --project ${o.project} --yes` : `admobctl setup login${featuresFlag(features)} --yes`;
   return {
     step: "login",
     status: "planned",
     features,
     scopes,
     summary: [lacking, how, ...ctx.svc.tokenProvider.mode === "adc" ? [`Requires Google Cloud CLI (gcloud): ${GCLOUD_INSTALL_URL}`] : []],
-    next_command: commandFor(ctx, `admobctl setup login${featuresFlag(features)} --yes`)
+    next_command: commandFor(ctx, next)
   };
 }
 async function applyLogin(ctx, plan) {
@@ -11758,7 +11768,11 @@ async function applyLogin(ctx, plan) {
     }
     if (ctx.svc.tokenProvider.mode === "oauth") {
       if (!ctx.oauthLogin) throw usageError("OAuth sign-in is only available from the CLI: admobctl setup login --yes");
-      await ctx.oauthLogin({ write: plan.features.includes("write"), payments: plan.features.includes("payments"), cloudPlatform: true });
+      await ctx.oauthLogin({
+        write: plan.features.includes("write"),
+        payments: plan.features.includes("payments"),
+        cloudPlatform: plan.scopes.includes(CLOUD_PLATFORM_SCOPE)
+      });
     } else {
       if (!await gcloudInstalled(ctx.exec)) {
         throw new AdmobctlError("AUTH_NO_CREDENTIALS", `The Google Cloud CLI (gcloud) is needed for the sign-in. Install it from ${GCLOUD_INSTALL_URL}, then run the fix.`, {
@@ -11846,7 +11860,7 @@ async function applyApis(ctx, plan) {
 async function runSetup(ctx, o) {
   const steps = [];
   const stop = (s) => ({ steps: [...steps, s], ...s.next_command ? { next_command: s.next_command } : {} });
-  const login2 = await planLogin(ctx, o.features);
+  const login2 = await planLogin(ctx, o.features, { project: o.project });
   if (login2.status === "planned") {
     if (!o.yes) return stop(login2);
     if (!ctx.interactive) {
@@ -15970,7 +15984,12 @@ function buildProgram(io) {
     const tp = s.tokenProvider;
     return {
       svc: s,
-      cloud: new CloudClient({ getToken: () => tp.getToken(), fetch: io.service?.fetch, sleep: io.service?.sleep }),
+      cloud: new CloudClient({
+        getToken: () => tp.getToken(),
+        fetch: io.service?.fetch,
+        sleep: io.service?.sleep,
+        scopeFix: cloudScopeFix(tp.mode, parseFeatures(s.profile.features))
+      }),
       exec: io.service?.exec ?? exec,
       interactive: io.stdinIsTTY ?? false,
       tokenInfo: async () => fetchTokenInfo(await tp.getToken(), io.service?.fetch, io.service?.sleep),

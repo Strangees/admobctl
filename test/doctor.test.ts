@@ -149,6 +149,11 @@ describe("runDoctor setup checks", () => {
     expect(checks.features!.fix).toBe("admobctl setup login --features payments --yes");
   });
 
+  it("does not ask an OAuth sign-in for cloud-platform when no quota project needs it", async () => {
+    const checks = byId(await runDoctor({ ...okDeps(), mode: "oauth", quotaProject: undefined, features: ["read", "payments"], tokenInfo: async () => ({ scopes: [READ, ADSENSE] }) }));
+    expect(checks.features).toMatchObject({ status: "ok" });
+  });
+
   it("does not claim OAuth client APIs are enabled when Service Usage state is unavailable", async () => {
     const checks = byId(await runDoctor({ ...okDeps(), mode: "oauth", features: ["read", "payments"] }));
     expect(checks.apis!.status).toBe("skip");

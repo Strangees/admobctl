@@ -17,10 +17,10 @@ vi.mock("../src/core/auth/oauth.js", async (importOriginal) => ({
   }),
 }));
 
-it("setup OAuth reuses the saved Desktop client secret and requests the setup scope", async () => {
+it("setup OAuth reuses the saved Desktop client secret and requests the setup scope when a quota project needs it", async () => {
   vi.stubEnv("ADMOBCTL_OAUTH_CLIENT_SECRET", undefined);
   const dir = mkdtempSync(join(tmpdir(), "admobctl-oauth-cli-"));
-  saveConfig(dir, { profiles: { default: { authMode: "oauth", oauthClientId: "example-client" } } });
+  saveConfig(dir, { profiles: { default: { authMode: "oauth", oauthClientId: "example-client", quotaProject: "example-project" } } });
   const f = fakeFetch({ "POST /tokeninfo": () => jsonResponse({ scope: "https://www.googleapis.com/auth/admob.readonly" }) });
   let stderr = "";
   const code = await run(["node", "admobctl", "setup", "login", "--yes"], {
@@ -53,7 +53,7 @@ it("after an expired OAuth login, setup login --yes signs in again with the save
   });
   vi.unstubAllEnvs();
   expect(code, stderr).toBe(0);
-  expect(login).toHaveBeenCalledWith(expect.objectContaining({ clientId: "example-client", clientSecret: "example-secret", write: true, payments: true }));
+  expect(login).toHaveBeenCalledWith(expect.objectContaining({ clientId: "example-client", clientSecret: "example-secret", write: true, payments: true, cloudPlatform: false }));
 });
 
 it("asks for an OAuth client without placeholder text in the fix", async () => {

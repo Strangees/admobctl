@@ -70,3 +70,30 @@ it("gives the manual GOOGLE_APPLICATION_CREDENTIALS step instead of a setup logi
   expect(s.checks.find((c) => c.id === "features")!.fix_command).toBeUndefined();
   expect(s.next_command).toBeUndefined();
 });
+
+it("an OAuth profile with a quota project but no cloud-platform gets the auth login that adds it", async () => {
+  const scopeError = {
+    error: {
+      code: 403,
+      message: "Request had insufficient authentication scopes.",
+      details: [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "ACCESS_TOKEN_SCOPE_INSUFFICIENT" }],
+    },
+  };
+  const dir = mkdtempSync(join(tmpdir(), "admobctl-status-"));
+  saveConfig(dir, { profiles: { default: { authMode: "oauth", features: ["read", "payments"], quotaProject: "example-project" } } });
+  const f = fakeFetch({
+    "POST /tokeninfo": () => jsonResponse({ scope: "https://www.googleapis.com/auth/admob.readonly https://www.googleapis.com/auth/adsense.readonly" }),
+    "GET /v1/accounts?": () => jsonResponse(fixture("accounts.json")),
+    "GET /apps": (c) => jsonResponse(fixture(c.url.includes("pageToken=page2") ? "apps-page2.json" : "apps-page1.json")),
+    "GET /adSources": () => jsonResponse(fixture("ad-sources.json")),
+    "GET /mediationGroups": () => jsonResponse(fixture("mediation-groups.json")),
+    "GET /services/": () => jsonResponse(scopeError, 403),
+  });
+  const tp: TokenProvider = { mode: "oauth", getToken: async () => "t", quotaProject: () => undefined, checkCredentials: () => ({}) };
+  const svc = AdmobService.create({}, { configDir: dir, tokenProvider: tp, fetch: f.fetch, sleep: noSleep });
+  const s = await setupStatus(svc, { fetch: f.fetch });
+  const apis = s.checks.find((c) => c.id === "apis")!;
+  expect(apis).toMatchObject({ status: "fail", fix_command: "admobctl auth login --payments --cloud-platform" });
+  expect(apis.summary).toMatch(/cloud-platform/);
+  expect(s.checks.find((c) => c.id === "features")).toMatchObject({ status: "warn", fix_command: "admobctl setup login --features payments --yes" });
+});

@@ -1,11 +1,11 @@
 import { appendAudit } from "../audit.js";
 import type { TokenInfo } from "../auth/doctor.js";
 import { loadConfig, resolveProfile, saveConfig, setProfileValue } from "../config.js";
-import { AdmobctlError, usageError } from "../errors.js";
+import { AdmobctlError, CLOUD_PLATFORM_SCOPE, usageError } from "../errors.js";
 import type { Exec } from "../exec.js";
 import type { AdmobService } from "../service.js";
 import type { CloudClient, CloudProject } from "./cloud.js";
-import { profileCommand } from "./commands.js";
+import { oauthLoginCommand, profileCommand } from "./commands.js";
 import { apisFor, featuresFlag, featuresFromScopes, mergeFeatures, scopesFor, type Feature } from "./features.js";
 import { GCLOUD_INSTALL_URL, gcloudInstalled, loginCommand, runLogin } from "./gcloud.js";
 
@@ -59,8 +59,18 @@ function store(ctx: SetupContext, key: string, value: string): void {
   saveConfig(ctx.svc.configDir, cfg);
 }
 
-/** Features to set up: always read, plus stored, already granted and requested ones (a fix never drops a scope). */
-export async function planLogin(ctx: SetupContext, requested: Feature[]): Promise<LoginPlan> {
+/**
+ * cloud-platform is full access to the user's Google Cloud resources. gcloud's sign-in always needs it; an own OAuth
+ * client needs it only for the steps that call Cloud APIs: those with a quota project (or one being chosen).
+ */
+const needsCloudPlatform = (ctx: SetupContext, project?: string) =>
+  ctx.svc.tokenProvider.mode === "adc" || Boolean(project ?? profileNow(ctx).quotaProject);
+
+/**
+ * Features to set up: always read, plus stored, already granted and requested ones (a fix never drops a scope).
+ * `project` is the quota project the guided setup is about to choose.
+ */
+export async function planLogin(ctx: SetupContext, requested: Feature[], o: { project?: string } = {}): Promise<LoginPlan> {
   // A credentials problem whose fix is a manual step (credentials selected by GOOGLE_APPLICATION_CREDENTIALS, a locked
   // keychain) cannot be fixed by a browser sign-in: surface it before opening one.
   try {
@@ -75,7 +85,8 @@ export async function planLogin(ctx: SetupContext, requested: Feature[]): Promis
     granted = undefined;
   }
   const features = mergeFeatures(["read"], profileNow(ctx).features ?? [], granted ? featuresFromScopes(granted) : [], requested);
-  const scopes = scopesFor(features);
+  const cloudPlatform = needsCloudPlatform(ctx, o.project);
+  const scopes = scopesFor(features, { cloudPlatform });
   if (granted && scopes.every((s) => granted!.includes(s))) {
     return { step: "login", status: "done", features, scopes, summary: [`Signed in with the scopes for: ${features.join(", ")}`] };
   }
@@ -86,17 +97,22 @@ export async function planLogin(ctx: SetupContext, requested: Feature[]): Promis
       fix: blocked,
     });
   }
-  const how =
-    ctx.svc.tokenProvider.mode === "oauth"
-      ? `Sign in with your own OAuth client: ${commandFor(ctx, `admobctl auth login${features.includes("write") ? " --write" : ""}${features.includes("payments") ? " --payments" : ""} --cloud-platform`)}`
-      : `Sign in with gcloud (it opens your browser): ${loginCommand(scopes)}`;
+  const oauth = ctx.svc.tokenProvider.mode === "oauth";
+  const how = oauth
+    ? `Sign in with your own OAuth client: ${commandFor(ctx, oauthLoginCommand(features, cloudPlatform))}`
+    : `Sign in with gcloud (it opens your browser): ${loginCommand(scopes)}`;
+  // `setup login` alone would not ask an own OAuth client for cloud-platform before the quota project is stored.
+  const next =
+    oauth && o.project && !profileNow(ctx).quotaProject
+      ? `admobctl setup${featuresFlag(features)} --project ${o.project} --yes`
+      : `admobctl setup login${featuresFlag(features)} --yes`;
   return {
     step: "login",
     status: "planned",
     features,
     scopes,
     summary: [lacking, how, ...(ctx.svc.tokenProvider.mode === "adc" ? [`Requires Google Cloud CLI (gcloud): ${GCLOUD_INSTALL_URL}`] : [])],
-    next_command: commandFor(ctx, `admobctl setup login${featuresFlag(features)} --yes`),
+    next_command: commandFor(ctx, next),
   };
 }
 
@@ -109,7 +125,11 @@ export async function applyLogin(ctx: SetupContext, plan: LoginPlan): Promise<Lo
     }
     if (ctx.svc.tokenProvider.mode === "oauth") {
       if (!ctx.oauthLogin) throw usageError("OAuth sign-in is only available from the CLI: admobctl setup login --yes");
-      await ctx.oauthLogin({ write: plan.features.includes("write"), payments: plan.features.includes("payments"), cloudPlatform: true });
+      await ctx.oauthLogin({
+        write: plan.features.includes("write"),
+        payments: plan.features.includes("payments"),
+        cloudPlatform: plan.scopes.includes(CLOUD_PLATFORM_SCOPE),
+      });
     } else {
       if (!(await gcloudInstalled(ctx.exec))) {
         throw new AdmobctlError("AUTH_NO_CREDENTIALS", `The Google Cloud CLI (gcloud) is needed for the sign-in. Install it from ${GCLOUD_INSTALL_URL}, then run the fix.`, {
@@ -211,7 +231,7 @@ export async function runSetup(ctx: SetupContext, o: { features: Feature[]; proj
   const steps: StepResult[] = [];
   const stop = (s: StepResult): SetupRun => ({ steps: [...steps, s], ...(s.next_command ? { next_command: s.next_command } : {}) });
 
-  const login = await planLogin(ctx, o.features);
+  const login = await planLogin(ctx, o.features, { project: o.project });
   if (login.status === "planned") {
     if (!o.yes) return stop(login);
     if (!ctx.interactive) {
