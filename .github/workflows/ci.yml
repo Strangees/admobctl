@@ -34,8 +34,15 @@ jobs:
       - run: npm run typecheck
         if: matrix.node != 20
       - run: npm run build
+      # git status, not git diff: a new file nobody committed must fail too.
       - name: Committed bundle is up to date
-        run: git diff --exit-code plugin/dist/admobctl.mjs
+        run: |
+          stale="$(git status --porcelain --untracked-files=all -- plugin/dist)"
+          if [ -n "$stale" ]; then
+            echo "::error::plugin/dist does not match the build. Run npm run build and commit plugin/dist."
+            echo "$stale"
+            exit 1
+          fi
       - name: Bundle runs on this Node version
         run: node plugin/dist/admobctl.mjs --version
       - run: npm test
@@ -43,7 +50,14 @@ jobs:
       # `npm run eval` itself needs Claude credentials and is run by hand.
       - name: Committed eval mocks are up to date
         if: matrix.node == 22
-        run: npm run eval:mocks && git diff --exit-code plugin/evals/mocks
+        run: |
+          npm run eval:mocks
+          stale="$(git status --porcelain --untracked-files=all -- plugin/evals/mocks)"
+          if [ -n "$stale" ]; then
+            echo "::error::plugin/evals/mocks does not match the MCP tools. Run npm run eval:mocks and commit plugin/evals/mocks."
+            echo "$stale"
+            exit 1
+          fi
 
   # Plugins install straight from main, and `claude plugin update` only sees a change when the version changes.
   # So a release is: bump the version, merge to main. This tags it and publishes a GitHub release.

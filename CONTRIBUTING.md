@@ -42,7 +42,7 @@ into `test/fixtures/private/`, which is gitignored.
    plugin straight from git. `npm run check` rebuilds it, and CI fails when the committed bundle does not match the
    source.
 3. If you changed what an MCP tool returns, run `npm run eval:mocks` and commit `plugin/evals/mocks/`; CI checks these
-   too.
+   too. A new MCP tool also needs a mocked call in `test/gen-eval-mocks.test.ts` (a test fails until it has one).
 4. Update the README, `plugin/README.md` and `plugin/skills/` when a command, flag or MCP tool changes.
 
 Leave the version number alone: the maintainer bumps it when releasing (README, "CI and releases").
