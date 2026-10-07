@@ -21,7 +21,8 @@ There is no linter; `tsc --noEmit` (strict, `noUncheckedIndexedAccess`) covers `
 ## Rules
 
 - `src/core/` is the only place with business logic. `src/cli/` and `src/mcp/` call `AdmobService`
-  (src/core/service.ts) and must never import each other (`test/layering.test.ts` enforces it).
+  (src/core/service.ts) and must never import each other, not even through another module; `src/core/` and
+  `src/output/` import neither (`test/layering.test.ts` enforces it).
 - Money is integer micros end to end; round only in output (`formatMicros`, `microsToAmount`).
 - stdout is for command output (and the MCP protocol). All logging goes through `src/core/log.ts` → stderr; an
   interactive child process gets its stdout mapped to stderr (`src/core/exec.ts`).

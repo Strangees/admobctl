@@ -17,7 +17,8 @@ npm run check   # typecheck + bundle + tests
 ## Code layout
 
 - `src/core/` holds all business logic. `src/cli/` (the commands) and `src/mcp/` (the MCP server) both call
-  `AdmobService` in `src/core/service.ts` and never import each other; `test/layering.test.ts` enforces this.
+  `AdmobService` in `src/core/service.ts` and never import each other, not even through another module. `src/core/`
+  and `src/output/` import neither. `test/layering.test.ts` enforces this.
 - Money is integer micros end to end. Round only in output (`formatMicros`, `microsToAmount`).
 - stdout is for command output and the MCP protocol. Log through `src/core/log.ts`, which writes to stderr.
 - Every API or auth failure becomes an `AdmobctlError` with a `fix` command the user can run (`src/core/errors.ts`).
