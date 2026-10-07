@@ -53,6 +53,24 @@ describe("AdcTokenProvider", () => {
     expect(runs).toBe(2);
   });
 
+  it("shares one gcloud run between concurrent callers and does not keep a failure", async () => {
+    let runs = 0;
+    let fail = true;
+    const p = new AdcTokenProvider({
+      info: authorizedUser,
+      exec: async () => {
+        runs++;
+        return fail ? { code: 1, stdout: "", stderr: "ERROR: boom" } : { code: 0, stdout: `ya29.token-${runs}\n`, stderr: "" };
+      },
+    });
+    const failed = await Promise.allSettled([p.getToken(), p.getToken(), p.getToken()]);
+    expect(failed.map((r) => r.status)).toEqual(["rejected", "rejected", "rejected"]);
+    expect(runs).toBe(1);
+    fail = false;
+    expect(await Promise.all([p.getToken(), p.getToken(), p.getToken()])).toEqual(["ya29.token-2", "ya29.token-2", "ya29.token-2"]);
+    expect(runs).toBe(2);
+  });
+
   it("points gcloud at the same credentials file we inspected", async () => {
     let env: NodeJS.ProcessEnv | undefined;
     const p = new AdcTokenProvider({

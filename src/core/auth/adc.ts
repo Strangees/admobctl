@@ -55,6 +55,7 @@ export interface AdcDeps {
 export class AdcTokenProvider implements TokenProvider {
   readonly mode = "adc" as const;
   private cached?: { token: string; at: number };
+  private pending?: Promise<string>;
   private readonly info: () => AdcInfo | undefined;
   private readonly env: NodeJS.ProcessEnv;
   private readonly exec: Exec;
@@ -93,6 +94,12 @@ export class AdcTokenProvider implements TokenProvider {
 
   async getToken(): Promise<string> {
     if (this.cached && this.now() - this.cached.at < TOKEN_TTL_MS) return this.cached.token;
+    // Concurrent callers share one gcloud run. A failure is not kept: the next call runs gcloud again.
+    this.pending ??= this.printToken().finally(() => (this.pending = undefined));
+    return this.pending;
+  }
+
+  private async printToken(): Promise<string> {
     const info = this.checkCredentials();
     let res;
     try {

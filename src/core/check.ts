@@ -1,4 +1,5 @@
-import { addDays, formatDate, lastNDays, todayIn, type DateRange } from "./dates.js";
+import { CHECK_BASELINE } from "./config.js";
+import { addDays, formatDate, lastNDays, timeIn, todayIn, type ApiDate, type DateRange } from "./dates.js";
 import { usageError } from "./errors.js";
 import { ESTIMATE_LABEL } from "./finance.js";
 import { pct, ratio } from "./insights.js";
@@ -6,13 +7,19 @@ import { formatMicros, microsToAmount } from "./money.js";
 import type { Report } from "./report.js";
 import type { AdmobService } from "./service.js";
 
-/** A health check for cron and agents: did earnings, fill or show rate drop against the days just before? */
+/**
+ * A health check for cron and agents: did earnings, fill or show rate drop against a baseline? By default the
+ * baseline is the window's weekdays in the four weeks before, so an app with a weekly pattern does not breach on
+ * every weekly low.
+ */
 
 export interface CheckOptions {
   /** Complete days to judge, ending yesterday (default 1). */
   window?: number;
-  /** Days just before the window to compare with (default 7). */
+  /** Compare with this many days just before the window (the default, 7, for windows over 7 days). */
   baseline?: number;
+  /** Compare with the window's weekdays in this many weeks before it (the default, 4, for windows up to 7 days). */
+  baselineWeeks?: number;
   /** A drop of this fraction or more is a breach (default 0.3). */
   drop?: number;
   /** Baseline requests an app needs before it is judged (default 1000). */
@@ -20,7 +27,10 @@ export interface CheckOptions {
   app?: string;
 }
 
-export const CHECK_DEFAULTS = { window: 1, baseline: 7, drop: 0.3, minRequests: 1000 };
+export const CHECK_DEFAULTS = { window: 1, baselineWeeks: 4, baseline: 7, drop: 0.3, minRequests: 1000 };
+
+/** Every weekday comes round again 7 days later, so a window of up to 7 days has its weekdays in each week before it. */
+const MAX_WEEKDAY_WINDOW = 7;
 
 export type CheckMetric = "earnings" | "requests" | "match_rate" | "show_rate";
 
@@ -53,7 +63,8 @@ export interface CheckFinding {
 
 export interface CheckResult {
   window: { from: string; to: string; days: number };
-  baseline: { from: string; to: string; days: number };
+  /** With `weeks`, only the window's weekdays between from and to count, and `days` counts those. */
+  baseline: { from: string; to: string; days: number; weeks?: number };
   thresholds: { drop: number; min_requests: number };
   currency: string;
   timeZone: string;
@@ -76,9 +87,11 @@ interface Sums {
 
 const ZERO: Sums = { earnings: 0, requests: 0, matched: 0, impressions: 0 };
 
-function sumByApp(report: Report): Map<string, Sums> {
+/** Sums per app; with `days` (YYYYMMDD), only rows of those dates. */
+function sumByApp(report: Report, days?: Set<string>): Map<string, Sums> {
   const out = new Map<string, Sums>();
   for (const row of report.rows) {
+    if (days && !days.has(row.dimensions.DATE?.value ?? "")) continue;
     const id = row.dimensions.APP?.value ?? "unknown";
     const s = out.get(id) ?? { ...ZERO };
     s.earnings += row.metrics.ESTIMATED_EARNINGS ?? 0;
@@ -103,19 +116,48 @@ function wholeNumber(value: number | undefined, configured: string | undefined, 
   return n;
 }
 
+/** The baseline asked for, by options and then config: days just before the window, or weeks of the same weekdays. */
+function askedBaseline(opts: CheckOptions, configured: string | undefined): { days?: number; weeks?: number } | undefined {
+  if (opts.baseline !== undefined && opts.baselineWeeks !== undefined) throw usageError("Give the baseline in days or in weeks, not both.");
+  if (opts.baseline !== undefined || opts.baselineWeeks !== undefined) return { days: opts.baseline, weeks: opts.baselineWeeks };
+  if (configured === undefined) return undefined;
+  const m = CHECK_BASELINE.exec(configured);
+  if (!m) throw usageError(`check.baseline must be days like 7d or weeks like 4w, got "${configured}"`);
+  return m[2] === "w" ? { weeks: Number(m[1]) } : { days: Number(m[1]) };
+}
+
+const apiDate = (d: ApiDate) => formatDate(d).replace(/-/g, "");
+
 export async function check(svc: AdmobService, opts: CheckOptions = {}): Promise<CheckResult> {
   const cfg = svc.profile.check ?? {};
   const windowDays = wholeNumber(opts.window, cfg.window, CHECK_DEFAULTS.window, "The window (--window, check.window) in days", 90);
-  const baselineDays = wholeNumber(opts.baseline, cfg.baseline, CHECK_DEFAULTS.baseline, "The baseline (--baseline, check.baseline) in days", 366);
+  const asked = askedBaseline(opts, cfg.baseline);
+  let weeks: number | undefined;
+  let baselineDays: number;
+  if (asked ? asked.weeks !== undefined : windowDays <= MAX_WEEKDAY_WINDOW) {
+    weeks = wholeNumber(asked?.weeks, undefined, CHECK_DEFAULTS.baselineWeeks, "The baseline (--baseline, check.baseline) in weeks", 52);
+    if (windowDays > MAX_WEEKDAY_WINDOW) {
+      throw usageError(`A baseline in weeks compares the same weekdays, so it needs a window of 7 days or fewer, not ${windowDays}. Give it in days, e.g. --baseline 28d.`);
+    }
+    baselineDays = weeks * windowDays;
+  } else {
+    baselineDays = wholeNumber(asked?.days, undefined, CHECK_DEFAULTS.baseline, "The baseline (--baseline, check.baseline) in days", 366);
+  }
   const dropPercent = opts.drop !== undefined ? opts.drop * 100 : cfg.drop === undefined ? CHECK_DEFAULTS.drop * 100 : Number(cfg.drop);
   if (!(dropPercent >= 1 && dropPercent <= 99)) throw usageError("The drop threshold (--drop, check.drop) must be between 1 and 99 (percent).");
   const drop = dropPercent / 100;
   const minRequests = wholeNumber(opts.minRequests, cfg.minRequests, CHECK_DEFAULTS.minRequests, "The minimum requests (--min-requests, check.minRequests)", 1e9);
 
   const acct = await svc.account();
-  const window = lastNDays(windowDays, todayIn(acct.reportingTimeZone, svc.now()));
-  const baselineEnd = addDays(window.startDate, -1);
-  const baseline: DateRange = { startDate: addDays(baselineEnd, -(baselineDays - 1)), endDate: baselineEnd };
+  const asOf = svc.now();
+  const window = lastNDays(windowDays, todayIn(acct.reportingTimeZone, asOf));
+  // In weeks: the window moved back 1 to N weeks. Fetched as one range by date, keeping the days of those copies.
+  const baseline: DateRange = weeks
+    ? { startDate: addDays(window.startDate, -7 * weeks), endDate: addDays(window.endDate, -7) }
+    : { startDate: addDays(window.startDate, -baselineDays), endDate: addDays(window.startDate, -1) };
+  const sameWeekdays = weeks
+    ? new Set(Array.from({ length: baselineDays }, (_, i) => apiDate(addDays(baseline.startDate, Math.floor(i / windowDays) * 7 + (i % windowDays)))))
+    : undefined;
   const [{ current, previous }, apps] = await Promise.all([
     svc.rawReportWithPrevious(
       "network",
@@ -125,13 +167,13 @@ export async function check(svc: AdmobService, opts: CheckOptions = {}): Promise
         metrics: ["earnings", "requests", "matched-requests", "impressions"],
         filters: opts.app ? { app: [opts.app] } : undefined,
       },
-      { dateRange: baseline },
+      weeks ? { dateRange: baseline, by: ["app", "date"] } : { dateRange: baseline },
     ),
     svc.apps(),
   ]);
   const currency = current.report.currency ?? acct.currencyCode;
   const now = sumByApp(current.report);
-  const before = sumByApp(previous.report);
+  const before = sumByApp(previous.report, sameWeekdays);
   const alias = new Map(apps.map((a) => [a.appId, a.alias]));
   const perDay = (micros: number, days: number) => Math.round(micros / days);
   const money = (micros: number) => `${formatMicros(micros)} ${currency}`;
@@ -194,7 +236,7 @@ export async function check(svc: AdmobService, opts: CheckOptions = {}): Promise
   const rows = ids.map((id) => judge(alias.get(id) ?? id, id, now.get(id) ?? ZERO, before.get(id) ?? ZERO));
   const result: CheckResult = {
     window: { from: formatDate(window.startDate), to: formatDate(window.endDate), days: windowDays },
-    baseline: { from: formatDate(baseline.startDate), to: formatDate(baseline.endDate), days: baselineDays },
+    baseline: { from: formatDate(baseline.startDate), to: formatDate(baseline.endDate), days: baselineDays, ...(weeks ? { weeks } : {}) },
     thresholds: { drop, min_requests: minRequests },
     currency,
     timeZone: current.report.timeZone ?? acct.reportingTimeZone,
@@ -212,7 +254,22 @@ export async function check(svc: AdmobService, opts: CheckOptions = {}): Promise
   if (thin) {
     result.notices.push(`${thin} ${thin === 1 ? "app" : "apps"} had fewer than ${minRequests} requests in the baseline and ${thin === 1 ? "was" : "were"} not judged.`);
   }
-  const span = `${result.window.from}${windowDays > 1 ? ` → ${result.window.to}` : ""} against ${result.baseline.from} → ${result.baseline.to}`;
+  // Network data lands a few hours late, so early in the morning yesterday can look like a drop.
+  const clock = timeIn(acct.reportingTimeZone, asOf);
+  if (Number(clock.slice(0, 2)) < 4) {
+    result.notices.unshift(
+      `It is ${clock} in ${acct.reportingTimeZone}: AdMob data arrives a few hours late, so yesterday's figures may still be incomplete and look like a drop. Run the check after about 04:00 there.`,
+    );
+  }
+  const { from, to } = result.baseline;
+  const range = from === to ? from : `${from} → ${to}`;
+  const day = new Date(`${result.window.from}T00:00:00Z`).toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" });
+  const against = !weeks
+    ? range
+    : windowDays === 1
+      ? `the ${weeks === 1 ? day : `${weeks} ${day}s`} before (${range})`
+      : `the same weekdays in the ${weeks === 1 ? "week" : `${weeks} weeks`} before (${range})`;
+  const span = `${result.window.from}${windowDays > 1 ? ` → ${result.window.to}` : ""} against ${against}`;
   result.summary = findings.length
     ? [`${findings.length} ${findings.length === 1 ? "drop" : "drops"} of ${pct(drop)} or more, ${span}.`, ...findings.map((f) => f.message), ESTIMATE_LABEL]
     : [`No drop of ${pct(drop)} or more in earnings, match rate or show rate, ${span}.`, ESTIMATE_LABEL];

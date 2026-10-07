@@ -12,8 +12,9 @@ compared with the 30 days before. Use `by: "app" | "country" | "format" | "platf
 question asks for it. Drill down with `admobctl_network_report` only when the insights output cannot answer the question.
 
 For "is everything OK?", "did something break?" or a daily check, call `admobctl_check` first: it compares the last
-complete day with the week before and returns `findings` only for real drops. No findings means nothing dropped by the
-threshold; say so plainly and do not go looking for problems in `thin` rows.
+complete day with the same weekday in the four weeks before and returns `findings` only for real drops. No findings
+means nothing dropped by the threshold; say so plainly and do not go looking for problems in `thin` rows. Pass on a
+notice that yesterday may be incomplete (a check run before 04:00 in the account's time zone).
 
 For narrower questions use the curated analyses, which follow the same highlights/summary shape:
 `admobctl_analyze_versions` (did an SDK upgrade or app release hurt match or show rate),

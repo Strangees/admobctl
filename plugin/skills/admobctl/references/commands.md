@@ -46,6 +46,9 @@ Custom alias: `admobctl config set aliases.<alias> <appId>`.
 app-ads.txt: iOS websites come from the App Store listing's marketing URL. Google Play listings cannot be read, so Android
 apps use `--website` (this run), then `admobctl config set websites.<alias> <url>` (per app), then `admobctl config set website <url>`
 (all apps); without one they show `unknown-website`. Ask the user for the website instead of guessing it.
+`missing-file` means HTTP 404 or 410; a blocked request (401, 403, 429), a server error (5xx) or a network error is
+`unreachable`, because the file may well be there. A line with `ca-app-pub-…` instead of `pub-…` is `no-line`, and the
+detail says which ID to use.
 
 `mediation-groups export` drops IDs and output-only fields, keys the lines "-1", "-2"…, and leaves out the AdMob Network
 line (a new group gets its own; `--with-admob-line` keeps it, and the `create` dry run then warns that AdMob may reject
@@ -133,12 +136,16 @@ highlights (top, bottom, low-fill, low-show-rate, swing-up, swing-down, new, gon
 ## Check
 
 ```bash
-admobctl check [--window 1d] [--baseline 7d] [--drop 30] [--min-requests 1000] [--app <alias>]
+admobctl check [--window 1d] [--baseline 4w|7d] [--drop 30] [--min-requests 1000] [--app <alias>]
 ```
 
-A health check for cron or a scheduled agent. Compares the window (complete days ending yesterday) with the baseline
-(the days just before it), per app and for all apps together: daily earnings, match rate and show rate. The window ends
-yesterday in the account's time zone and network data lands a few hours late, so schedule it after about 04:00 there.
+A health check for cron or a scheduled agent. Compares the window (complete days ending yesterday) with the baseline,
+per app and for all apps together: daily earnings, match rate and show rate. The baseline is the window's weekdays in
+the N weeks before it (`--baseline Nw`, default 4w, so a weekly low is not a drop; windows of up to 7 days) or the N
+days just before it (`--baseline Nd`; the default, 7d, for longer windows). In JSON, `baseline` has `from`, `to`,
+`days` (the days compared) and, for weeks, `weeks`. The window ends yesterday in the account's time zone and network
+data lands a few hours late, so schedule it after about 04:00 there; before 04:00 `notices` says yesterday may be
+incomplete.
 
 - A drop of `--drop` percent or more is a breach: listed in `findings` (app, metric, change, message), counted in
   `breaches`, and the command **exits 1**. No breach: exit 0.
@@ -146,7 +153,8 @@ yesterday in the account's time zone and network data lands a few hours late, so
   a tenth of that many in the window: requests for match rate, matched requests for show rate.
 - An app with enough baseline requests but none in the window is a breach ("sent no ad requests"): metric `earnings`
   when the baseline earned something, else `requests`.
-- Defaults can be saved: `admobctl config set check.<key> <n>` with key window, baseline, drop or minRequests.
+- Defaults can be saved: `admobctl config set check.<key> <n>` with key window, baseline (`7d` or `4w`; a bare number
+  is days), drop or minRequests.
 
 ## Lint
 
@@ -209,7 +217,7 @@ admobctl_analyze_versions, admobctl_analyze_consent, admobctl_analyze_waterfall,
 admobctl_list_ad_sources, admobctl_list_adapters (`ad_source`), admobctl_list_mediation_groups,
 admobctl_list_ad_unit_mappings (`ad_unit`), admobctl_check_app_ads.
 They take the same arguments as the CLI, in snake_case: `max_rows`, `sort`, `compare`, `include_journal`, `last_days`.
-`admobctl_check` takes `window_days`, `baseline_days`, `drop_percent`, `min_requests`, `app`.
+`admobctl_check` takes `window_days`, `baseline_weeks` or `baseline_days`, `drop_percent`, `min_requests`, `app`.
 `admobctl_finance_export` takes `month` or `from`+`to`, `as` (`json` or `csv`), `integer_amounts`, `scale`, and returns
 the file as `content`.
 Reports default to 200 rows.

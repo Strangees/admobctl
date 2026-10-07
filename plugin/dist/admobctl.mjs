@@ -11172,6 +11172,7 @@ function ensurePrivateDir(dir) {
 }
 
 // src/core/config.ts
+var CHECK_BASELINE = /^([1-9]\d*)([dw]?)$/;
 var DEFAULT_FINANCE = {
   receivableAccount: "1509",
   revenueAccount: "3120",
@@ -11247,7 +11248,10 @@ function setProfileValue(config2, profile, key, value) {
   if (key === "finance.decimalSeparator" && value !== void 0 && value !== "." && value !== ",") {
     throw usageError('finance.decimalSeparator must be "." or ","');
   }
-  if (CHECK_KEYS.includes(key) && value !== void 0 && !/^[1-9]\d*$/.test(value)) {
+  if (key === "check.baseline" && value !== void 0 && !CHECK_BASELINE.test(value)) {
+    throw usageError(`check.baseline must be days like 7d or weeks like 4w, got "${value}"`);
+  }
+  if (CHECK_KEYS.includes(key) && key !== "check.baseline" && value !== void 0 && !/^[1-9]\d*$/.test(value)) {
     throw usageError(`${key} must be a positive whole number, got "${value}"`);
   }
   const [head, sub, ...rest] = key.split(".");
@@ -11682,6 +11686,7 @@ var OAuthTokenProvider = class {
   deps;
   mode = "oauth";
   cached;
+  pending;
   loginFix() {
     return `admobctl auth login --client-id <id>${this.deps.profile === "default" ? "" : ` --profile ${this.deps.profile}`}`;
   }
@@ -11705,6 +11710,10 @@ var OAuthTokenProvider = class {
   async getToken() {
     const now = (this.deps.now ?? Date.now)();
     if (this.cached && now < this.cached.expiresAt) return this.cached.token;
+    this.pending ??= this.refresh(now).finally(() => this.pending = void 0);
+    return this.pending;
+  }
+  async refresh(now) {
     const s = await this.stored();
     const params = { grant_type: "refresh_token", refresh_token: s.refreshToken, client_id: s.clientId };
     if (s.clientSecret) params.client_secret = s.clientSecret;
@@ -11826,6 +11835,9 @@ function todayIn(timeZone, now = /* @__PURE__ */ new Date()) {
   }).formatToParts(now);
   const get = (type) => Number(parts.find((p) => p.type === type)?.value);
   return { year: get("year"), month: get("month"), day: get("day") };
+}
+function timeIn(timeZone, now = /* @__PURE__ */ new Date()) {
+  return new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(now);
 }
 function isMonthComplete(ym, today) {
   return compareDates(monthEnd(ym), today) < 0;
@@ -12631,14 +12643,18 @@ async function analyzeWaterfall(svc, opts) {
   };
 }
 
+// src/version.ts
+var VERSION = true ? "0.5.2" : "0.0.0-dev";
+
 // src/core/app-ads.ts
 var GOOGLE_CERT_ID = "f08c47fec0942fa0";
 var ITUNES_LOOKUP = "https://itunes.apple.com/lookup";
 var TIMEOUT_MS = 1e4;
+var USER_AGENT = `admobctl/${VERSION} (+https://github.com/Strangees/admobctl)`;
 function parseAppAds(body) {
   const records = [];
-  body.split(/\r?\n/).forEach((raw, i) => {
-    const text = raw.replace(/#.*/, "").trim();
+  body.split(/\r\n|\r|\n/).forEach((raw, i) => {
+    const text = raw.replace(/#.*/, "").replace(/;.*/, "").trim();
     if (!text || /^[a-z_-]+\s*=/i.test(text)) return;
     const [domain2, publisherId, relationship, certId] = text.split(",").map((f) => f.trim());
     if (!domain2 || !publisherId || !relationship) return;
@@ -12670,7 +12686,7 @@ var PROBLEMS = /* @__PURE__ */ new Set(["missing-file", "html", "no-line", "rese
 async function probe(doFetch, url2) {
   log.debug(`GET ${url2}`);
   try {
-    const res = await doFetch(url2, { redirect: "follow", signal: AbortSignal.timeout(TIMEOUT_MS) });
+    const res = await doFetch(url2, { redirect: "follow", headers: { "user-agent": USER_AGENT }, signal: AbortSignal.timeout(TIMEOUT_MS) });
     const body = await res.text();
     const finalUrl = res.url || url2;
     if (!res.ok) return { kind: "status", url: finalUrl, status: res.status };
@@ -12736,14 +12752,20 @@ function siteFor(app, ios, opts, configured) {
     `Google Play listings cannot be read without Play Console access. AdMob uses the website in the listing's contact details; ${SET_WEBSITE}`
   );
 }
+function statusVerdict(url2, status) {
+  if (status === 404 || status === 410) return { status: "missing-file", detail: `${url2} returned HTTP ${status}.`, notes: [] };
+  const why = status === 401 || status === 403 || status === 429 ? "the request was blocked, perhaps by a firewall, bot filter or rate limit" : status >= 500 ? "the site had a server error" : "the site did not return it";
+  return { status: "unreachable", detail: `Could not read ${url2}: ${why} (HTTP ${status}). Check that it opens in a browser.`, notes: [] };
+}
 function verdict(result, host, publisherId) {
   if (result.kind === "error") return { status: "unreachable", detail: `Could not reach ${host}: ${result.message}`, notes: [] };
-  if (result.kind === "status") return { status: "missing-file", detail: `${result.url} returned HTTP ${result.status}.`, notes: [] };
+  if (result.kind === "status") return statusVerdict(result.url, result.status);
   if (result.kind === "html") {
     return { status: "html", detail: `${result.url} returned a web page, not a plain-text app-ads.txt.`, fileUrl: result.url, notes: [] };
   }
+  const pub = publisherId.toLowerCase();
   const google = parseAppAds(result.body).filter((r) => r.domain === "google.com");
-  const mine = google.filter((r) => r.publisherId === publisherId.toLowerCase());
+  const mine = google.filter((r) => r.publisherId === pub);
   const direct = mine.find((r) => r.relationship === "DIRECT");
   if (direct) {
     const notes = direct.certId && direct.certId !== GOOGLE_CERT_ID ? [`Line ${direct.line} has certification ID ${direct.certId}; Google's is ${GOOGLE_CERT_ID}.`] : [];
@@ -12753,6 +12775,15 @@ function verdict(result, host, publisherId) {
     return {
       status: "reseller-only",
       detail: `${result.url} lists ${publisherId} as ${mine[0].relationship} (line ${mine[0].line}); AdMob needs DIRECT.`,
+      fileUrl: result.url,
+      notes: []
+    };
+  }
+  const prefixed = google.find((r) => r.publisherId.startsWith("ca-app-") && r.publisherId.slice(7).split(/[~/]/)[0] === pub);
+  if (prefixed) {
+    return {
+      status: "no-line",
+      detail: `${result.url} lists ${prefixed.publisherId} (line ${prefixed.line}); app-ads.txt takes the publisher ID: use ${publisherId}, not ca-app-${publisherId}.`,
       fileUrl: result.url,
       notes: []
     };
@@ -12809,11 +12840,13 @@ async function checkAppAds(svc, opts) {
 }
 
 // src/core/check.ts
-var CHECK_DEFAULTS = { window: 1, baseline: 7, drop: 0.3, minRequests: 1e3 };
+var CHECK_DEFAULTS = { window: 1, baselineWeeks: 4, baseline: 7, drop: 0.3, minRequests: 1e3 };
+var MAX_WEEKDAY_WINDOW = 7;
 var ZERO = { earnings: 0, requests: 0, matched: 0, impressions: 0 };
-function sumByApp(report) {
+function sumByApp(report, days) {
   const out = /* @__PURE__ */ new Map();
   for (const row of report.rows) {
+    if (days && !days.has(row.dimensions.DATE?.value ?? "")) continue;
     const id = row.dimensions.APP?.value ?? "unknown";
     const s = out.get(id) ?? { ...ZERO };
     s.earnings += row.metrics.ESTIMATED_EARNINGS ?? 0;
@@ -12835,18 +12868,39 @@ function wholeNumber(value, configured, fallback, name, max) {
   if (!Number.isInteger(n) || n < 1 || n > max) throw usageError(`${name} must be a whole number between 1 and ${max}, got "${value ?? configured}"`);
   return n;
 }
+function askedBaseline(opts, configured) {
+  if (opts.baseline !== void 0 && opts.baselineWeeks !== void 0) throw usageError("Give the baseline in days or in weeks, not both.");
+  if (opts.baseline !== void 0 || opts.baselineWeeks !== void 0) return { days: opts.baseline, weeks: opts.baselineWeeks };
+  if (configured === void 0) return void 0;
+  const m = CHECK_BASELINE.exec(configured);
+  if (!m) throw usageError(`check.baseline must be days like 7d or weeks like 4w, got "${configured}"`);
+  return m[2] === "w" ? { weeks: Number(m[1]) } : { days: Number(m[1]) };
+}
+var apiDate = (d) => formatDate(d).replace(/-/g, "");
 async function check(svc, opts = {}) {
   const cfg = svc.profile.check ?? {};
   const windowDays = wholeNumber(opts.window, cfg.window, CHECK_DEFAULTS.window, "The window (--window, check.window) in days", 90);
-  const baselineDays = wholeNumber(opts.baseline, cfg.baseline, CHECK_DEFAULTS.baseline, "The baseline (--baseline, check.baseline) in days", 366);
+  const asked = askedBaseline(opts, cfg.baseline);
+  let weeks;
+  let baselineDays;
+  if (asked ? asked.weeks !== void 0 : windowDays <= MAX_WEEKDAY_WINDOW) {
+    weeks = wholeNumber(asked?.weeks, void 0, CHECK_DEFAULTS.baselineWeeks, "The baseline (--baseline, check.baseline) in weeks", 52);
+    if (windowDays > MAX_WEEKDAY_WINDOW) {
+      throw usageError(`A baseline in weeks compares the same weekdays, so it needs a window of 7 days or fewer, not ${windowDays}. Give it in days, e.g. --baseline 28d.`);
+    }
+    baselineDays = weeks * windowDays;
+  } else {
+    baselineDays = wholeNumber(asked?.days, void 0, CHECK_DEFAULTS.baseline, "The baseline (--baseline, check.baseline) in days", 366);
+  }
   const dropPercent = opts.drop !== void 0 ? opts.drop * 100 : cfg.drop === void 0 ? CHECK_DEFAULTS.drop * 100 : Number(cfg.drop);
   if (!(dropPercent >= 1 && dropPercent <= 99)) throw usageError("The drop threshold (--drop, check.drop) must be between 1 and 99 (percent).");
   const drop = dropPercent / 100;
   const minRequests = wholeNumber(opts.minRequests, cfg.minRequests, CHECK_DEFAULTS.minRequests, "The minimum requests (--min-requests, check.minRequests)", 1e9);
   const acct = await svc.account();
-  const window = lastNDays(windowDays, todayIn(acct.reportingTimeZone, svc.now()));
-  const baselineEnd = addDays(window.startDate, -1);
-  const baseline = { startDate: addDays(baselineEnd, -(baselineDays - 1)), endDate: baselineEnd };
+  const asOf = svc.now();
+  const window = lastNDays(windowDays, todayIn(acct.reportingTimeZone, asOf));
+  const baseline = weeks ? { startDate: addDays(window.startDate, -7 * weeks), endDate: addDays(window.endDate, -7) } : { startDate: addDays(window.startDate, -baselineDays), endDate: addDays(window.startDate, -1) };
+  const sameWeekdays = weeks ? new Set(Array.from({ length: baselineDays }, (_, i) => apiDate(addDays(baseline.startDate, Math.floor(i / windowDays) * 7 + i % windowDays)))) : void 0;
   const [{ current, previous }, apps] = await Promise.all([
     svc.rawReportWithPrevious(
       "network",
@@ -12856,13 +12910,13 @@ async function check(svc, opts = {}) {
         metrics: ["earnings", "requests", "matched-requests", "impressions"],
         filters: opts.app ? { app: [opts.app] } : void 0
       },
-      { dateRange: baseline }
+      weeks ? { dateRange: baseline, by: ["app", "date"] } : { dateRange: baseline }
     ),
     svc.apps()
   ]);
   const currency = current.report.currency ?? acct.currencyCode;
   const now = sumByApp(current.report);
-  const before = sumByApp(previous.report);
+  const before = sumByApp(previous.report, sameWeekdays);
   const alias = new Map(apps.map((a) => [a.appId, a.alias]));
   const perDay = (micros, days) => Math.round(micros / days);
   const money = (micros) => `${formatMicros(micros)} ${currency}`;
@@ -12919,7 +12973,7 @@ async function check(svc, opts = {}) {
   const rows = ids.map((id) => judge(alias.get(id) ?? id, id, now.get(id) ?? ZERO, before.get(id) ?? ZERO));
   const result = {
     window: { from: formatDate(window.startDate), to: formatDate(window.endDate), days: windowDays },
-    baseline: { from: formatDate(baseline.startDate), to: formatDate(baseline.endDate), days: baselineDays },
+    baseline: { from: formatDate(baseline.startDate), to: formatDate(baseline.endDate), days: baselineDays, ...weeks ? { weeks } : {} },
     thresholds: { drop, min_requests: minRequests },
     currency,
     timeZone: current.report.timeZone ?? acct.reportingTimeZone,
@@ -12936,7 +12990,17 @@ async function check(svc, opts = {}) {
   if (thin) {
     result.notices.push(`${thin} ${thin === 1 ? "app" : "apps"} had fewer than ${minRequests} requests in the baseline and ${thin === 1 ? "was" : "were"} not judged.`);
   }
-  const span = `${result.window.from}${windowDays > 1 ? ` \u2192 ${result.window.to}` : ""} against ${result.baseline.from} \u2192 ${result.baseline.to}`;
+  const clock = timeIn(acct.reportingTimeZone, asOf);
+  if (Number(clock.slice(0, 2)) < 4) {
+    result.notices.unshift(
+      `It is ${clock} in ${acct.reportingTimeZone}: AdMob data arrives a few hours late, so yesterday's figures may still be incomplete and look like a drop. Run the check after about 04:00 there.`
+    );
+  }
+  const { from, to } = result.baseline;
+  const range = from === to ? from : `${from} \u2192 ${to}`;
+  const day = (/* @__PURE__ */ new Date(`${result.window.from}T00:00:00Z`)).toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" });
+  const against = !weeks ? range : windowDays === 1 ? `the ${weeks === 1 ? day : `${weeks} ${day}s`} before (${range})` : `the same weekdays in the ${weeks === 1 ? "week" : `${weeks} weeks`} before (${range})`;
+  const span = `${result.window.from}${windowDays > 1 ? ` \u2192 ${result.window.to}` : ""} against ${against}`;
   result.summary = findings.length ? [`${findings.length} ${findings.length === 1 ? "drop" : "drops"} of ${pct(drop)} or more, ${span}.`, ...findings.map((f) => f.message), ESTIMATE_LABEL] : [`No drop of ${pct(drop)} or more in earnings, match rate or show rate, ${span}.`, ESTIMATE_LABEL];
   return result;
 }
@@ -12967,9 +13031,6 @@ async function financeBalance(svc) {
     notes: unpaid ? [BALANCE_NOTE] : ["No unpaid balance reported.", BALANCE_NOTE]
   };
 }
-
-// src/version.ts
-var VERSION = true ? "0.5.2" : "0.0.0-dev";
 
 // src/core/journal.ts
 var JOURNAL_FORMAT = "revenue-journal/1";
@@ -13759,6 +13820,7 @@ var TOKEN_TTL_MS = 45 * 60 * 1e3;
 var AdcTokenProvider = class {
   mode = "adc";
   cached;
+  pending;
   info;
   env;
   exec;
@@ -13791,6 +13853,10 @@ var AdcTokenProvider = class {
   }
   async getToken() {
     if (this.cached && this.now() - this.cached.at < TOKEN_TTL_MS) return this.cached.token;
+    this.pending ??= this.printToken().finally(() => this.pending = void 0);
+    return this.pending;
+  }
+  async printToken() {
     const info = this.checkCredentials();
     let res;
     try {
@@ -14444,6 +14510,14 @@ var DEFAULT_METRICS = {
 var CAMPAIGN_MAX_DAYS = 30;
 var filterValue = (v) => `"${v.replace(/["\\]/g, (c) => `\\${c}`)}"`;
 var COMPARISONS = ["previous"];
+function sharedTokenProvider(profile, dir, deps) {
+  const key = `${profile.name}\0${profile.authMode}`;
+  const known = deps.tokenProviders?.get(key);
+  if (known) return known;
+  const created = resolveTokenProvider(profile, { configDir: dir, exec: deps.exec, fetch: deps.fetch });
+  deps.tokenProviders?.set(key, created);
+  return created;
+}
 var AdmobService = class _AdmobService {
   constructor(profile, client, tokenProvider, accountOverride, now, configDir2, fetch2) {
     this.profile = profile;
@@ -14466,7 +14540,7 @@ var AdmobService = class _AdmobService {
   static create(opts = {}, deps = {}) {
     const dir = deps.configDir ?? configDir();
     const profile = resolveProfile(loadConfig(dir), opts.profile);
-    const tokenProvider = deps.tokenProvider ?? resolveTokenProvider(profile, { configDir: dir, exec: deps.exec, fetch: deps.fetch });
+    const tokenProvider = deps.tokenProvider ?? sharedTokenProvider(profile, dir, deps);
     const client = new AdmobClient({
       getToken: () => tokenProvider.getToken(),
       quotaProject: profile.quotaProject ?? tokenProvider.quotaProject(),
@@ -14845,14 +14919,28 @@ function cell(v) {
   if (Array.isArray(v)) return v.join(", ");
   return String(v);
 }
+var graphemes = new Intl.Segmenter();
+var WIDE = /^[\u1100-\u115f\u2e80-\u303e\u3041-\u33ff\u3400-\u4dbf\u4e00-\u9fff\ua000-\ua4cf\ua960-\ua97f\uac00-\ud7a3\uf900-\ufaff\ufe10-\ufe19\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6\u{1b000}-\u{1b2ff}\u{20000}-\u{3fffd}]/u;
+function displayWidth(s) {
+  if (/^[\x20-\x7e]*$/.test(s)) return s.length;
+  let width = 0;
+  for (const { segment } of graphemes.segment(s)) {
+    if (/^[\p{Mn}\p{Me}\p{Cf}\p{Cc}]+$/u.test(segment)) continue;
+    width += new RegExp("\\p{Emoji_Presentation}|\\ufe0f", "u").test(segment) || WIDE.test(segment) ? 2 : 1;
+  }
+  return width;
+}
 function renderTable({ columns, rows, footer = [] }, notes) {
   const lines = [];
   if (rows.length === 0) lines.push("(no rows)");
   else {
     const grid = rows.map((r) => columns.map((c) => cell(r[c.key])));
     const foot = footer.map((r) => columns.map((c) => cell(r[c.key])));
-    const widths = columns.map((c, i) => Math.max(c.label.length, ...[...grid, ...foot].map((g) => g[i].length)));
-    const fmt = (vals) => vals.map((v, i) => columns[i].align === "right" ? v.padStart(widths[i]) : v.padEnd(widths[i])).join("  ").trimEnd();
+    const widths = columns.map((c, i) => Math.max(displayWidth(c.label), ...[...grid, ...foot].map((g) => displayWidth(g[i]))));
+    const fmt = (vals) => vals.map((v, i) => {
+      const pad = " ".repeat(Math.max(0, widths[i] - displayWidth(v)));
+      return columns[i].align === "right" ? pad + v : v + pad;
+    }).join("  ").trimEnd();
     lines.push(fmt(columns.map((c) => c.label)));
     lines.push(widths.map((w) => "\u2500".repeat(w)).join("  "));
     for (const g of grid) lines.push(fmt(g));
@@ -14875,7 +14963,13 @@ function renderCsv({ columns, rows }) {
 `;
 }
 function mdEscape(v) {
-  return v.replace(/\|/g, "\\|").replace(/\n/g, " ");
+  return v.replace(/\|/g, "\\|").replace(/\r\n|\r|\n/g, " ");
+}
+function mdNote(note) {
+  const lines = note.split(/\r\n|\r|\n/);
+  if (lines.length === 1) return [`> ${note}`];
+  const fence = "`".repeat(Math.max(3, ...[...note.matchAll(/`+/g)].map((m) => m[0].length + 1)));
+  return [fence, ...lines, fence].map((l) => l ? `> ${l}` : ">");
 }
 function renderMarkdown({ columns, rows, footer = [] }, notes) {
   const bold = (v) => v ? `**${v}**` : v;
@@ -14885,7 +14979,7 @@ function renderMarkdown({ columns, rows, footer = [] }, notes) {
     ...rows.map((r) => `| ${columns.map((c) => mdEscape(cell(r[c.key]))).join(" | ")} |`),
     ...footer.map((r) => `| ${columns.map((c) => bold(mdEscape(cell(r[c.key])))).join(" | ")} |`)
   ];
-  if (notes.length) lines.push("", ...notes.map((n) => `> ${n}`));
+  if (notes.length) lines.push("", ...notes.flatMap(mdNote));
   return `${lines.join("\n")}
 `;
 }
@@ -14965,13 +15059,13 @@ async function analyzeTrend(svc, opts = {}) {
     series.days.set(date5, sums);
     bySeries.set(key, series);
   }
-  const apiDate = (d) => `${d.year}${String(d.month).padStart(2, "0")}${String(d.day).padStart(2, "0")}`;
+  const apiDate2 = (d) => `${d.year}${String(d.month).padStart(2, "0")}${String(d.day).padStart(2, "0")}`;
   const money = (micros) => formatMicros(Math.round(micros));
   const highlights = [];
   const all = [...bySeries.entries()].map(([key, s]) => {
     const days = [];
     for (let d = r.range.startDate; compareDates(d, r.range.endDate) <= 0; d = addDays(d, 1)) {
-      const sums = s.days.get(apiDate(d));
+      const sums = s.days.get(apiDate2(d));
       if (!days.length && !sums?.requests && !sums?.earnings) continue;
       const v = sums ?? { earnings: 0, requests: 0, matched: 0, impressions: 0 };
       days.push({
@@ -15699,6 +15793,11 @@ function parseDays(v, flag = "--last") {
   if (!m) throw new AdmobctlError("USAGE", `${flag} expects a number of days like 30d, got "${v}"`);
   return Number(m[1]);
 }
+function parseBaseline(v) {
+  const m = /^(\d+)([dw])$/.exec(v.trim());
+  if (!m) throw new AdmobctlError("USAGE", `--baseline expects days like 7d or weeks like 4w, got "${v}"`);
+  return m[2] === "w" ? { weeks: Number(m[1]) } : { days: Number(m[1]) };
+}
 function readJsonFile(path2) {
   let text;
   try {
@@ -16040,8 +16139,17 @@ function buildProgram(io) {
     });
     emit(cmd, insightsView(r));
   });
-  program2.command("check").description("Health check for cron: exits 1 when an app's earnings, match rate or show rate dropped against the days before").option("--window <Nd>", "complete days to judge, ending yesterday (default 1d)", (v) => parseDays(v, "--window")).option("--baseline <Nd>", "days just before the window to compare with (default 7d)", (v) => parseDays(v, "--baseline")).option("--drop <percent>", "a drop of this much or more is a breach (default 30)", positiveInt).option("--min-requests <n>", "baseline requests an app needs before it is judged (default 1000)", positiveInt).option("--app <alias|id>", "only this app").action(async (o, cmd) => {
-    const r = await check(svc(cmd), { ...o, drop: o.drop === void 0 ? void 0 : o.drop / 100 });
+  program2.command("check").description("Health check for cron: exits 1 when an app's earnings, match rate or show rate dropped against the same weekday in the weeks before").option("--window <Nd>", "complete days to judge, ending yesterday (default 1d)", (v) => parseDays(v, "--window")).option(
+    "--baseline <Nw|Nd>",
+    "compare with the window's weekdays in the N weeks before (default 4w), or with the N days just before (7d; the default for windows over 7d)",
+    parseBaseline
+  ).option("--drop <percent>", "a drop of this much or more is a breach (default 30)", positiveInt).option("--min-requests <n>", "baseline requests an app needs before it is judged (default 1000)", positiveInt).option("--app <alias|id>", "only this app").action(async (o, cmd) => {
+    const r = await check(svc(cmd), {
+      ...o,
+      baseline: o.baseline?.days,
+      baselineWeeks: o.baseline?.weeks,
+      drop: o.drop === void 0 ? void 0 : o.drop / 100
+    });
     emit(cmd, checkView(r));
     if (r.breaches) process.exitCode = 1;
   });
@@ -16083,8 +16191,9 @@ function buildProgram(io) {
   program2.command("mcp").description("Run the MCP server over stdio (for Claude Code, Codex and other MCP clients)").action(async (_o, cmd) => {
     if (!io.runMcp) throw new AdmobctlError("USAGE", "The mcp command is not available in this build (no MCP server wired in).");
     const { profile, account } = g(cmd);
+    const tokenProviders = /* @__PURE__ */ new Map();
     await io.runMcp({
-      service: (opts) => AdmobService.create({ profile, account: opts.account ?? account }, io.service)
+      service: (opts) => AdmobService.create({ profile, account: opts.account ?? account }, { ...io.service, tokenProviders })
     });
     await new Promise((resolve) => process.stdin.on("close", resolve));
   });
@@ -45440,7 +45549,8 @@ var SERVICE_TTL_MS = 5 * 6e4;
 var INSTRUCTIONS = `Read-only access to the user's Google AdMob account via admobctl.
 - Apps are referred to by alias (e.g. "my-game-ios"); call admobctl_list_apps to see them.
 - All earnings are ESTIMATES. When reporting money, say so and that they should be reconciled against AdMob Payments (finalized).
-- For "is everything OK?" or "did revenue drop?" use admobctl_check: it compares the last complete day with the week before.
+- For "is everything OK?" or "did revenue drop?" use admobctl_check: it compares the last complete day with the same
+  weekday in the four weeks before.
 - For "what did I earn in <month>" use admobctl_finance_month; for trends and recommendations use admobctl_insights.
 - For "what is my balance / what will Google pay me" use admobctl_finance_balance (unpaid balance; it needs an extra scope, so pass its Fix line on if it fails).
 - For a file an accounting system can import, use admobctl_finance_export and hand over its \`content\` unchanged.
@@ -45576,7 +45686,7 @@ function createMcpServer(deps) {
     "admobctl_check_app_ads",
     {
       title: "Check app-ads.txt",
-      description: "Check each app's app-ads.txt the way AdMob's crawler does: the developer website from the App Store listing (Google Play listings cannot be read, so Android apps need `website` from the user or one saved with `admobctl config set websites.<alias> <url>`; do not guess it), https then http, and a google.com line with the publisher ID marked DIRECT. Per app: ok, missing-file, html (a web page instead of the file), no-line, reseller-only, unreachable, no-website, unknown-website or not-linked, plus the exact line to add. Fetches the store lookup and the developer websites, not just the AdMob API.",
+      description: "Check each app's app-ads.txt the way AdMob's crawler does: the developer website from the App Store listing (Google Play listings cannot be read, so Android apps need `website` from the user or one saved with `admobctl config set websites.<alias> <url>`; do not guess it), https then http, and a google.com line with the publisher ID marked DIRECT. Per app: ok, missing-file (HTTP 404/410), html (a web page instead of the file), no-line, reseller-only, unreachable (network error, blocked request or server error: the file may exist), no-website, unknown-website or not-linked, plus the exact line to add. Fetches the store lookup and the developer websites, not just the AdMob API.",
       inputSchema: {
         ...appArg,
         website: external_exports.string().optional().describe("Developer website for apps whose store listing cannot be read (Android), e.g. example.com"),
@@ -45712,6 +45822,7 @@ function createMcpServer(deps) {
     },
     wrap(async (a) => {
       const s = freshSvc(a);
+      s.tokenProvider.resetCache?.();
       return { ...await setupStatus(s, { fetch: s.fetch }) };
     })
   );
@@ -45783,10 +45894,11 @@ function createMcpServer(deps) {
     "admobctl_check",
     {
       title: "AdMob health check",
-      description: 'Did anything break? Compares the last complete day(s) with the days just before, per app and in total, and reports `findings` where daily earnings, match rate or show rate dropped by the threshold or more, or an app stopped sending ad requests (`breaches` is their count; 0 means nothing dropped). Rows with status `thin` had too little baseline traffic to judge: do not report them as problems. Use for "is everything OK", "did revenue drop" or a daily check; use admobctl_insights for a fuller analysis. Earnings are estimates.',
+      description: 'Did anything break? Compares the last complete day(s) with the same weekdays in the 4 weeks before (or, with baseline_days, the days just before), per app and in total, and reports `findings` where daily earnings, match rate or show rate dropped by the threshold or more, or an app stopped sending ad requests (`breaches` is their count; 0 means nothing dropped). Rows with status `thin` had too little baseline traffic to judge: do not report them as problems. Use for "is everything OK", "did revenue drop" or a daily check; use admobctl_insights for a fuller analysis. Earnings are estimates.',
       inputSchema: {
         window_days: external_exports.number().int().min(1).max(90).optional().describe("Complete days to judge, ending yesterday (default 1)"),
-        baseline_days: external_exports.number().int().min(1).max(366).optional().describe("Days just before the window to compare with (default 7)"),
+        baseline_weeks: external_exports.number().int().min(1).max(52).optional().describe("Compare with the window's weekdays in this many weeks before it (default 4; window_days up to 7)"),
+        baseline_days: external_exports.number().int().min(1).max(366).optional().describe("Compare with this many days just before the window instead (default 7 when window_days is over 7)"),
         drop_percent: external_exports.number().int().min(1).max(99).optional().describe("A drop of this percent or more is a breach (default 30)"),
         min_requests: external_exports.number().int().positive().optional().describe("Baseline requests an app needs before it is judged (default 1000)"),
         ...appArg,
@@ -45812,6 +45924,7 @@ function createMcpServer(deps) {
         ...await check(svc(a), {
           window: a.window_days,
           baseline: a.baseline_days,
+          baselineWeeks: a.baseline_weeks,
           drop: a.drop_percent === void 0 ? void 0 : a.drop_percent / 100,
           minRequests: a.min_requests,
           app: a.app

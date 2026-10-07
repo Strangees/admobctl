@@ -27,7 +27,10 @@ function bigReport(n: number) {
   ];
 }
 
-async function connect(routes: Parameters<typeof fakeFetch>[0] = {}, opts: { serviceTtlMs?: number; now?: () => number } = {}) {
+async function connect(
+  routes: Parameters<typeof fakeFetch>[0] = {},
+  { tokenProvider = token, ...opts }: { serviceTtlMs?: number; now?: () => number; tokenProvider?: TokenProvider } = {},
+) {
   const f = fakeFetch({
     "GET /v1/accounts?": () => jsonResponse(fixture("accounts.json")),
     "GET /apps": (c) => jsonResponse(fixture(c.url.includes("pageToken=page2") ? "apps-page2.json" : "apps-page1.json")),
@@ -49,7 +52,7 @@ async function connect(routes: Parameters<typeof fakeFetch>[0] = {}, opts: { ser
   const server = createMcpServer({
     service: (o) => {
       created.push(o.account);
-      return AdmobService.create(o, { configDir: dir, tokenProvider: token, fetch: f.fetch, sleep: noSleep, now: () => new Date("2026-10-02T08:00:00Z") });
+      return AdmobService.create(o, { configDir: dir, tokenProvider, fetch: f.fetch, sleep: noSleep, now: () => new Date("2026-10-02T08:00:00Z") });
     },
     ...opts,
   });
@@ -146,6 +149,15 @@ describe("mcp server", () => {
     saveConfig(dir, { profiles: { default: { quotaProject: "example-a" } } });
     const after = (await client.callTool({ name: "admobctl_setup_status", arguments: {} })) as ToolResult;
     expect(quotaCheck(after)).toMatchObject({ summary: "Quota project: example-a" });
+  });
+
+  it("admobctl_setup_status drops the cached access token, so it sees a sign-in done in a terminal", async () => {
+    let resets = 0;
+    const { client } = await connect(setupRoutes, { tokenProvider: { ...token, resetCache: () => void resets++ } });
+    await client.callTool({ name: "admobctl_list_apps", arguments: {} });
+    expect(resets).toBe(0);
+    await client.callTool({ name: "admobctl_setup_status", arguments: {} });
+    expect(resets).toBe(1);
   });
 
   it("tools after admobctl_setup_status reuse its fresh service", async () => {
@@ -376,6 +388,18 @@ describe("mcp server", () => {
     expect((consent.structuredContent!.apps as Array<{ app: string }>)[0]!.app).toBe("example-quiz-ios");
     const wf = (await client.callTool({ name: "admobctl_analyze_waterfall", arguments: { group: "Interstitials" } })) as ToolResult;
     expect((wf.structuredContent!.rows as unknown[]).length).toBe(1);
+  });
+
+  it("admobctl_check compares with the same weekdays by default and takes the baseline in days or weeks", async () => {
+    const { client } = await connect();
+    const baselineOf = async (args: Record<string, unknown>) =>
+      ((await client.callTool({ name: "admobctl_check", arguments: args })) as ToolResult).structuredContent!.baseline;
+    expect(await baselineOf({})).toEqual({ from: "2026-09-03", to: "2026-09-24", days: 4, weeks: 4 });
+    expect(await baselineOf({ baseline_weeks: 2 })).toEqual({ from: "2026-09-17", to: "2026-09-24", days: 2, weeks: 2 });
+    expect(await baselineOf({ baseline_days: 7 })).toEqual({ from: "2026-09-24", to: "2026-09-30", days: 7 });
+    const both = (await client.callTool({ name: "admobctl_check", arguments: { baseline_days: 7, baseline_weeks: 4 } })) as ToolResult;
+    expect(both.isError).toBe(true);
+    expect(both.content[0]!.text).toMatch(/days or in weeks, not both/);
   });
 
   it("says when the geo country totals are cut to the biggest", async () => {

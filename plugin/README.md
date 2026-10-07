@@ -42,7 +42,8 @@ It connects only to:
   and Google OAuth (`accounts.google.com`, `oauth2.googleapis.com`) to sign in, refresh and check tokens, and revoke
   them on logout.
 - **For the app-ads.txt check only:** Apple's iTunes lookup API (`itunes.apple.com`), which receives your apps' App
-  Store IDs, and each app's developer website, which receives a request for `/app-ads.txt`.
+  Store IDs, and each app's developer website, which receives a request for `/app-ads.txt` with the User-Agent
+  `admobctl/<version> (+https://github.com/Strangees/admobctl)`.
 
 It runs `gcloud` to get an access token from Application Default Credentials and for `setup login`, `security` on macOS
 to keep OAuth tokens in the Keychain, and your system's browser opener for the OAuth sign-in, which then listens on a

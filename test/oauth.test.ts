@@ -221,6 +221,20 @@ describe("OAuthTokenProvider", () => {
     });
   });
 
+  it("shares one refresh between concurrent callers and does not keep a failure", async () => {
+    let fail = true;
+    const f = fakeFetch({
+      "POST /token": () => (fail ? jsonResponse({ error: "invalid_client" }, 401) : jsonResponse({ access_token: `tok${f.calls.length}`, expires_in: 3600 })),
+    });
+    const p = new OAuthTokenProvider({ profile: "default", store: store(JSON.stringify(stored)), fetch: f.fetch, now: () => 0 });
+    const failed = await Promise.allSettled([p.getToken(), p.getToken(), p.getToken()]);
+    expect(failed.map((r) => r.status)).toEqual(["rejected", "rejected", "rejected"]);
+    expect(f.calls).toHaveLength(1);
+    fail = false;
+    expect(await Promise.all([p.getToken(), p.getToken(), p.getToken()])).toEqual(["tok2", "tok2", "tok2"]);
+    expect(f.calls).toHaveLength(2);
+  });
+
   it("asks the user to log in again when the refresh token is revoked", async () => {
     const f = fakeFetch({ "POST /token": () => jsonResponse({ error: "invalid_grant", error_description: "Token has been expired or revoked." }, 400) });
     const p = new OAuthTokenProvider({ profile: "default", store: store(JSON.stringify(stored)), fetch: f.fetch });

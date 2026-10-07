@@ -276,4 +276,18 @@ describe("AdmobService", () => {
     await svc.adUnits({ app: "example-quiz-ios" });
     expect(calls.filter((c) => c.url.includes("/adUnits"))).toHaveLength(1);
   });
+
+  it("shares one token provider per profile and auth mode between services given the same map", () => {
+    const dir = mkdtempSync(join(tmpdir(), "admobctl-svc-"));
+    const tokenProviders = new Map<string, TokenProvider>();
+    const a = AdmobService.create({}, { configDir: dir, tokenProviders });
+    const b = AdmobService.create({ account: "pub-0000000000000001" }, { configDir: dir, tokenProviders });
+    expect(b.tokenProvider).toBe(a.tokenProvider);
+    expect(AdmobService.create({}, { configDir: dir }).tokenProvider).not.toBe(a.tokenProvider);
+    // `admobctl auth login` switched the profile to OAuth while the services were cached.
+    saveConfig(dir, { profiles: { default: { authMode: "oauth" } } });
+    const c = AdmobService.create({}, { configDir: dir, tokenProviders });
+    expect(c.tokenProvider.mode).toBe("oauth");
+    expect(AdmobService.create({}, { configDir: dir, tokenProviders }).tokenProvider).toBe(c.tokenProvider);
+  });
 });

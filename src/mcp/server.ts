@@ -38,7 +38,8 @@ export interface McpDeps {
 const INSTRUCTIONS = `Read-only access to the user's Google AdMob account via admobctl.
 - Apps are referred to by alias (e.g. "my-game-ios"); call admobctl_list_apps to see them.
 - All earnings are ESTIMATES. When reporting money, say so and that they should be reconciled against AdMob Payments (finalized).
-- For "is everything OK?" or "did revenue drop?" use admobctl_check: it compares the last complete day with the week before.
+- For "is everything OK?" or "did revenue drop?" use admobctl_check: it compares the last complete day with the same
+  weekday in the four weeks before.
 - For "what did I earn in <month>" use admobctl_finance_month; for trends and recommendations use admobctl_insights.
 - For "what is my balance / what will Google pay me" use admobctl_finance_balance (unpaid balance; it needs an extra scope, so pass its Fix line on if it fails).
 - For a file an accounting system can import, use admobctl_finance_export and hand over its \`content\` unchanged.
@@ -219,7 +220,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
     {
       title: "Check app-ads.txt",
       description:
-        "Check each app's app-ads.txt the way AdMob's crawler does: the developer website from the App Store listing (Google Play listings cannot be read, so Android apps need `website` from the user or one saved with `admobctl config set websites.<alias> <url>`; do not guess it), https then http, and a google.com line with the publisher ID marked DIRECT. Per app: ok, missing-file, html (a web page instead of the file), no-line, reseller-only, unreachable, no-website, unknown-website or not-linked, plus the exact line to add. Fetches the store lookup and the developer websites, not just the AdMob API.",
+        "Check each app's app-ads.txt the way AdMob's crawler does: the developer website from the App Store listing (Google Play listings cannot be read, so Android apps need `website` from the user or one saved with `admobctl config set websites.<alias> <url>`; do not guess it), https then http, and a google.com line with the publisher ID marked DIRECT. Per app: ok, missing-file (HTTP 404/410), html (a web page instead of the file), no-line, reseller-only, unreachable (network error, blocked request or server error: the file may exist), no-website, unknown-website or not-linked, plus the exact line to add. Fetches the store lookup and the developer websites, not just the AdMob API.",
       inputSchema: {
         ...appArg,
         website: z.string().optional().describe("Developer website for apps whose store listing cannot be read (Android), e.g. example.com"),
@@ -366,9 +367,10 @@ export function createMcpServer(deps: McpDeps): McpServer {
       annotations,
     },
     wrap(async (a: { account?: string }) => {
-      // Never the cached service: the user may just have run a setup command (sign-in, quota project, features) in a
-      // terminal. Replacing the cache entry also lets the next tool call use the new setup.
+      // Never the cached service or token: the user may just have run a setup command (sign-in, quota project, features)
+      // in a terminal. Replacing the cache entry and the shared token also lets the next tool call use the new setup.
       const s = freshSvc(a);
+      s.tokenProvider.resetCache?.();
       return { ...(await setupStatus(s, { fetch: s.fetch })) };
     }),
   );
@@ -448,10 +450,11 @@ export function createMcpServer(deps: McpDeps): McpServer {
     {
       title: "AdMob health check",
       description:
-        "Did anything break? Compares the last complete day(s) with the days just before, per app and in total, and reports `findings` where daily earnings, match rate or show rate dropped by the threshold or more, or an app stopped sending ad requests (`breaches` is their count; 0 means nothing dropped). Rows with status `thin` had too little baseline traffic to judge: do not report them as problems. Use for \"is everything OK\", \"did revenue drop\" or a daily check; use admobctl_insights for a fuller analysis. Earnings are estimates.",
+        "Did anything break? Compares the last complete day(s) with the same weekdays in the 4 weeks before (or, with baseline_days, the days just before), per app and in total, and reports `findings` where daily earnings, match rate or show rate dropped by the threshold or more, or an app stopped sending ad requests (`breaches` is their count; 0 means nothing dropped). Rows with status `thin` had too little baseline traffic to judge: do not report them as problems. Use for \"is everything OK\", \"did revenue drop\" or a daily check; use admobctl_insights for a fuller analysis. Earnings are estimates.",
       inputSchema: {
         window_days: z.number().int().min(1).max(90).optional().describe("Complete days to judge, ending yesterday (default 1)"),
-        baseline_days: z.number().int().min(1).max(366).optional().describe("Days just before the window to compare with (default 7)"),
+        baseline_weeks: z.number().int().min(1).max(52).optional().describe("Compare with the window's weekdays in this many weeks before it (default 4; window_days up to 7)"),
+        baseline_days: z.number().int().min(1).max(366).optional().describe("Compare with this many days just before the window instead (default 7 when window_days is over 7)"),
         drop_percent: z.number().int().min(1).max(99).optional().describe("A drop of this percent or more is a breach (default 30)"),
         min_requests: z.number().int().positive().optional().describe("Baseline requests an app needs before it is judged (default 1000)"),
         ...appArg,
@@ -472,11 +475,12 @@ export function createMcpServer(deps: McpDeps): McpServer {
       }),
       annotations,
     },
-    wrap(async (a: { window_days?: number; baseline_days?: number; drop_percent?: number; min_requests?: number; app?: string; account?: string }) =>
+    wrap(async (a: { window_days?: number; baseline_weeks?: number; baseline_days?: number; drop_percent?: number; min_requests?: number; app?: string; account?: string }) =>
       fitRows({
         ...(await check(svc(a), {
           window: a.window_days,
           baseline: a.baseline_days,
+          baselineWeeks: a.baseline_weeks,
           drop: a.drop_percent === undefined ? undefined : a.drop_percent / 100,
           minRequests: a.min_requests,
           app: a.app,

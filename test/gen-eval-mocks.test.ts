@@ -70,6 +70,22 @@ function dailyReport() {
   ];
 }
 
+type Day = { year: number; month: number; day: number };
+type StreamRow = { row?: { dimensionValues: Record<string, unknown>; metricValues: Record<string, unknown> } };
+
+/** network-report-by-app.json for every day of the range, by app and date (the check's same-weekday baseline). */
+function appDailyReport({ startDate: s, endDate: e }: { startDate: Day; endDate: Day }) {
+  const [header, ...rest] = fixture<StreamRow[]>("network-report-by-app.json");
+  const days: string[] = [];
+  for (let d = Date.UTC(s.year, s.month - 1, s.day); d <= Date.UTC(e.year, e.month - 1, e.day); d += 86_400_000) {
+    days.push(new Date(d).toISOString().slice(0, 10).replace(/-/g, ""));
+  }
+  const rows = days.flatMap((value) =>
+    rest.flatMap(({ row }) => (row ? [{ row: { ...row, dimensionValues: { ...row.dimensionValues, DATE: { value } } } }] : [])),
+  );
+  return [header, ...rows, { footer: { matchingRowCount: String(rows.length) } }];
+}
+
 const geoCell = (country: string, format: string, earnings: number, requests: number, matched: number, impressions: number): Parameters<typeof synthReport>[0][number] => [
   { COUNTRY: [country], FORMAT: [format] },
   { ESTIMATED_EARNINGS: earnings, AD_REQUESTS: requests, MATCHED_REQUESTS: matched, IMPRESSIONS: impressions },
@@ -93,8 +109,9 @@ it.skipIf(!process.env.GEN_MOCKS)("generate eval mocks", async () => {
     "GET serviceusage.googleapis.com/v1/projects/": () => jsonResponse({ state: "ENABLED" }),
     "GET /adUnits": () => jsonResponse(fixture("ad-units.json")),
     "POST /networkReport:generate": (c: RecordedCall) => {
-      const spec = (c.body as { reportSpec: { dimensions: string[]; dateRange: { startDate: { month: number } } } }).reportSpec;
+      const spec = (c.body as { reportSpec: { dimensions: string[]; dateRange: { startDate: Day; endDate: Day } } }).reportSpec;
       if (spec.dimensions.includes("COUNTRY")) return jsonResponse(geoReport());
+      if (spec.dimensions.includes("DATE") && spec.dimensions.includes("APP")) return jsonResponse(appDailyReport(spec.dateRange));
       if (spec.dimensions.includes("DATE")) return jsonResponse(dailyReport());
       if (spec.dimensions.includes("AD_UNIT")) return jsonResponse(adUnitReport(spec.dateRange.startDate.month === 9 ? current : previous));
       if (spec.dimensions.includes("GMA_SDK_VERSION")) return jsonResponse(fixture("network-report-by-sdk-version.json"));

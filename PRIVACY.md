@@ -22,7 +22,8 @@ admobctl sends requests only to:
 - **Google:** the AdMob API, the AdSense Management API, the Cloud Resource Manager and Service Usage APIs, and Google's
   OAuth endpoints. [Google's privacy policy](https://policies.google.com/privacy) applies to those requests.
 - **Apple and your apps' websites**, only when you run the app-ads.txt check: Apple's iTunes lookup API receives your
-  apps' App Store IDs, and each app's developer website receives a request for `/app-ads.txt`.
+  apps' App Store IDs, and each app's developer website receives a request for `/app-ads.txt` that names admobctl and
+  its version in the User-Agent header.
 
 When you use the MCP server or the plugin, the tool results, which contain your AdMob data, go to the AI assistant that
 called the tool. That assistant's provider handles them under its own terms.

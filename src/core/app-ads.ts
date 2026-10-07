@@ -1,3 +1,4 @@
+import { VERSION } from "../version.js";
 import type { AppRef } from "./aliases.js";
 import { log } from "./log.js";
 import type { AdmobService } from "./service.js";
@@ -7,6 +8,8 @@ export const GOOGLE_CERT_ID = "f08c47fec0942fa0";
 
 const ITUNES_LOOKUP = "https://itunes.apple.com/lookup";
 const TIMEOUT_MS = 10_000;
+/** Some CDNs and bot filters refuse requests without one; this also tells site owners who is asking. */
+const USER_AGENT = `admobctl/${VERSION} (+https://github.com/Strangees/admobctl)`;
 
 export interface AppAdsRecord {
   /** Lowercased, e.g. google.com */
@@ -20,11 +23,14 @@ export interface AppAdsRecord {
   line: number;
 }
 
-/** Records from an app-ads.txt body (IAB format). Comments, blank lines and `key=value` variables are skipped. */
+/**
+ * Records from an app-ads.txt body (IAB format). Comments, blank lines and `key=value` variables are skipped. Per the
+ * IAB spec, CR, LF and CRLF all end a record, and extension data follows a ";" at the end of a record.
+ */
 export function parseAppAds(body: string): AppAdsRecord[] {
   const records: AppAdsRecord[] = [];
-  body.split(/\r?\n/).forEach((raw, i) => {
-    const text = raw.replace(/#.*/, "").trim();
+  body.split(/\r\n|\r|\n/).forEach((raw, i) => {
+    const text = raw.replace(/#.*/, "").replace(/;.*/, "").trim();
     if (!text || /^[a-z_-]+\s*=/i.test(text)) return;
     const [domain, publisherId, relationship, certId] = text.split(",").map((f) => f.trim());
     if (!domain || !publisherId || !relationship) return;
@@ -115,7 +121,7 @@ type Probe =
 async function probe(doFetch: typeof fetch, url: string): Promise<Probe> {
   log.debug(`GET ${url}`);
   try {
-    const res = await doFetch(url, { redirect: "follow", signal: AbortSignal.timeout(TIMEOUT_MS) });
+    const res = await doFetch(url, { redirect: "follow", headers: { "user-agent": USER_AGENT }, signal: AbortSignal.timeout(TIMEOUT_MS) });
     const body = await res.text();
     const finalUrl = res.url || url;
     if (!res.ok) return { kind: "status", url: finalUrl, status: res.status };
@@ -202,14 +208,27 @@ function siteFor(app: AppRef, ios: Map<string, string | null> | undefined, opts:
   );
 }
 
+/** Only 404 and 410 say the file is not there. Anything else (a bot filter, rate limit or server error) means it could not be read. */
+function statusVerdict(url: string, status: number): Pick<AppAdsAppResult, "status" | "detail" | "notes"> {
+  if (status === 404 || status === 410) return { status: "missing-file", detail: `${url} returned HTTP ${status}.`, notes: [] };
+  const why =
+    status === 401 || status === 403 || status === 429
+      ? "the request was blocked, perhaps by a firewall, bot filter or rate limit"
+      : status >= 500
+        ? "the site had a server error"
+        : "the site did not return it";
+  return { status: "unreachable", detail: `Could not read ${url}: ${why} (HTTP ${status}). Check that it opens in a browser.`, notes: [] };
+}
+
 function verdict(result: Probe, host: string, publisherId: string): Pick<AppAdsAppResult, "status" | "detail" | "fileUrl" | "notes"> {
   if (result.kind === "error") return { status: "unreachable", detail: `Could not reach ${host}: ${result.message}`, notes: [] };
-  if (result.kind === "status") return { status: "missing-file", detail: `${result.url} returned HTTP ${result.status}.`, notes: [] };
+  if (result.kind === "status") return statusVerdict(result.url, result.status);
   if (result.kind === "html") {
     return { status: "html", detail: `${result.url} returned a web page, not a plain-text app-ads.txt.`, fileUrl: result.url, notes: [] };
   }
+  const pub = publisherId.toLowerCase();
   const google = parseAppAds(result.body).filter((r) => r.domain === "google.com");
-  const mine = google.filter((r) => r.publisherId === publisherId.toLowerCase());
+  const mine = google.filter((r) => r.publisherId === pub);
   const direct = mine.find((r) => r.relationship === "DIRECT");
   if (direct) {
     const notes =
@@ -222,6 +241,16 @@ function verdict(result: Probe, host: string, publisherId: string): Pick<AppAdsA
     return {
       status: "reseller-only",
       detail: `${result.url} lists ${publisherId} as ${mine[0]!.relationship} (line ${mine[0]!.line}); AdMob needs DIRECT.`,
+      fileUrl: result.url,
+      notes: [],
+    };
+  }
+  // The app ID form (ca-app-pub-…, sometimes with ~app or /unit) is a common mix-up for the publisher ID.
+  const prefixed = google.find((r) => r.publisherId.startsWith("ca-app-") && r.publisherId.slice(7).split(/[~/]/)[0] === pub);
+  if (prefixed) {
+    return {
+      status: "no-line",
+      detail: `${result.url} lists ${prefixed.publisherId} (line ${prefixed.line}); app-ads.txt takes the publisher ID: use ${publisherId}, not ca-app-${publisherId}.`,
       fileUrl: result.url,
       notes: [],
     };
