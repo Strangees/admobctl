@@ -12,6 +12,7 @@ import {
   API_MAX_ROWS,
   buildReportSpec,
   checkCombination,
+  checkMaxRows,
   compatibleMetrics,
   friendlyMetric,
   friendlyName,
@@ -517,17 +518,19 @@ export class AdmobService {
     return { current, previous };
   }
 
+  /** Keys that name the same dimension (unit and ad-unit, country and Country) are merged, not overwritten. */
   private async resolveFilters(kind: ReportKind, filters: Record<string, string[]>): Promise<Record<string, string[]>> {
     const out: Record<string, string[]> = {};
     for (const [dim, values] of Object.entries(filters)) {
       const api = normalizeDimension(dim, kind);
-      out[api] = api === "APP" ? await Promise.all(values.map(async (v) => (await this.resolveApp(v)).appId)) : values;
+      const resolved = api === "APP" ? await Promise.all(values.map(async (v) => (await this.resolveApp(v)).appId)) : values;
+      out[api] = [...new Set([...(out[api] ?? []), ...resolved])];
     }
     return out;
   }
 
   private async report(kind: StreamedReportKind, q: ReportQuery): Promise<ReportResult> {
-    const cap = q.maxRows ?? API_MAX_ROWS;
+    const cap = q.maxRows === undefined ? API_MAX_ROWS : checkMaxRows(q.maxRows);
     // The live API caps matchingRowCount at maxReportRows, so it cannot say whether rows were left out.
     // Ask for one row more than --max-rows instead: if it comes back, the report was cut short.
     const probe = cap < API_MAX_ROWS;

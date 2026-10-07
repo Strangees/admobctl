@@ -5,7 +5,7 @@ import { exec as defaultExec } from "../core/exec.js";
 import { CloudClient } from "../core/setup/cloud.js";
 import { parseFeatures } from "../core/setup/features.js";
 import { setupStatus } from "../core/setup/status.js";
-import { profileCommand } from "../core/setup/commands.js";
+import { profileCommand, shellQuote } from "../core/setup/commands.js";
 import {
   applyApis,
   applyLogin,
@@ -568,8 +568,8 @@ export function buildProgram(io: CliIO): Command {
       .option("--to <date>", "end, YYYY-MM or YYYY-MM-DD (default: same as --from)")
       .option("--by <dims>", `dimensions, comma-separated (e.g. app,country${kind === "mediation" ? ",ad-source" : ""})`, list)
       .option("--metrics <metrics>", "metrics, comma-separated (default: all common ones)", list)
-      .option("--filter <k=v,…>", "filter, repeatable (e.g. country=NO,SE or app=<alias>)", (v, p: string[] = []) => [...p, v])
-      .option("--max-rows <n>", "cap the number of rows", positiveInt)
+      .option("--filter <k=v,…>", "filter, repeatable; values for one dimension add up (e.g. country=NO,SE or app=<alias>)", (v, p: string[] = []) => [...p, v])
+      .option("--max-rows <n>", "cap the number of rows (at most 100000, the API's limit)", positiveInt)
       .option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)")
       .option("--sort <field[:asc|desc]>", "sort by a dimension or metric of the report (default: by time, else by earnings)")
       .addOption(new Option("--compare <period>", "add each row's change against the equal-length period just before").choices([...COMPARISONS]))
@@ -881,6 +881,12 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       return err.exitCode === 0 ? 0 : 2;
     }
     const opts = program.opts<GlobalOpts>();
+    // An API error without a better remedy: the same command with -v logs the API's full response body (such as the
+    // field it rejected). Built here because only the CLI knows the command line; MCP clients get no such advice.
+    if (err instanceof AdmobctlError && err.code === "API_ERROR" && !err.fix && !opts.verbose) {
+      const fix = `admobctl -v ${argv.slice(2).map(shellQuote).join(" ")}`;
+      err = new AdmobctlError(err.code, err.message, { status: err.status, cause: err, fix });
+    }
     if (err instanceof AdmobctlError && err.fix) {
       let configuredDefault: string | undefined;
       try { configuredDefault = loadConfig(io.service?.configDir ?? configDir()).defaultProfile; } catch { /* Preserve the original config error. */ }

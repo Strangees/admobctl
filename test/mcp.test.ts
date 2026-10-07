@@ -177,6 +177,30 @@ describe("mcp server", () => {
     expect(JSON.parse(r.content[0]!.text)).toEqual(r.structuredContent);
   });
 
+  it("merges report filters whose keys name the same dimension", async () => {
+    const { client, calls } = await connect();
+    const r = (await client.callTool({
+      name: "admobctl_network_report",
+      arguments: { from: "2026-09", by: ["app"], filters: { country: ["NO"], Country: ["SE"], unit: ["ca-app-pub-0000000000000001/9000000001"], "ad-unit": ["ca-app-pub-0000000000000001/9000000002"] } },
+    })) as ToolResult;
+    expect(r.isError).toBeFalsy();
+    const sent = calls.find((c) => c.url.includes("networkReport"))!.body as { reportSpec: { dimensionFilters: unknown } };
+    expect(sent.reportSpec.dimensionFilters).toEqual([
+      { dimension: "COUNTRY", matchesAny: { values: ["NO", "SE"] } },
+      { dimension: "AD_UNIT", matchesAny: { values: ["ca-app-pub-0000000000000001/9000000001", "ca-app-pub-0000000000000001/9000000002"] } },
+    ]);
+  });
+
+  it("does not tell an agent to re-run with -v when the API rejects a request", async () => {
+    const { client } = await connect({
+      "POST /networkReport:generate": () => jsonResponse({ error: { code: 400, message: "Request contains an invalid argument." } }, 400),
+    });
+    const r = (await client.callTool({ name: "admobctl_network_report", arguments: { from: "2026-09" } })) as ToolResult;
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toContain("Request contains an invalid argument.");
+    expect(r.content[0]!.text).not.toMatch(/-v\b|Fix:/);
+  });
+
   it("caps report rows by default and says so", async () => {
     const { client, calls } = await connect();
     const r = (await client.callTool({

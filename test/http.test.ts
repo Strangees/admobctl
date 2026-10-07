@@ -70,6 +70,33 @@ describe("requestJson", () => {
     expect(s.delays[1]!).toBeGreaterThan(s.delays[0]!);
   });
 
+  it("ignores a Retry-After of 0 or less and backs off as usual", async () => {
+    const s = sequence([
+      jsonResponse({}, 503, { "retry-after": "0" }),
+      jsonResponse({}, 503, { "retry-after": "-30" }),
+      jsonResponse({}, 503, { "retry-after": new Date(Date.now() - 60_000).toUTCString() }),
+      jsonResponse({ ok: 1 }),
+    ]);
+    await expect(requestJson("https://x/y", {}, { ...s, baseDelayMs: 500 })).resolves.toEqual({ ok: 1 });
+    expect(s.delays).toHaveLength(3);
+    expect(s.delays[0]!).toBeGreaterThanOrEqual(500);
+    expect(s.delays[1]!).toBeGreaterThanOrEqual(1000);
+    expect(s.delays[2]!).toBeGreaterThanOrEqual(2000);
+  });
+
+  it("waits at least the backoff when Retry-After asks for less", async () => {
+    const s = sequence([jsonResponse({}, 503), jsonResponse({}, 503), jsonResponse({}, 429, { "retry-after": "1" }), jsonResponse({ ok: 1 })]);
+    await requestJson("https://x/y", {}, { ...s, baseDelayMs: 500 });
+    expect(s.delays[2]!).toBeGreaterThanOrEqual(2000);
+  });
+
+  it("does not promise a wait of about 1 second when the last 429 said Retry-After: 0", async () => {
+    const s = sequence([jsonResponse({ error: { message: "slow down" } }, 429, { "retry-after": "0" })]);
+    const err = (await requestJson("https://x/y", {}, { ...s, retries: 0 }).catch((e) => e)) as AdmobctlError;
+    expect(err.code).toBe("RATE_LIMITED");
+    expect(err.fix).toBe("Wait a minute and retry, or narrow the report.");
+  });
+
   it("honours Retry-After seconds", async () => {
     const s = sequence([jsonResponse({}, 429, { "retry-after": "7" }), jsonResponse({ ok: 1 })]);
     await requestJson("https://x/y", {}, s);
@@ -129,6 +156,44 @@ describe("requestJson", () => {
     expect(err.fix).toMatch(/30 seconds/);
     expect(s.count()).toBe(3);
     expect(s.delays).toEqual([30_000, 30_000]);
+  });
+
+  it("fails on a 2xx whose body is not JSON (a Wi-Fi sign-in page) instead of returning the text, and does not retry", async () => {
+    const page = "<html><head><title>Sign in to Wi-Fi</title></head><body><form>…</form></body></html>";
+    const s = sequence([new Response(page, { status: 200, headers: { "content-type": "text/html" } }), jsonResponse({ ok: 1 })]);
+    const err = (await requestJson("https://admob.googleapis.com/v1/accounts", {}, s).catch((e) => e)) as AdmobctlError;
+    expect(err).toBeInstanceOf(AdmobctlError);
+    expect(err.code).toBe("API_ERROR");
+    expect(err.message).toContain("AdMob API");
+    expect(err.message).toContain("not JSON");
+    expect(err.message).toContain("Sign in to Wi-Fi");
+    expect(err.message).not.toContain("<form>");
+    expect(err.fix).toMatch(/network/i);
+    expect(s.count()).toBe(1);
+  });
+
+  it("fails on a 200 with an empty body", async () => {
+    const s = sequence([new Response("", { status: 200 })]);
+    const err = (await requestJson("https://admob.googleapis.com/v1/accounts", {}, s).catch((e) => e)) as AdmobctlError;
+    expect(err).toBeInstanceOf(AdmobctlError);
+    expect(err.code).toBe("API_ERROR");
+    expect(err.message).toMatch(/empty response/);
+  });
+
+  it("accepts 204 No Content without a body", async () => {
+    const s = sequence([new Response(null, { status: 204 })]);
+    await expect(requestJson("https://x/y", {}, s)).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ["https://adsense.googleapis.com/v2/accounts/pub-1/payments", "AdSense Management API error 500"],
+    ["https://serviceusage.googleapis.com/v1/projects/p/services/x", "Service Usage API error 500"],
+    ["https://cloudresourcemanager.googleapis.com/v3/projects/p", "Cloud Resource Manager API error 500"],
+    ["https://admob.googleapis.com/v1/accounts", "AdMob API error 500"],
+  ])("labels an error from %s by its API", async (url, label) => {
+    const s = sequence([jsonResponse({ error: { code: 500, message: "boom" } }, 500)]);
+    const err = (await requestJson(url, {}, { ...s, retries: 0 }).catch((e) => e)) as AdmobctlError;
+    expect(err.message).toBe(`${label}: boom`);
   });
 
   it("does not retry 4xx client errors", async () => {

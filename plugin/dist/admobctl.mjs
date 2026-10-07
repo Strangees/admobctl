@@ -10573,6 +10573,7 @@ function useColor() {
 var program = new Command();
 
 // src/core/errors.ts
+import { STATUS_CODES } from "node:http";
 var ADMOB_SCOPE = "https://www.googleapis.com/auth/admob.readonly";
 var CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
 var MONETIZATION_SCOPE = "https://www.googleapis.com/auth/admob.monetization";
@@ -10609,9 +10610,21 @@ function formatDuration(ms) {
   if (mins < 120) return mins % 60 === 0 ? plural(mins / 60, "hour") : plural(mins, "minute");
   return plural(Math.round(ms / 36e5), "hour");
 }
+var MAX_BODY_CHARS = 200;
+function summarizeBody(body, status) {
+  let text = "";
+  if (typeof body === "string") {
+    const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(body)?.[1];
+    text = title ?? body.replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, " ").replace(/<[^>]*>/g, " ");
+  } else if (body !== void 0 && body !== null) text = JSON.stringify(body);
+  text = text.replace(/\s+/g, " ").trim();
+  if (!text) return (status === void 0 ? void 0 : STATUS_CODES[status]) ?? "empty response";
+  return text.length > MAX_BODY_CHARS ? `${text.slice(0, MAX_BODY_CHARS)}\u2026` : text;
+}
 function diagnoseApiError(status, body, hints = {}) {
   const parsed = typeof body === "object" && body !== null ? body : {};
-  const message = parsed.error?.message ?? (typeof body === "string" ? body : JSON.stringify(body));
+  const message = parsed.error?.message ?? summarizeBody(body, status);
+  const api = hints.api ?? "AdMob API";
   const info = errorInfo(parsed);
   const reason = info?.reason;
   const opts = { status };
@@ -10649,14 +10662,16 @@ function diagnoseApiError(status, body, hints = {}) {
       fix: "Check that the signed-in Google user has access to this AdMob account (admobctl accounts list)."
     });
   }
-  if (status === 404) return new AdmobctlError("NOT_FOUND", `Not found: ${message}`, opts);
+  if (status === 404) {
+    return new AdmobctlError("NOT_FOUND", `Not found: ${message}`, { ...opts, fix: "admobctl accounts list" });
+  }
   if (status === 429) {
-    return new AdmobctlError("RATE_LIMITED", `Rate limited by the AdMob API: ${message}`, {
+    return new AdmobctlError("RATE_LIMITED", `Rate limited by the ${api}: ${message}`, {
       ...opts,
       fix: hints.retryAfterMs === void 0 ? "Wait a minute and retry, or narrow the report." : `The API asked to wait: retry in about ${formatDuration(hints.retryAfterMs)}, or narrow the report.`
     });
   }
-  return new AdmobctlError("API_ERROR", `AdMob API error ${status}: ${message}`, opts);
+  return new AdmobctlError("API_ERROR", `${api} error ${status}: ${message}`, opts);
 }
 
 // src/core/aliases.ts
@@ -10980,9 +10995,23 @@ function retryAfterMs(res) {
   const h = res.headers.get("retry-after");
   if (!h) return void 0;
   const secs = Number(h);
-  if (Number.isFinite(secs)) return secs * 1e3;
-  const at = Date.parse(h);
-  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : void 0;
+  const ms = Number.isFinite(secs) ? secs * 1e3 : Date.parse(h) - Date.now();
+  return Number.isFinite(ms) && ms > 0 ? ms : void 0;
+}
+var API_NAMES = {
+  "admob.googleapis.com": "AdMob API",
+  "adsense.googleapis.com": "AdSense Management API",
+  "cloudresourcemanager.googleapis.com": "Cloud Resource Manager API",
+  "serviceusage.googleapis.com": "Service Usage API"
+};
+function notJsonError(url2, status, body) {
+  const host = new URL(url2).host;
+  const what = body === void 0 ? `an empty response (HTTP ${status})` : `a response that is not JSON (HTTP ${status}: ${summarizeBody(body)})`;
+  return new AdmobctlError(
+    "API_ERROR",
+    `The ${API_NAMES[host] ?? host} request got ${what}. A proxy, firewall or Wi-Fi sign-in page may be answering instead of Google.`,
+    { fix: "Check your network connection (sign in to the Wi-Fi if it asks you to), then retry." }
+  );
 }
 async function readBody(res) {
   const text = await res.text();
@@ -11005,7 +11034,7 @@ async function attemptOnce(doFetch, url2, init, canRetry, backoff, maxRetryAfter
   }
   await res.body?.cancel().catch(() => {
   });
-  return { kind: "retry", status: res.status, wait: retryAfter ?? backoff };
+  return { kind: "retry", status: res.status, wait: Math.max(retryAfter ?? 0, backoff) };
 }
 async function requestJson(url2, init, opts = {}) {
   const doFetch = opts.fetch ?? fetch;
@@ -11051,10 +11080,15 @@ async function requestJson(url2, init, opts = {}) {
       clearTimeout(timeoutId);
     }
     log.debug(`${init.method ?? "GET"} ${url2} \u2192 ${outcome.status} (${Date.now() - started}ms)`);
-    if (outcome.kind === "ok") return outcome.body;
+    if (outcome.kind === "ok") {
+      if (outcome.status !== 204 && (outcome.body === void 0 || typeof outcome.body === "string")) {
+        throw notJsonError(url2, outcome.status, outcome.body);
+      }
+      return outcome.body;
+    }
     if (outcome.kind === "fail") {
       log.debug(`response: ${(typeof outcome.body === "string" ? outcome.body : JSON.stringify(outcome.body) ?? "").slice(0, 2e3)}`);
-      throw diagnoseApiError(outcome.status, outcome.body, { retryAfterMs: outcome.retryAfterMs });
+      throw diagnoseApiError(outcome.status, outcome.body, { retryAfterMs: outcome.retryAfterMs, api: API_NAMES[new URL(url2).host] });
     }
     log.debug(`HTTP ${outcome.status}; retrying in ${outcome.wait}ms`);
     await sleep(outcome.wait);
@@ -11261,11 +11295,13 @@ function setProfileValue(config2, profile, key, value) {
 }
 
 // src/core/setup/commands.ts
+function shellQuote(arg) {
+  return /^[A-Za-z0-9._\/=,:@%+-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, "'\\''")}'`;
+}
 function profileCommand(command, profile, configuredDefault = "default") {
   if (profile === "default" && configuredDefault === "default") return command;
   if (/--profile(?:[=\s]|$)/.test(command)) return command;
-  const quoted = /^[A-Za-z0-9._-]+$/.test(profile) ? profile : `'${profile.replace(/'/g, "'\\''")}'`;
-  return command.replace(/\badmobctl /, () => `admobctl --profile ${quoted} `);
+  return command.replace(/\badmobctl /, () => `admobctl --profile ${shellQuote(profile)} `);
 }
 
 // src/core/setup/status.ts
@@ -11863,19 +11899,29 @@ function splitRange(r, maxDays) {
 }
 
 // src/core/money.ts
+function tooLarge(what) {
+  return new AdmobctlError(
+    "AMOUNT_TOO_LARGE",
+    `${what} is too large to keep exact (integer precision ends near 9 billion in the report's currency). Narrow the date range (e.g. a month at a time), or report in a larger currency with --currency USD where the command takes it.`
+  );
+}
 function parseMicros(value) {
   if (value === void 0 || value === null || value === "") return 0;
   const n = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(n)) throw new Error(`Invalid micros value: ${String(value)}`);
-  if (!Number.isSafeInteger(n)) {
-    throw new Error(`Micros value ${String(value)} exceeds safe integer precision`);
+  if (!Number.isInteger(n)) {
+    throw new AdmobctlError("API_ERROR", `The AdMob API sent an invalid money value: ${String(value)}`, {
+      fix: "Retry in a few minutes."
+    });
   }
+  if (!Number.isSafeInteger(n)) throw tooLarge(`The amount ${String(value)} micros`);
   return n;
 }
 function sumMicros(values) {
   let total = 0;
-  for (const v of values) total += v;
-  if (!Number.isSafeInteger(total)) throw new Error("Micros sum exceeds safe integer precision");
+  for (const v of values) {
+    total += v;
+    if (!Number.isSafeInteger(total)) throw tooLarge("The total");
+  }
   return total;
 }
 function formatMicros(micros, decimals = 2) {
@@ -14020,6 +14066,12 @@ function normalizeMetric(name, kind) {
   return resolved;
 }
 var API_MAX_ROWS = 1e5;
+function checkMaxRows(n) {
+  if (!Number.isInteger(n) || n < 1 || n > API_MAX_ROWS) {
+    throw usageError(`--max-rows must be a whole number from 1 to ${API_MAX_ROWS} (the AdMob API's limit), got ${n}.`);
+  }
+  return n;
+}
 var TIME_DIMENSIONS = ["DATE", "WEEK", "MONTH"];
 var INCOMPATIBLE = {
   AD_TYPE: ["AD_REQUESTS", "MATCH_RATE", "IMPRESSION_RPM"]
@@ -14090,7 +14142,7 @@ function buildReportSpec(kind, input2) {
     spec.sortConditions = [{ metric: "ESTIMATED_EARNINGS", order: "DESCENDING" }];
   }
   if (input2.currency !== void 0) spec.localizationSettings = { currencyCode: normalizeCurrency(input2.currency) };
-  if (input2.maxRows !== void 0) spec.maxReportRows = input2.maxRows;
+  if (input2.maxRows !== void 0) spec.maxReportRows = checkMaxRows(input2.maxRows);
   return spec;
 }
 function metricNumber(key, v) {
@@ -14100,10 +14152,17 @@ function metricNumber(key, v) {
   return v.doubleValue ?? 0;
 }
 function parseReport(raw) {
-  const rows = raw?.rows;
-  const chunks = Array.isArray(raw) ? raw : Array.isArray(rows) ? rows.map((row) => ({ row })) : [raw];
+  if (!isObject(raw)) throw invalidReport(raw);
+  const rows = raw.rows;
+  const chunks = Array.isArray(raw) ? raw : Array.isArray(rows) ? rows.map((row) => {
+    if (!isObject(row)) throw invalidReport(row);
+    return { row };
+  }) : [raw];
   const report = { rows: [], warnings: [] };
-  for (const chunk of chunks) {
+  for (const item of chunks) {
+    if (!isObject(item)) throw invalidReport(item);
+    const chunk = item;
+    if (chunk.error) throw diagnoseApiError(chunk.error.code ?? 500, chunk);
     if (chunk.header) {
       report.currency = chunk.header.localizationSettings?.currencyCode;
       report.timeZone = chunk.header.reportingTimeZone;
@@ -14124,6 +14183,15 @@ function parseReport(raw) {
     }
   }
   return report;
+}
+function isObject(v) {
+  return typeof v === "object" && v !== null;
+}
+function invalidReport(part) {
+  const got = part === void 0 ? "nothing" : part === null ? "null" : summarizeBody(part);
+  return new AdmobctlError("API_ERROR", `The AdMob API sent a report in an unexpected format (got ${got}).`, {
+    fix: "Retry in a few minutes; if it keeps happening, check for a proxy or firewall between you and Google."
+  });
 }
 
 // src/core/client.ts
@@ -14750,16 +14818,18 @@ var AdmobService = class _AdmobService {
     ]);
     return { current, previous };
   }
+  /** Keys that name the same dimension (unit and ad-unit, country and Country) are merged, not overwritten. */
   async resolveFilters(kind, filters) {
     const out = {};
     for (const [dim, values] of Object.entries(filters)) {
       const api = normalizeDimension(dim, kind);
-      out[api] = api === "APP" ? await Promise.all(values.map(async (v) => (await this.resolveApp(v)).appId)) : values;
+      const resolved = api === "APP" ? await Promise.all(values.map(async (v) => (await this.resolveApp(v)).appId)) : values;
+      out[api] = [.../* @__PURE__ */ new Set([...out[api] ?? [], ...resolved])];
     }
     return out;
   }
   async report(kind, q) {
-    const cap = q.maxRows ?? API_MAX_ROWS;
+    const cap = q.maxRows === void 0 ? API_MAX_ROWS : checkMaxRows(q.maxRows);
     const probe2 = cap < API_MAX_ROWS;
     if (q.compare !== void 0 && !COMPARISONS.includes(q.compare)) {
       throw usageError(`Unknown comparison "${q.compare}". Supported: ${COMPARISONS.join(", ")}`);
@@ -15955,7 +16025,7 @@ function buildProgram(io) {
   });
   const report = program2.command("report").description("Network and mediation reports");
   for (const kind of ["network", "mediation"]) {
-    report.command(kind).description(`Generate a ${kind} report`).requiredOption("--from <date>", "start, YYYY-MM or YYYY-MM-DD").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD (default: same as --from)").option("--by <dims>", `dimensions, comma-separated (e.g. app,country${kind === "mediation" ? ",ad-source" : ""})`, list).option("--metrics <metrics>", "metrics, comma-separated (default: all common ones)", list).option("--filter <k=v,\u2026>", "filter, repeatable (e.g. country=NO,SE or app=<alias>)", (v, p = []) => [...p, v]).option("--max-rows <n>", "cap the number of rows", positiveInt).option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)").option("--sort <field[:asc|desc]>", "sort by a dimension or metric of the report (default: by time, else by earnings)").addOption(new Option("--compare <period>", "add each row's change against the equal-length period just before").choices([...COMPARISONS])).action(async (o, cmd) => {
+    report.command(kind).description(`Generate a ${kind} report`).requiredOption("--from <date>", "start, YYYY-MM or YYYY-MM-DD").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD (default: same as --from)").option("--by <dims>", `dimensions, comma-separated (e.g. app,country${kind === "mediation" ? ",ad-source" : ""})`, list).option("--metrics <metrics>", "metrics, comma-separated (default: all common ones)", list).option("--filter <k=v,\u2026>", "filter, repeatable; values for one dimension add up (e.g. country=NO,SE or app=<alias>)", (v, p = []) => [...p, v]).option("--max-rows <n>", "cap the number of rows (at most 100000, the API's limit)", positiveInt).option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)").option("--sort <field[:asc|desc]>", "sort by a dimension or metric of the report (default: by time, else by earnings)").addOption(new Option("--compare <period>", "add each row's change against the equal-length period just before").choices([...COMPARISONS])).action(async (o, cmd) => {
       const s = svc(cmd);
       const q = {
         from: o.from,
@@ -16141,6 +16211,10 @@ async function run(argv, io) {
       return err.exitCode === 0 ? 0 : 2;
     }
     const opts = program2.opts();
+    if (err instanceof AdmobctlError && err.code === "API_ERROR" && !err.fix && !opts.verbose) {
+      const fix = `admobctl -v ${argv.slice(2).map(shellQuote).join(" ")}`;
+      err = new AdmobctlError(err.code, err.message, { status: err.status, cause: err, fix });
+    }
     if (err instanceof AdmobctlError && err.fix) {
       let configuredDefault;
       try {
@@ -20410,7 +20484,7 @@ __export(util_exports, {
   hexToUint8Array: () => hexToUint8Array,
   hide: () => hide,
   installLazyProp: () => installLazyProp,
-  isObject: () => isObject,
+  isObject: () => isObject2,
   isPlainObject: () => isPlainObject,
   issue: () => issue,
   joinValues: () => joinValues,
@@ -20634,7 +20708,7 @@ function slugify2(input2) {
 }
 var captureStackTrace = "captureStackTrace" in Error ? Error.captureStackTrace : (..._args) => {
 };
-function isObject(data) {
+function isObject2(data) {
   return typeof data === "object" && data !== null && !Array.isArray(data);
 }
 var allowsEval = /* @__PURE__ */ cached(() => {
@@ -20653,7 +20727,7 @@ var allowsEval = /* @__PURE__ */ cached(() => {
   }
 });
 function isPlainObject(o) {
-  if (isObject(o) === false)
+  if (isObject2(o) === false)
     return false;
   const ctor = o.constructor;
   if (ctor === void 0)
@@ -20661,7 +20735,7 @@ function isPlainObject(o) {
   if (typeof ctor !== "function")
     return true;
   const prot = ctor.prototype;
-  if (isObject(prot) === false)
+  if (isObject2(prot) === false)
     return false;
   if (Object.prototype.hasOwnProperty.call(prot, "isPrototypeOf") === false) {
     return false;
@@ -23309,7 +23383,7 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
     }
     return propValues;
   });
-  const isObject2 = isObject;
+  const isObject3 = isObject2;
   const catchall = def.catchall;
   let value;
   const memo2 = globalConfig.memoizer;
@@ -23317,7 +23391,7 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
   inst._zod.parse = (payload, ctx) => {
     value ?? (value = _normalized.value);
     const input2 = payload.value;
-    if (!isObject2(input2)) {
+    if (!isObject3(input2)) {
       payload.issues.push({
         expected: "object",
         code: "invalid_type",
@@ -23453,7 +23527,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
     return doc.compile();
   };
   let fastpass;
-  const isObject2 = isObject;
+  const isObject3 = isObject2;
   const jit = !globalConfig.jitless;
   const allowsEval2 = allowsEval;
   const fastEnabled = jit && allowsEval2.value;
@@ -23462,7 +23536,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
   inst._zod.parse = (payload, ctx) => {
     value ?? (value = _normalized.value);
     const input2 = payload.value;
-    if (!isObject2(input2)) {
+    if (!isObject3(input2)) {
       payload.issues.push({
         expected: "object",
         code: "invalid_type",
@@ -23670,7 +23744,7 @@ var $ZodDiscriminatedUnion = /* @__PURE__ */ $constructor("$ZodDiscriminatedUnio
   const disc = cached(() => discriminatorMap(def));
   inst._zod.parse = (payload, ctx) => {
     const input2 = payload.value;
-    if (!isObject(input2)) {
+    if (!isObject2(input2)) {
       payload.issues.push({
         code: "invalid_type",
         expected: "object",

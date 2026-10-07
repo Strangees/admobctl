@@ -1,5 +1,5 @@
 import type { DateRange } from "./dates.js";
-import { usageError } from "./errors.js";
+import { AdmobctlError, diagnoseApiError, summarizeBody, usageError } from "./errors.js";
 import { parseMicros } from "./money.js";
 
 export type ReportKind = "network" | "mediation" | "campaign";
@@ -130,6 +130,17 @@ export interface ReportSpec {
 /** The API's own maximum for maxReportRows. */
 export const API_MAX_ROWS = 100_000;
 
+/**
+ * A row cap the API accepts. Above its limit the API either rejects the spec or quietly returns 100000 rows, which
+ * would not look truncated, so totals would cover part of the data.
+ */
+export function checkMaxRows(n: number): number {
+  if (!Number.isInteger(n) || n < 1 || n > API_MAX_ROWS) {
+    throw usageError(`--max-rows must be a whole number from 1 to ${API_MAX_ROWS} (the AdMob API's limit), got ${n}.`);
+  }
+  return n;
+}
+
 export const TIME_DIMENSIONS = ["DATE", "WEEK", "MONTH"];
 
 /** Combinations the API rejects (both the reference and the metrics guide agree). */
@@ -220,7 +231,7 @@ export function buildReportSpec(kind: ReportKind, input: ReportSpecInput): Repor
   }
 
   if (input.currency !== undefined) spec.localizationSettings = { currencyCode: normalizeCurrency(input.currency) };
-  if (input.maxRows !== undefined) spec.maxReportRows = input.maxRows;
+  if (input.maxRows !== undefined) spec.maxReportRows = checkMaxRows(input.maxRows);
   return spec;
 }
 
@@ -251,6 +262,8 @@ interface RawMetricValue {
 }
 
 interface RawChunk {
+  /** A stream that fails part-way ends with an error chunk (google.rpc.Status) instead of a footer. */
+  error?: { code?: number; message?: string; status?: string };
   header?: {
     dateRange?: DateRange;
     localizationSettings?: { currencyCode?: string };
@@ -279,10 +292,22 @@ function metricNumber(key: string, v: RawMetricValue): number {
  * (header, rows, footer), or campaignReport:generate's single `{ rows: [...] }` object.
  */
 export function parseReport(raw: unknown): Report {
-  const rows = (raw as { rows?: RawChunk["row"][] } | undefined)?.rows;
-  const chunks: RawChunk[] = Array.isArray(raw) ? raw : Array.isArray(rows) ? rows.map((row) => ({ row })) : [raw as RawChunk];
+  if (!isObject(raw)) throw invalidReport(raw);
+  const rows = (raw as { rows?: unknown[] }).rows;
+  const chunks: unknown[] = Array.isArray(raw)
+    ? raw
+    : Array.isArray(rows)
+      ? rows.map((row) => {
+          if (!isObject(row)) throw invalidReport(row);
+          return { row };
+        })
+      : [raw];
   const report: Report = { rows: [], warnings: [] };
-  for (const chunk of chunks) {
+  for (const item of chunks) {
+    if (!isObject(item)) throw invalidReport(item);
+    const chunk = item as RawChunk;
+    // The rows before an error are not the whole report: fail rather than present them as complete.
+    if (chunk.error) throw diagnoseApiError(chunk.error.code ?? 500, chunk);
     if (chunk.header) {
       report.currency = chunk.header.localizationSettings?.currencyCode;
       report.timeZone = chunk.header.reportingTimeZone;
@@ -303,4 +328,15 @@ export function parseReport(raw: unknown): Report {
     }
   }
   return report;
+}
+
+function isObject(v: unknown): v is object {
+  return typeof v === "object" && v !== null;
+}
+
+function invalidReport(part: unknown): AdmobctlError {
+  const got = part === undefined ? "nothing" : part === null ? "null" : summarizeBody(part);
+  return new AdmobctlError("API_ERROR", `The AdMob API sent a report in an unexpected format (got ${got}).`, {
+    fix: "Retry in a few minutes; if it keeps happening, check for a proxy or firewall between you and Google.",
+  });
 }

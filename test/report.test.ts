@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildReportSpec, compatibleMetrics, normalizeDimension, normalizeMetric, parseReport } from "../src/core/report.js";
+import { AdmobctlError } from "../src/core/errors.js";
 import { fixture } from "./helpers.js";
 
 describe("parseReport", () => {
@@ -37,6 +38,37 @@ describe("parseReport", () => {
   it("accepts an empty report (header and footer only)", () => {
     const r = parseReport([{ header: { localizationSettings: { currencyCode: "NOK" } } }, { footer: {} }]);
     expect(r.rows).toEqual([]);
+  });
+
+  it("accepts an empty campaign report (an object without rows)", () => {
+    expect(parseReport({}).rows).toEqual([]);
+  });
+
+  it("fails on an error chunk in the stream instead of returning the rows before it as the whole report", () => {
+    const [header, row] = fixture<unknown[]>("network-report-by-app.json");
+    const raw = [header, row, { error: { code: 500, message: "Internal error encountered.", status: "INTERNAL" } }];
+    expect(() => parseReport(raw)).toThrow(AdmobctlError);
+    expect(() => parseReport(raw)).toThrow(
+      expect.objectContaining({ code: "API_ERROR", status: 500, message: expect.stringContaining("Internal error encountered.") }),
+    );
+  });
+
+  it("diagnoses an error object returned in place of a report", () => {
+    expect(() => parseReport({ error: { code: 403, message: "The caller does not have permission", status: "PERMISSION_DENIED" } })).toThrow(
+      expect.objectContaining({ code: "PERMISSION_DENIED" }),
+    );
+  });
+
+  it.each([
+    ["text", "<html>Sign in to Wi-Fi</html>"],
+    ["an empty body", undefined],
+    ["null", null],
+    ["a null chunk", [{ header: {} }, null, { footer: {} }]],
+    ["a number chunk", [{ header: {} }, 7]],
+    ["a null campaign row", { rows: [null] }],
+    ["a number campaign row", { rows: [{ dimensionValues: {}, metricValues: {} }, 7] }],
+  ])("rejects %s with a readable error, not a TypeError", (_name, raw) => {
+    expect(() => parseReport(raw)).toThrow(expect.objectContaining({ code: "API_ERROR", message: expect.stringMatching(/report/i) }));
   });
 });
 
@@ -80,6 +112,15 @@ describe("buildReportSpec", () => {
       sortConditions: [{ metric: "ESTIMATED_EARNINGS", order: "DESCENDING" }],
       maxReportRows: 500,
     });
+  });
+
+  it("rejects a row cap outside the API's 1–100000", () => {
+    const range = { startDate: { year: 2026, month: 9, day: 1 }, endDate: { year: 2026, month: 9, day: 30 } };
+    const spec = (maxRows: number) => buildReportSpec("network", { dateRange: range, dimensions: ["app"], metrics: ["earnings"], maxRows });
+    expect(spec(100_000).maxReportRows).toBe(100_000);
+    for (const bad of [100_001, 150_000, 0, -1, 2.5]) {
+      expect(() => spec(bad)).toThrow(expect.objectContaining({ code: "USAGE", message: expect.stringContaining("100000") }));
+    }
   });
 
   it("sorts by date when the report is a time series", () => {

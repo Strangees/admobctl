@@ -67,7 +67,9 @@ admobctl report mediation --from … [--to …] --by ad-source,app
 - Mediation adds: ad-source, ad-source-instance, mediation-group.
 - Metrics: earnings, requests, matched-requests, impressions, clicks, match-rate, show-rate, ctr,
   rpm (network), ecpm (mediation).
-- `--filter app=<alias>` resolves aliases; `--filter country=NO,SE` (ISO codes); repeatable.
+- `--filter app=<alias>` resolves aliases; `--filter country=NO,SE` (ISO codes); repeatable. Filters on one dimension
+  add up, also under another name: `--filter unit=A --filter ad-unit=B` keeps both ad units.
+- `--max-rows` takes 1–100000 (the AdMob API's limit); more is a usage error (exit 2).
 - JSON `dimensions` and `metrics` list the row keys (e.g. `["app"]`, `["earnings","requests",…,"rpm"]`).
 - JSON rows carry money as a rounded amount (`earnings`) plus exact `earnings_micros`. Rates are fractions (0.75 = 75%).
 - `totals` is omitted when the report is truncated (`truncated: true`).
@@ -239,3 +241,7 @@ With `--yes` it applies them in order (JSON: `{applied: true, plans, results}`) 
 ## Errors
 
 Every error has a message and a `fix:` line with the exact command. Exit codes: 0 ok, 1 error, 2 usage.
+When the API rejects a request with no more specific remedy (`API_ERROR`), the fix is the same command with `-v`, which
+logs Google's full error response to stderr (for a 400, which field was invalid). `AMOUNT_TOO_LARGE` (exit 1) means a
+sum passed what integer micros keep exact (about 9 billion in the report currency, e.g. a year in VND): narrow the
+date range or add `--currency USD`.

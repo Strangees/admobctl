@@ -134,6 +134,45 @@ describe("diagnoseApiError", () => {
     expect(e.message).toContain("Account not found");
   });
 
+  it("gives NOT_FOUND a runnable fix", () => {
+    const e = diagnoseApiError(404, { error: { code: 404, message: "Requested entity was not found.", status: "NOT_FOUND" } });
+    expect(e.fix).toBe("admobctl accounts list");
+  });
+
+  it("leaves the fix of a generic API error to the caller, which knows the command line", () => {
+    for (const status of [400, 500]) {
+      const e = diagnoseApiError(status, { error: { code: status, message: "Request contains an invalid argument." } });
+      expect(e.code).toBe("API_ERROR");
+      expect(e.fix).toBeUndefined();
+    }
+  });
+
+  it("names the API that failed when the caller knows it", () => {
+    expect(diagnoseApiError(500, { error: { message: "boom" } }, { api: "AdSense Management API" }).message).toBe("AdSense Management API error 500: boom");
+    expect(diagnoseApiError(429, { error: { message: "Quota exceeded" } }, { api: "Service Usage API" }).message).toBe(
+      "Rate limited by the Service Usage API: Quota exceeded",
+    );
+    expect(diagnoseApiError(500, { error: { message: "boom" } }).message).toBe("AdMob API error 500: boom");
+  });
+
+  it("shows an HTML error page by its title instead of copying the page into the message", () => {
+    const page = `<!DOCTYPE html>\n<html lang=en>\n  <meta charset=utf-8>\n  <title>Error 502 (Server Error)!!1</title>\n  <style>${"*{margin:0;padding:0}".repeat(300)}</style>\n  <p><b>502.</b> <ins>That’s an error.</ins>\n</html>`;
+    const e = diagnoseApiError(502, page);
+    expect(e.code).toBe("API_ERROR");
+    expect(e.message).toBe("AdMob API error 502: Error 502 (Server Error)!!1");
+  });
+
+  it("cuts a long text body to its start", () => {
+    const e = diagnoseApiError(500, `upstream exploded ${"x".repeat(5000)}`);
+    expect(e.message).toMatch(/^AdMob API error 500: upstream exploded x+…$/);
+    expect(e.message.length).toBeLessThan(250);
+  });
+
+  it("uses the HTTP status text for an empty body", () => {
+    expect(diagnoseApiError(500, undefined).message).toBe("AdMob API error 500: Internal Server Error");
+    expect(diagnoseApiError(503, "").message).toBe("AdMob API error 503: Service Unavailable");
+  });
+
   it("keeps the generic rate-limit fix when no Retry-After hint is given", () => {
     const e = diagnoseApiError(429, { error: { code: 429, message: "Quota exceeded", status: "RESOURCE_EXHAUSTED" } });
     expect(e.code).toBe("RATE_LIMITED");

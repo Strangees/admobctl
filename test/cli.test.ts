@@ -1,12 +1,14 @@
 import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { run } from "../src/cli/program.js";
+import { log } from "../src/core/log.js";
+import { saveConfig } from "../src/core/config.js";
 import { reportView } from "../src/cli/views.js";
 import type { ReportResult } from "../src/core/service.js";
 import type { TokenProvider } from "../src/core/auth/types.js";
-import { fakeFetch, fixture, jsonResponse, noSleep } from "./helpers.js";
+import { fakeFetch, fixture, jsonResponse, noSleep, synthReport } from "./helpers.js";
 
 const token: TokenProvider = { mode: "adc", getToken: async () => "t", quotaProject: () => "qp" };
 
@@ -110,6 +112,73 @@ describe("cli", () => {
     const r = await cli(["report", "network", "--from", "2026-09", "--to", "2026-09", "--by", "country", "--filter", "country=NO,SE"]);
     const body = r.calls.find((c) => c.url.includes("networkReport"))!.body as { reportSpec: { dimensionFilters: unknown } };
     expect(body.reportSpec.dimensionFilters).toEqual([{ dimension: "COUNTRY", matchesAny: { values: ["NO", "SE"] } }]);
+  });
+
+  it("keeps every --filter for a dimension, also when named by an alias or in other casing", async () => {
+    const r = await cli([
+      "report", "network", "--from", "2026-09", "--by", "country",
+      "--filter", "country=NO", "--filter", "Country=SE", "--filter", "unit=ca-app-pub-0000000000000001/9000000001",
+      "--filter", "ad-unit=ca-app-pub-0000000000000001/9000000002",
+    ]);
+    expect(r.code).toBe(0);
+    const body = r.calls.find((c) => c.url.includes("networkReport"))!.body as { reportSpec: { dimensionFilters: unknown } };
+    expect(body.reportSpec.dimensionFilters).toEqual([
+      { dimension: "COUNTRY", matchesAny: { values: ["NO", "SE"] } },
+      { dimension: "AD_UNIT", matchesAny: { values: ["ca-app-pub-0000000000000001/9000000001", "ca-app-pub-0000000000000001/9000000002"] } },
+    ]);
+  });
+
+  it("rejects --max-rows above the API's limit with a usage error", async () => {
+    const r = await cli(["report", "network", "--from", "2026-09", "--by", "app", "--max-rows", "150000"]);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("100000");
+    expect(r.calls.some((c) => c.url.includes("networkReport"))).toBe(false);
+  });
+
+  describe("a request the API rejects", () => {
+    const body = { error: { code: 400, message: "Request contains an invalid argument.", details: [{ fieldViolations: [{ field: "report_spec.sort_conditions" }] }] } };
+    const routes = { "POST /networkReport:generate": () => jsonResponse(body, 400) };
+    const fixOf = (stderr: string) => (JSON.parse(stderr) as { error: { fix?: string } }).error.fix;
+
+    it("suggests the same command with -v, which logs the API's full error body", async () => {
+      const args = ["report", "network", "--from", "2026-09", "--by", "app", "--filter", "country=N O"];
+      const first = await cli(args, { routes });
+      expect(first.code).toBe(1);
+      expect(fixOf(first.stderr)).toBe("admobctl -v report network --from 2026-09 --by app --filter 'country=N O'");
+      const logged: string[] = [];
+      const spy = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: string) => logged.push(String(chunk)) > 0) as typeof process.stderr.write);
+      let again: Awaited<ReturnType<typeof cli>>;
+      try {
+        again = await cli(["-v", ...args], { routes });
+      } finally {
+        spy.mockRestore();
+        log.setVerbose(false);
+      }
+      expect(logged.join("")).toContain("report_spec.sort_conditions");
+      // Already verbose: nothing more to suggest.
+      expect(fixOf(again.stderr)).toBeUndefined();
+    });
+
+    it("keeps --profile in the suggested command", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "admobctl-cli-"));
+      saveConfig(dir, { profiles: { work: {} } });
+      const r = await cli(["--profile", "work", "report", "network", "--from", "2026-09"], { dir, routes });
+      expect(fixOf(r.stderr)).toBe("admobctl -v --profile work report network --from 2026-09");
+    });
+  });
+
+  it("fails with exit 1, not as a usage error, when a total is too large to keep exact", async () => {
+    const fiveBillion = 5_000_000_000 * 1_000_000;
+    const report = synthReport([
+      [{ APP: ["ca-app-pub-0000000000000001~1111111111"] }, { ESTIMATED_EARNINGS: fiveBillion, IMPRESSIONS: 1 }],
+      [{ APP: ["ca-app-pub-0000000000000001~2222222222"] }, { ESTIMATED_EARNINGS: fiveBillion, IMPRESSIONS: 1 }],
+    ], "VND");
+    const r = await cli(["report", "network", "--from", "2026-01", "--to", "2026-09", "--metrics", "earnings,impressions"], {
+      routes: { "POST /networkReport:generate": () => jsonResponse(report) },
+    });
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("AMOUNT_TOO_LARGE");
+    expect(r.stderr).toContain("--currency USD");
   });
 
   it("returns exit code 2 and a readable message for usage errors", async () => {
