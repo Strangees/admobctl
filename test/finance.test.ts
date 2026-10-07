@@ -2,21 +2,22 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { allocateRounded, financeMonth, financeRange, journalRows } from "../src/core/finance.js";
+import { allocateRounded, financeForecast, financeMonth, financeRange, journalRows } from "../src/core/finance.js";
 import { saveConfig } from "../src/core/config.js";
 import { AdmobService } from "../src/core/service.js";
 import type { TokenProvider } from "../src/core/auth/types.js";
-import { fakeFetch, fixture, jsonResponse, noSleep } from "./helpers.js";
+import { fakeFetch, fixture, jsonResponse, noSleep, synthReport } from "./helpers.js";
 
 const token: TokenProvider = { mode: "adc", getToken: async () => "t", quotaProject: () => "qp" };
 
-function service(reportFixture: string, profile: Record<string, unknown> = {}) {
+/** `report` is a fixture name or a report body. */
+function service(report: string | unknown[], profile: Record<string, unknown> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "admobctl-fin-"));
   saveConfig(dir, { profiles: { default: profile } });
   const f = fakeFetch({
     "GET /v1/accounts?": () => jsonResponse(fixture("accounts.json")),
     "GET /apps": (c) => jsonResponse(fixture(c.url.includes("pageToken=page2") ? "apps-page2.json" : "apps-page1.json")),
-    "POST /networkReport:generate": () => jsonResponse(fixture(reportFixture)),
+    "POST /networkReport:generate": () => jsonResponse(typeof report === "string" ? fixture(report) : report),
   });
   const svc = AdmobService.create(
     {},
@@ -38,7 +39,22 @@ describe("allocateRounded", () => {
   it("handles an empty list", () => {
     expect(allocateRounded([])).toEqual({ total: 0, parts: [] });
   });
+
+  it("rounds to the currency's minor unit", () => {
+    expect(allocateRounded([1_000_400_000, 234_570_000], 0)).toEqual({ total: 1235, parts: [1000, 235] });
+    expect(allocateRounded([1_000_400, 234_570], 3)).toEqual({ total: 1235, parts: [1000, 235] });
+  });
 });
+
+const IOS = "ca-app-pub-0000000000000001~1111111111";
+const ANDROID = "ca-app-pub-0000000000000001~2222222222";
+const WARNING = { type: "DATA_DELAYED", description: "Data for 2026-09-30 is delayed." };
+/** A report by app whose footer carries an API warning. */
+function warnedReport(dims: Record<string, [string]> = {}) {
+  const r = synthReport([[{ ...dims, APP: [IOS] }, { ESTIMATED_EARNINGS: 5_000_000 }]]);
+  r[r.length - 1] = { footer: { matchingRowCount: "1", warnings: [WARNING] } } as never;
+  return r;
+}
 
 describe("financeMonth", () => {
   it("returns per-app earnings and a total from exact micros", async () => {
@@ -67,6 +83,30 @@ describe("financeMonth", () => {
     const r = await financeMonth(svc, "2026-10");
     expect(r.complete).toBe(false);
     expect(r.notes.join(" ")).toMatch(/incomplete/i);
+    expect(r.notes.join(" ")).toMatch(/Includes today/);
+  });
+
+  it("rounds to the currency's minor unit: whole yen for JPY", async () => {
+    const { svc } = service(synthReport([[{ APP: [IOS] }, { ESTIMATED_EARNINGS: 1_000_400_000 }], [{ APP: [ANDROID] }, { ESTIMATED_EARNINGS: 234_570_000 }]], "JPY"));
+    const r = await financeMonth(svc, "2026-09");
+    expect(r.currency).toBe("JPY");
+    expect(r.total).toBe(1235);
+    expect(r.apps.map((a) => a.earnings)).toEqual([1000, 235]);
+    const rows = journalRows(r, svc.profile.finance);
+    expect(rows.map((x) => x.Debet || x.Kredit)).toEqual(["1235", "1000", "235"]);
+  });
+
+  it("stops at `through`: the report ends there and so does the month's period", async () => {
+    const { svc, calls } = service("network-report-by-app.json");
+    const r = await financeMonth(svc, "2026-10", { through: { year: 2026, month: 10, day: 1 } });
+    const spec = (calls.find((c) => c.url.includes("networkReport"))!.body as { reportSpec: Record<string, unknown> }).reportSpec;
+    expect(spec.dateRange).toEqual({ startDate: { year: 2026, month: 10, day: 1 }, endDate: { year: 2026, month: 10, day: 1 } });
+    expect(r).toMatchObject({ from: "2026-10-01", to: "2026-10-01", bookingDate: "2026-10-01", complete: false });
+  });
+
+  it("passes the API's warnings on in the notes", async () => {
+    const { svc } = service(warnedReport());
+    expect((await financeMonth(svc, "2026-09")).notes).toContain("API warning: Data for 2026-09-30 is delayed.");
   });
 });
 
@@ -87,6 +127,12 @@ describe("journalRows", () => {
     ]);
     expect(rows[1]!.Beskrivelse).toContain("example-quiz-ios");
     expect(rows[0]!.Merknad).toMatch(/finalized/i);
+  });
+
+  it("keeps an app that lost money as a negative credit, so debit and credits still balance", async () => {
+    const { svc } = service(synthReport([[{ APP: [IOS] }, { ESTIMATED_EARNINGS: 10_000_000 }], [{ APP: [ANDROID] }, { ESTIMATED_EARNINGS: -500_000 }]]));
+    const rows = journalRows(await financeMonth(svc, "2026-09"), svc.profile.finance);
+    expect(rows.map((r) => [r.Debet, r.Kredit])).toEqual([["9.50", ""], ["", "10.00"], ["", "-0.50"]]);
   });
 
   it("uses configured accounts and decimal comma", async () => {
@@ -140,5 +186,14 @@ describe("financeRange", () => {
     expect(r.total).toBe(2);
     expect(r.totalMicros).toBe(2_008_000);
     expect(r.notes.join(" ")).toMatch(/sum of the month totals.*2\.01/);
+  });
+});
+
+describe("API warnings", () => {
+  it("are passed on in the notes of financeRange and financeForecast", async () => {
+    const range = await financeRange(service(warnedReport({ MONTH: ["202609"] })).svc, "2026-08", "2026-09");
+    expect(range.notes).toContain("API warning: Data for 2026-09-30 is delayed.");
+    const forecast = await financeForecast(service(warnedReport()).svc);
+    expect(forecast.notes).toContain("API warning: Data for 2026-09-30 is delayed.");
   });
 });

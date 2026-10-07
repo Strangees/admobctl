@@ -391,22 +391,31 @@ export function createMcpServer(deps: McpDeps): McpServer {
     {
       title: "Export AdMob accruals as Revenue Journal",
       description:
-        "Accrual vouchers for one month or a range of months in the Revenue Journal format (an open format for platform revenue bookkeeping): one balanced voucher per month, debit the receivable, credit revenue per app. Returns `content`, the complete file as text (JSON document or CSV), to save or pass to an accounting import verbatim. Give either `month` or both `from` and `to`. Figures are estimates, not finalized payments.",
+        "Accrual vouchers for one month or a range of months in the Revenue Journal format (an open format for platform revenue bookkeeping): one balanced voucher per month, debit the receivable, credit revenue per app. Returns `content`, the complete file as text (JSON document or CSV), to save or pass to an accounting import verbatim. Give either `month` or both `from` and `to`. A month that has not ended is refused unless allow_incomplete is set. Figures are estimates, not finalized payments.",
       inputSchema: {
         month: z.string().optional().describe("One month, YYYY-MM"),
         from: z.string().optional().describe("First month of a range, YYYY-MM (with `to`, instead of `month`)"),
         to: z.string().optional().describe("Last month of a range, YYYY-MM"),
         as: z.enum(["json", "csv"]).optional().describe("File format: json (default) or csv"),
         integer_amounts: z.boolean().optional().describe("JSON only: write amounts as integers instead of decimal strings"),
-        scale: z.number().int().min(0).max(6).optional().describe("Decimal places the integers carry (default 2; 6 = micros). Needs integer_amounts."),
+        scale: z.number().int().min(0).max(6).optional().describe("Decimal places the integers carry (default: the currency's minor unit, e.g. 2; 6 = micros). Needs integer_amounts."),
+        allow_incomplete: z.boolean().optional().describe("Export a month that has not ended as a partial voucher through yesterday, with its own voucher_id. Only when the user asks for a partial month."),
         ...accountArg,
       },
       outputSchema: loose({ as: z.string(), content: z.string(), notes: z.array(z.string()) }),
       annotations,
     },
-    wrap(async (a: { month?: string; from?: string; to?: string; as?: "json" | "csv"; integer_amounts?: boolean; scale?: number; account?: string }) => {
+    wrap(async (a: { month?: string; from?: string; to?: string; as?: "json" | "csv"; integer_amounts?: boolean; scale?: number; allow_incomplete?: boolean; account?: string }) => {
       const as = `revenue-journal-${a.as ?? "json"}`;
-      const r = await exportJournal(svc(a), { as, month: a.month, from: a.from, to: a.to, integerAmounts: a.integer_amounts, scale: a.scale });
+      const r = await exportJournal(svc(a), {
+        as,
+        month: a.month,
+        from: a.from,
+        to: a.to,
+        integerAmounts: a.integer_amounts,
+        scale: a.scale,
+        allowIncomplete: a.allow_incomplete,
+      });
       return { as, ...r };
     }),
   );

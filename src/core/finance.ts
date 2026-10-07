@@ -1,8 +1,9 @@
 import type { AppRef } from "./aliases.js";
 import type { FinanceConfig } from "./config.js";
-import { addDays, compareDates, formatDate, formatMonth, isMonthComplete, monthEnd, monthRange, parseMonth, todayIn, type YearMonth } from "./dates.js";
+import { addDays, compareDates, formatDate, formatMonth, isMonthComplete, monthEnd, monthRange, parseMonth, todayIn, type ApiDate, type DateRange, type YearMonth } from "./dates.js";
 import { usageError } from "./errors.js";
-import { microsToAmount, sumMicros } from "./money.js";
+import { currencyDigits, microsToAmount, sumMicros } from "./money.js";
+import type { Report } from "./report.js";
 import type { AdmobService } from "./service.js";
 
 export const ESTIMATE_LABEL = "Estimated earnings, reconcile against AdMob Payments (finalized).";
@@ -20,8 +21,9 @@ export interface FinanceApp {
 export interface FinanceMonth {
   month: string;
   from: string;
+  /** Last day of the month, or of the part of it asked for (`through`). */
   to: string;
-  /** Last day of the month: the booking date. */
+  /** Same as `to`: the booking date. */
   bookingDate: string;
   currency: string;
   timeZone: string;
@@ -45,18 +47,27 @@ export interface FinanceRange {
   notes: string[];
 }
 
+/** Options for `financeMonth` and `financeRange`. */
+export interface FinanceOptions {
+  /**
+   * Stop at this day (on or after the first day asked for): the report ends there, and a month that runs past it
+   * covers only up to it.
+   */
+  through?: ApiDate;
+}
+
 /**
- * Round micros to cents with the largest-remainder method: the parts always
- * add up to the half-up rounded total, so journal rows balance.
+ * Round micros to the currency's minor unit (cents for `digits` 2) with the largest-remainder method: the parts
+ * always add up to the half-up rounded total, so journal rows balance. Returns minor units.
  */
-export function allocateRounded(micros: number[]): { total: number; parts: number[] } {
-  const CENT = 10_000;
+export function allocateRounded(micros: number[], digits = 2): { total: number; parts: number[] } {
+  const UNIT = 10 ** (6 - digits);
   const totalMicros = sumMicros(micros);
-  const total = Math.sign(totalMicros) * Math.floor((Math.abs(totalMicros) + CENT / 2) / CENT);
-  const floors = micros.map((m) => Math.floor(m / CENT));
+  const total = Math.sign(totalMicros) * Math.floor((Math.abs(totalMicros) + UNIT / 2) / UNIT);
+  const floors = micros.map((m) => Math.floor(m / UNIT));
   let remaining = total - floors.reduce((a, b) => a + b, 0);
   const order = micros
-    .map((m, i) => ({ i, rem: m - floors[i]! * CENT }))
+    .map((m, i) => ({ i, rem: m - floors[i]! * UNIT }))
     .sort((a, b) => b.rem - a.rem || a.i - b.i);
   const parts = [...floors];
   for (const { i } of order) {
@@ -67,25 +78,33 @@ export function allocateRounded(micros: number[]): { total: number; parts: numbe
   return { total, parts };
 }
 
-const cents = (c: number) => c / 100;
+const fromMinor = (minor: number, digits: number) => minor / 10 ** digits;
 
-function appsFromMicros(byApp: Map<string, number>, index: AppRef[]): { apps: FinanceApp[]; total: number } {
+/** The API's warnings (e.g. DATA_DELAYED) and admobctl's notes on the report, worded as `report` and `check` word them. */
+const reportNotes = (r: { report: Report; notices: string[] }) => [...r.report.warnings.map((w) => `API warning: ${w}`), ...r.notices];
+
+/** `range`, ending at `through` when that comes first. */
+function endAt(range: DateRange, through: ApiDate | undefined): DateRange {
+  return through && compareDates(through, range.endDate) < 0 ? { ...range, endDate: through } : range;
+}
+
+function appsFromMicros(byApp: Map<string, number>, index: AppRef[], digits: number): { apps: FinanceApp[]; total: number } {
   const byId = new Map(index.map((a) => [a.appId, a]));
   const entries = [...byApp.entries()].sort((a, b) => b[1] - a[1]);
-  const { total, parts } = allocateRounded(entries.map(([, m]) => m));
+  const { total, parts } = allocateRounded(entries.map(([, m]) => m), digits);
   const apps = entries.map(([appId, micros], i) => {
     const ref = byId.get(appId);
     const app: FinanceApp = {
       alias: ref?.alias ?? appId,
       name: ref?.name ?? appId,
       appId,
-      earnings: cents(parts[i]!),
+      earnings: fromMinor(parts[i]!, digits),
       earningsMicros: micros,
     };
     if (ref?.platform) app.platform = ref.platform;
     return app;
   });
-  return { apps, total: cents(total) };
+  return { apps, total: fromMinor(total, digits) };
 }
 
 function monthNotes(complete: boolean, month: string): string[] {
@@ -94,15 +113,21 @@ function monthNotes(complete: boolean, month: string): string[] {
   return notes;
 }
 
-function buildMonth(ym: YearMonth, byApp: Map<string, number>, index: AppRef[], ctx: { currency: string; timeZone: string; today: ReturnType<typeof todayIn> }): FinanceMonth {
+function buildMonth(
+  ym: YearMonth,
+  byApp: Map<string, number>,
+  index: AppRef[],
+  ctx: { currency: string; timeZone: string; today: ReturnType<typeof todayIn>; through?: ApiDate },
+): FinanceMonth {
   const month = formatMonth(ym);
   const complete = isMonthComplete(ym, ctx.today);
-  const { apps, total } = appsFromMicros(byApp, index);
+  const { apps, total } = appsFromMicros(byApp, index, currencyDigits(ctx.currency));
+  const { startDate, endDate } = endAt({ startDate: { ...ym, day: 1 }, endDate: monthEnd(ym) }, ctx.through);
   return {
     month,
-    from: formatDate({ ...ym, day: 1 }),
-    to: formatDate(monthEnd(ym)),
-    bookingDate: formatDate(monthEnd(ym)),
+    from: formatDate(startDate),
+    to: formatDate(endDate),
+    bookingDate: formatDate(endDate),
     currency: ctx.currency,
     timeZone: ctx.timeZone,
     complete,
@@ -114,36 +139,41 @@ function buildMonth(ym: YearMonth, byApp: Map<string, number>, index: AppRef[], 
   };
 }
 
-export async function financeMonth(svc: AdmobService, month: string): Promise<FinanceMonth> {
+export async function financeMonth(svc: AdmobService, month: string, opts: FinanceOptions = {}): Promise<FinanceMonth> {
   const ym = parseMonth(month);
   const acct = await svc.account();
-  const [{ report }, index] = await Promise.all([
-    svc.rawReport("network", { dateRange: monthRange(month), by: ["app"], metrics: ["earnings"] }),
+  const [raw, index] = await Promise.all([
+    svc.rawReport("network", { dateRange: endAt(monthRange(month), opts.through), by: ["app"], metrics: ["earnings"] }),
     svc.apps(),
   ]);
+  const { report } = raw;
   const byApp = new Map<string, number>();
   for (const row of report.rows) {
     const id = row.dimensions.APP?.value ?? "unknown";
     byApp.set(id, (byApp.get(id) ?? 0) + (row.metrics.ESTIMATED_EARNINGS ?? 0));
   }
   const timeZone = report.timeZone ?? acct.reportingTimeZone;
-  return buildMonth(ym, byApp, index, {
+  const m = buildMonth(ym, byApp, index, {
     currency: report.currency ?? acct.currencyCode,
     timeZone,
     today: todayIn(timeZone, svc.now()),
+    through: opts.through,
   });
+  m.notes.push(...reportNotes(raw));
+  return m;
 }
 
-export async function financeRange(svc: AdmobService, from: string, to: string): Promise<FinanceRange> {
+export async function financeRange(svc: AdmobService, from: string, to: string, opts: FinanceOptions = {}): Promise<FinanceRange> {
   const start = parseMonth(from);
   const end = parseMonth(to);
   if (start.year * 12 + start.month > end.year * 12 + end.month) throw usageError(`--from (${from}) is after --to (${to})`);
   const acct = await svc.account();
-  const dateRange = { startDate: { ...start, day: 1 }, endDate: monthEnd(end) };
-  const [{ report }, index] = await Promise.all([
+  const dateRange = endAt({ startDate: { ...start, day: 1 }, endDate: monthEnd(end) }, opts.through);
+  const [raw, index] = await Promise.all([
     svc.rawReport("network", { dateRange, by: ["month", "app"], metrics: ["earnings"] }),
     svc.apps(),
   ]);
+  const { report } = raw;
   const byMonth = new Map<string, Map<string, number>>();
   for (let y = start.year, m = start.month; y * 12 + m <= end.year * 12 + end.month; m === 12 ? (y++, (m = 1)) : m++) {
     byMonth.set(`${y}${String(m).padStart(2, "0")}`, new Map());
@@ -156,24 +186,26 @@ export async function financeRange(svc: AdmobService, from: string, to: string):
     bucket.set(id, (bucket.get(id) ?? 0) + (row.metrics.ESTIMATED_EARNINGS ?? 0));
   }
   const timeZone = report.timeZone ?? acct.reportingTimeZone;
-  const ctx = { currency: report.currency ?? acct.currencyCode, timeZone, today: todayIn(timeZone, svc.now()) };
+  const ctx = { currency: report.currency ?? acct.currencyCode, timeZone, today: todayIn(timeZone, svc.now()), through: opts.through };
+  const digits = currencyDigits(ctx.currency);
   const months = [...byMonth.entries()].map(([key, apps]) =>
     buildMonth({ year: Number(key.slice(0, 4)), month: Number(key.slice(4, 6)) }, apps, index, ctx),
   );
   const totalMicros = sumMicros(months.map((m) => m.totalMicros));
-  // Each month is booked rounded to cents, so the range total is the sum of those, not the exact micros
+  // Each month is booked rounded to the minor unit, so the range total is the sum of those, not the exact micros
   // rounded once; that way it matches the journal and the books.
-  const monthCents = months.reduce((a, m) => a + Math.round(m.total * 100), 0);
-  const total = cents(monthCents);
+  const monthMinor = months.reduce((a, m) => a + Math.round(m.total * 10 ** digits), 0);
+  const total = fromMinor(monthMinor, digits);
   const notes = [ESTIMATE_LABEL];
   const incomplete = months.filter((m) => !m.complete).map((m) => m.month);
   if (incomplete.length) notes.push(`Incomplete month(s): ${incomplete.join(", ")}; the figures will change.`);
-  const exact = allocateRounded([totalMicros]).total;
-  if (exact !== monthCents) {
+  const exact = allocateRounded([totalMicros], digits).total;
+  if (exact !== monthMinor) {
     notes.push(
-      `The total ${total.toFixed(2)} is the sum of the month totals, as booked; the exact earnings round to ${cents(exact).toFixed(2)}.`,
+      `The total ${total.toFixed(digits)} is the sum of the month totals, as booked; the exact earnings round to ${fromMinor(exact, digits).toFixed(digits)}.`,
     );
   }
+  notes.push(...reportNotes(raw));
   return {
     from: formatDate(dateRange.startDate),
     to: formatDate(dateRange.endDate),
@@ -239,10 +271,13 @@ export async function financeForecast(svc: AdmobService, month?: string): Promis
   if (compareDates(lastDay, start) < 0) {
     throw usageError(`${label} has no complete day yet (today's data is still arriving). Try again tomorrow, or: admobctl finance month ${formatMonth(addDays(start, -1))}`);
   }
-  const [{ report }, index] = await Promise.all([
+  const [raw, index] = await Promise.all([
     svc.rawReport("network", { dateRange: { startDate: start, endDate: lastDay }, by: ["app"], metrics: ["earnings"] }),
     svc.apps(),
   ]);
+  const { report } = raw;
+  const currency = report.currency ?? acct.currencyCode;
+  const digits = currencyDigits(currency);
   const elapsed = lastDay.day;
   const scale = (micros: number) => Math.round((micros * end.day) / elapsed);
   const toDate = new Map<string, number>();
@@ -250,8 +285,8 @@ export async function financeForecast(svc: AdmobService, month?: string): Promis
     const id = row.dimensions.APP?.value ?? "unknown";
     toDate.set(id, (toDate.get(id) ?? 0) + (row.metrics.ESTIMATED_EARNINGS ?? 0));
   }
-  const actual = appsFromMicros(toDate, index);
-  const projected = appsFromMicros(new Map([...toDate].map(([id, m]) => [id, scale(m)])), index);
+  const actual = appsFromMicros(toDate, index, digits);
+  const projected = appsFromMicros(new Map([...toDate].map(([id, m]) => [id, scale(m)])), index, digits);
   const projectedById = new Map(projected.apps.map((a) => [a.appId, a]));
   const toDateMicros = sumMicros(toDate.values());
   const notes = [ESTIMATE_LABEL];
@@ -261,11 +296,12 @@ export async function financeForecast(svc: AdmobService, month?: string): Promis
     );
     if (elapsed < 7) notes.splice(1, 0, `Only ${elapsed} ${elapsed === 1 ? "day" : "days"} of data so far: a rough figure that will move a lot.`);
   } else notes.unshift(`${label} has ended: this is the month's estimate, not a projection.`);
+  notes.push(...reportNotes(raw));
   return {
     month: label,
     from: formatDate(start),
     to: formatDate(end),
-    currency: report.currency ?? acct.currencyCode,
+    currency,
     timeZone: report.timeZone ?? acct.reportingTimeZone,
     complete,
     estimate: true,
@@ -275,7 +311,7 @@ export async function financeForecast(svc: AdmobService, month?: string): Promis
     days_remaining: end.day - elapsed,
     month_to_date: actual.total,
     month_to_date_micros: toDateMicros,
-    daily_average: microsToAmount(Math.round(toDateMicros / elapsed)),
+    daily_average: microsToAmount(Math.round(toDateMicros / elapsed), digits),
     projected: projected.total,
     projected_micros: sumMicros(projected.apps.map((a) => a.earningsMicros)),
     apps: actual.apps.map((a) => {
@@ -310,7 +346,8 @@ const MONTH_NAMES_NB = ["januar", "februar", "mars", "april", "mai", "juni", "ju
  * revenue per app. Amounts are allocated so debit == sum of credits.
  */
 export function journalRows(m: FinanceMonth, finance: Required<FinanceConfig>): JournalRow[] {
-  const amount = (n: number) => n.toFixed(2).replace(".", finance.decimalSeparator);
+  const digits = currencyDigits(m.currency);
+  const amount = (n: number) => n.toFixed(digits).replace(".", finance.decimalSeparator);
   const [y, mo] = m.month.split("-");
   const period = `${MONTH_NAMES_NB[Number(mo) - 1]} ${y}`;
   const status = m.complete ? "Estimert" : "Estimert (ufullstendig måned)";

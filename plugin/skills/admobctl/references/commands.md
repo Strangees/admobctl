@@ -104,10 +104,11 @@ admobctl finance range --from YYYY-MM --to YYYY-MM [--as …]
 admobctl finance forecast [YYYY-MM]                    # month to date + month-end projection (default: this month)
 admobctl finance balance [--as summary|csv|json]       # current unpaid balance (AdSense Management API)
 admobctl finance export (--month YYYY-MM | --from YYYY-MM --to YYYY-MM) [--as revenue-journal-json|revenue-journal-csv]
-                        [--integer-amounts [--scale 0-6]] [--out file]   # Revenue Journal (spec/SPEC.md)
+                        [--integer-amounts [--scale 0-6]] [--allow-incomplete] [--out file]   # Revenue Journal (spec/SPEC.md)
 ```
 
-- Per-app amounts are rounded so they sum exactly to the total.
+- Per-app amounts are rounded to the currency's minor unit (none for JPY) so they sum exactly to the total.
+- Notes pass on API warnings (`API warning: …`, e.g. delayed data).
 - `complete: false` means the month has not ended (account time zone).
 - `forecast`: per app `month_to_date` and `projected` (the daily average of the month's complete days carried to
   month-end), plus `days_elapsed`, `days_in_month`, `daily_average`. `projection: false` for a month that has ended.
@@ -118,6 +119,10 @@ admobctl finance export (--month YYYY-MM | --from YYYY-MM --to YYYY-MM) [--as re
 - `--as journal` prints tab-separated Bilagsjournal rows (Bilag, Dato, Kilde, Beskrivelse, Konto, Kontonavn,
   Debet, Kredit, MVA-behandling, Motpart, Status, Merknad), dated at month-end: debit the receivable (default 1509),
   credit revenue (default 3120) per app.
+- `export`: one balanced accrual voucher per month; an app that lost money is a revenue debit. `--scale` defaults to
+  the currency's minor unit. A month that has not ended is refused (exit 2); `--allow-incomplete` writes it as a
+  partial voucher through yesterday with its own ID (`admob:<pub>:accrual:<from>/<to>`), to reverse when the whole
+  month is booked. `counterparty` is written only when `finance.counterparty` is set.
 - Finance config: `admobctl config set finance.<key> <value>`, where key is one of receivableAccount, revenueAccount,
   receivableAccountName, revenueAccountName, vatTreatment, counterparty, decimalSeparator (`.` or `,`).
 
@@ -210,8 +215,8 @@ admobctl_list_ad_sources, admobctl_list_adapters (`ad_source`), admobctl_list_me
 admobctl_list_ad_unit_mappings (`ad_unit`), admobctl_check_app_ads.
 They take the same arguments as the CLI, in snake_case: `max_rows`, `sort`, `compare`, `include_journal`, `last_days`.
 `admobctl_check` takes `window_days`, `baseline_days`, `drop_percent`, `min_requests`, `app`.
-`admobctl_finance_export` takes `month` or `from`+`to`, `as` (`json` or `csv`), `integer_amounts`, `scale`, and returns
-the file as `content`.
+`admobctl_finance_export` takes `month` or `from`+`to`, `as` (`json` or `csv`), `integer_amounts`, `scale`,
+`allow_incomplete`, and returns the file as `content`.
 Reports default to 200 rows.
 
 ## Write commands (v1beta; CLI only)
