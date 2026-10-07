@@ -1,5 +1,5 @@
 import { appendAudit, type AuditEntry } from "./audit.js";
-import type { AdSource, AdUnit, MediationGroupLine } from "./client.js";
+import { WriteOutcomeUnknownError, type AdSource, type AdUnit, type MediationGroupLine } from "./client.js";
 import { AdmobctlError, usageError } from "./errors.js";
 import { log } from "./log.js";
 import { admobNetworkSourceIds } from "./mediation-export.js";
@@ -399,7 +399,14 @@ export async function applyPlan(svc: AdmobService, plan: WritePlan): Promise<unk
   try {
     result = await svc.client.write(plan.method, plan.path, plan.body, plan.query);
   } catch (err) {
-    audit(svc, { ...entry, ok: false, error: err instanceof AdmobctlError ? err.code : String(err) });
+    audit(svc, {
+      ...entry,
+      ok: false,
+      // Sent, then a timeout, network error or 5xx: not a rejection, the API may have applied it.
+      ...(err instanceof WriteOutcomeUnknownError ? { outcome: "unknown" as const } : {}),
+      error: err instanceof AdmobctlError ? err.code : String(err),
+      ...(err instanceof AdmobctlError ? { message: err.message } : {}),
+    });
     throw err;
   }
   // Recorded after the write, outside its try: an audit failure must never make an applied change look failed.

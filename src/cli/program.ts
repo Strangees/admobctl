@@ -815,7 +815,7 @@ export function buildProgram(io: CliIO): Command {
     .command("audit-log")
     .description("Show the writes applied with --yes (from the local audit log), newest first")
     .option("--last <n>", "only the newest n entries", positiveInt)
-    .option("--failed", "only writes the API rejected")
+    .option("--failed", "only writes that failed, or whose outcome is unknown (a timeout, network or server error after sending)")
     .action((o: { last?: number; failed?: boolean }, cmd: Command) => emit(cmd, auditLogView(readAudit(dir(), o))));
 
   // ── config ────────────────────────────────────────────────────────

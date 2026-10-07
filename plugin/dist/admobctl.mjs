@@ -13424,6 +13424,447 @@ async function exportMediationGroups(svc, opts = {}) {
   return { groups, notes };
 }
 
+// src/core/ratelimit.ts
+var MINUTE = 6e4;
+var QUOTAS = { account: 900, inventory: 120, reporting: 900 };
+var RateLimiter = class {
+  constructor(limit, windowMs, now = Date.now) {
+    this.limit = limit;
+    this.windowMs = windowMs;
+    this.now = now;
+  }
+  limit;
+  windowMs;
+  now;
+  starts = [];
+  /** Wait until a call may start. `sleep` is the caller's, so tests with a fake sleep never block. */
+  async take(sleep = defaultSleep) {
+    const t = this.now();
+    this.starts = this.starts.filter((s) => s > t - this.windowMs);
+    const at = this.starts.length >= this.limit ? this.starts[this.starts.length - this.limit] + this.windowMs : t;
+    this.starts.push(at);
+    this.starts.sort((a, b) => a - b);
+    if (at > t) {
+      log.debug(`rate limit: waiting ${at - t}ms for a free slot`);
+      await sleep(at - t);
+    }
+  }
+};
+function createLimiters(now) {
+  const make = (c) => new RateLimiter(QUOTAS[c], MINUTE, now);
+  return { account: make("account"), inventory: make("inventory"), reporting: make("reporting") };
+}
+var processLimiters = createLimiters();
+
+// src/core/report.ts
+var DIMENSIONS = {
+  network: [
+    "DATE",
+    "MONTH",
+    "WEEK",
+    "AD_UNIT",
+    "APP",
+    "AD_TYPE",
+    "COUNTRY",
+    "FORMAT",
+    "PLATFORM",
+    "MOBILE_OS_VERSION",
+    "GMA_SDK_VERSION",
+    "APP_VERSION_NAME",
+    "SERVING_RESTRICTION"
+  ],
+  mediation: [
+    "DATE",
+    "MONTH",
+    "WEEK",
+    "AD_SOURCE",
+    "AD_SOURCE_INSTANCE",
+    "AD_UNIT",
+    "APP",
+    "MEDIATION_GROUP",
+    "COUNTRY",
+    "FORMAT",
+    "PLATFORM",
+    "MOBILE_OS_VERSION",
+    "GMA_SDK_VERSION",
+    "APP_VERSION_NAME",
+    "SERVING_RESTRICTION"
+  ],
+  // v1beta campaignReport: AdMob app-promotion campaigns (the publisher as advertiser).
+  campaign: [
+    "DATE",
+    "CAMPAIGN_ID",
+    "CAMPAIGN_NAME",
+    "AD_ID",
+    "AD_NAME",
+    "PLACEMENT_ID",
+    "PLACEMENT_NAME",
+    "PLACEMENT_PLATFORM",
+    "COUNTRY",
+    "FORMAT"
+  ]
+};
+var METRICS = {
+  network: [
+    "AD_REQUESTS",
+    "CLICKS",
+    "ESTIMATED_EARNINGS",
+    "IMPRESSIONS",
+    "IMPRESSION_CTR",
+    "IMPRESSION_RPM",
+    "MATCHED_REQUESTS",
+    "MATCH_RATE",
+    "SHOW_RATE"
+  ],
+  mediation: [
+    "AD_REQUESTS",
+    "CLICKS",
+    "ESTIMATED_EARNINGS",
+    "IMPRESSIONS",
+    "IMPRESSION_CTR",
+    "MATCHED_REQUESTS",
+    "MATCH_RATE",
+    "OBSERVED_ECPM"
+  ],
+  campaign: ["IMPRESSIONS", "CLICKS", "CLICK_THROUGH_RATE", "INSTALLS", "ESTIMATED_COST", "AVERAGE_CPI", "INTERACTIONS"]
+};
+var MONEY_METRICS = /* @__PURE__ */ new Set(["ESTIMATED_EARNINGS", "IMPRESSION_RPM", "OBSERVED_ECPM", "ESTIMATED_COST", "AVERAGE_CPI"]);
+var METRIC_ALIASES = {
+  EARNINGS: "ESTIMATED_EARNINGS",
+  REVENUE: "ESTIMATED_EARNINGS",
+  REQUESTS: "AD_REQUESTS",
+  MATCHED: "MATCHED_REQUESTS",
+  CTR: "IMPRESSION_CTR",
+  RPM: "IMPRESSION_RPM",
+  ECPM: "OBSERVED_ECPM",
+  COST: "ESTIMATED_COST",
+  CPI: "AVERAGE_CPI"
+};
+var KIND_METRIC_ALIASES = {
+  campaign: { CTR: "CLICK_THROUGH_RATE" }
+};
+var DIMENSION_ALIASES = {
+  UNIT: "AD_UNIT",
+  SOURCE: "AD_SOURCE",
+  OS_VERSION: "MOBILE_OS_VERSION",
+  SDK_VERSION: "GMA_SDK_VERSION",
+  APP_VERSION: "APP_VERSION_NAME",
+  CAMPAIGN: "CAMPAIGN_NAME",
+  AD: "AD_NAME",
+  PLACEMENT: "PLACEMENT_NAME"
+};
+function canonical(name) {
+  return name.trim().toUpperCase().replace(/-/g, "_");
+}
+function friendlyName(apiName) {
+  return apiName.toLowerCase().replace(/_/g, "-");
+}
+function friendlyMetric(apiName) {
+  const alias = Object.keys(METRIC_ALIASES).find((k) => METRIC_ALIASES[k] === apiName);
+  return friendlyName(alias ?? apiName);
+}
+function normalizeDimension(name, kind) {
+  const c = canonical(name);
+  const resolved = DIMENSION_ALIASES[c] ?? c;
+  if (!DIMENSIONS[kind].includes(resolved)) {
+    throw usageError(
+      `Dimension "${name}" is not supported by ${kind} reports. Valid: ${DIMENSIONS[kind].map(friendlyName).join(", ")}`
+    );
+  }
+  return resolved;
+}
+function normalizeMetric(name, kind) {
+  const c = canonical(name);
+  const resolved = KIND_METRIC_ALIASES[kind]?.[c] ?? METRIC_ALIASES[c] ?? c;
+  if (!METRICS[kind].includes(resolved)) {
+    throw usageError(
+      `Metric "${name}" is not supported by ${kind} reports. Valid: ${METRICS[kind].map(friendlyName).join(", ")}`
+    );
+  }
+  return resolved;
+}
+var API_MAX_ROWS = 1e5;
+var TIME_DIMENSIONS = ["DATE", "WEEK", "MONTH"];
+var INCOMPATIBLE = {
+  AD_TYPE: ["AD_REQUESTS", "MATCH_RATE", "IMPRESSION_RPM"]
+};
+var DISCOURAGED = {
+  MOBILE_OS_VERSION: ["ESTIMATED_EARNINGS", "OBSERVED_ECPM", "IMPRESSION_RPM"],
+  GMA_SDK_VERSION: ["ESTIMATED_EARNINGS", "OBSERVED_ECPM", "IMPRESSION_RPM"],
+  APP_VERSION_NAME: ["ESTIMATED_EARNINGS", "OBSERVED_ECPM", "IMPRESSION_RPM"]
+};
+function compatibleMetrics(_kind, dimensions, metrics) {
+  const excluded = new Set(dimensions.flatMap((d) => [...INCOMPATIBLE[d] ?? [], ...DISCOURAGED[d] ?? []]));
+  return { kept: metrics.filter((m) => !excluded.has(m)), dropped: metrics.filter((m) => excluded.has(m)) };
+}
+function checkCombination(dimensions, metrics) {
+  const timeDims = dimensions.filter((d) => TIME_DIMENSIONS.includes(d));
+  if (timeDims.length > 1) {
+    throw usageError(`A report can use only one time dimension (date, week or month), got ${timeDims.map(friendlyName).join(", ")}.`);
+  }
+  for (const d of dimensions) {
+    const bad = metrics.filter((m) => INCOMPATIBLE[d]?.includes(m));
+    if (bad.length) {
+      throw usageError(`${friendlyName(d)} cannot be combined with ${bad.map(friendlyMetric).join(", ")} (an AdMob API restriction). Drop one of them.`);
+    }
+  }
+}
+function normalizeCurrency(code2) {
+  const c = code2.trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(c)) throw usageError(`Currency must be an ISO 4217 code like USD or EUR, got "${code2}"`);
+  return c;
+}
+function parseSort(input2, kind, dimensions, metrics) {
+  const [field = "", dir, ...rest] = input2.split(":").map((p) => p.trim());
+  const order = dir?.toLowerCase();
+  if (rest.length || order !== void 0 && order !== "asc" && order !== "desc") {
+    throw usageError(`--sort expects <field>[:asc|desc] with asc or desc, got "${input2}"`);
+  }
+  const named = (resolve) => {
+    try {
+      return resolve();
+    } catch {
+      return void 0;
+    }
+  };
+  const dimension = named(() => normalizeDimension(field, kind));
+  if (dimension && dimensions.includes(dimension)) return { dimension, order: order === "desc" ? "DESCENDING" : "ASCENDING" };
+  const metric2 = named(() => normalizeMetric(field, kind));
+  if (metric2 && metrics.includes(metric2)) return { metric: metric2, order: order === "asc" ? "ASCENDING" : "DESCENDING" };
+  throw usageError(
+    `Cannot sort by "${field}": it is not in this report. Sort by one of: ${[...dimensions.map(friendlyName), ...metrics.map(friendlyMetric)].join(", ")}`
+  );
+}
+function buildReportSpec(kind, input2) {
+  const dimensions = input2.dimensions.map((d) => normalizeDimension(d, kind));
+  const metrics = input2.metrics.map((m) => normalizeMetric(m, kind));
+  checkCombination(dimensions, metrics);
+  const spec = { dateRange: input2.dateRange, dimensions, metrics };
+  const filters = Object.entries(input2.filters ?? {});
+  if (filters.length) {
+    spec.dimensionFilters = filters.map(([dim, values]) => ({
+      dimension: normalizeDimension(dim, kind),
+      matchesAny: { values }
+    }));
+  }
+  const timeDim = dimensions.find((d) => TIME_DIMENSIONS.includes(d));
+  if (input2.sort !== void 0) spec.sortConditions = [parseSort(input2.sort, kind, dimensions, metrics)];
+  else if (timeDim) spec.sortConditions = [{ dimension: timeDim, order: "ASCENDING" }];
+  else if (metrics.includes("ESTIMATED_EARNINGS")) {
+    spec.sortConditions = [{ metric: "ESTIMATED_EARNINGS", order: "DESCENDING" }];
+  }
+  if (input2.currency !== void 0) spec.localizationSettings = { currencyCode: normalizeCurrency(input2.currency) };
+  if (input2.maxRows !== void 0) spec.maxReportRows = input2.maxRows;
+  return spec;
+}
+function metricNumber(key, v) {
+  if (v.microsValue !== void 0) return parseMicros(v.microsValue);
+  if (v.integerValue !== void 0) return Number(v.integerValue);
+  if (MONEY_METRICS.has(key) && v.doubleValue !== void 0) return Math.round(v.doubleValue * 1e6);
+  return v.doubleValue ?? 0;
+}
+function parseReport(raw) {
+  const rows = raw?.rows;
+  const chunks = Array.isArray(raw) ? raw : Array.isArray(rows) ? rows.map((row) => ({ row })) : [raw];
+  const report = { rows: [], warnings: [] };
+  for (const chunk of chunks) {
+    if (chunk.header) {
+      report.currency = chunk.header.localizationSettings?.currencyCode;
+      report.timeZone = chunk.header.reportingTimeZone;
+      report.dateRange = chunk.header.dateRange;
+    }
+    if (chunk.row) {
+      const dimensions = {};
+      for (const [k, v] of Object.entries(chunk.row.dimensionValues ?? {})) {
+        dimensions[k] = v.displayLabel === void 0 ? { value: v.value ?? "" } : { value: v.value ?? "", label: v.displayLabel };
+      }
+      const metrics = {};
+      for (const [k, v] of Object.entries(chunk.row.metricValues ?? {})) metrics[k] = metricNumber(k, v);
+      report.rows.push({ dimensions, metrics });
+    }
+    if (chunk.footer) {
+      if (chunk.footer.matchingRowCount !== void 0) report.matchingRowCount = Number(chunk.footer.matchingRowCount);
+      for (const w of chunk.footer.warnings ?? []) report.warnings.push(w.description ?? w.type ?? "unknown warning");
+    }
+  }
+  return report;
+}
+
+// src/core/client.ts
+var API_BASE = "https://admob.googleapis.com/v1";
+var API_BASE_BETA = "https://admob.googleapis.com/v1beta";
+var ADSENSE_API_BASE = "https://adsense.googleapis.com/v2";
+var WriteOutcomeUnknownError = class extends AdmobctlError {
+};
+function accountName(account) {
+  return account.startsWith("accounts/") ? account : `accounts/${account}`;
+}
+var AdmobClient = class {
+  constructor(opts) {
+    this.opts = opts;
+  }
+  opts;
+  async request(quota, method, path2, body, version2 = "v1", http = {}, token) {
+    const limiter = (this.opts.limiters ?? processLimiters)[quota];
+    const headers = {
+      authorization: `Bearer ${token ?? await this.opts.getToken()}`,
+      accept: "application/json"
+    };
+    if (this.opts.quotaProject) headers["x-goog-user-project"] = this.opts.quotaProject;
+    if (body !== void 0) headers["content-type"] = "application/json";
+    const base = version2 === "v1" ? this.opts.baseUrl ?? API_BASE : version2 === "v1beta" ? this.opts.betaBaseUrl ?? API_BASE_BETA : this.opts.adsenseBaseUrl ?? ADSENSE_API_BASE;
+    try {
+      return await requestJson(
+        `${base}/${path2}`,
+        { method, headers, body: body === void 0 ? void 0 : JSON.stringify(body) },
+        // Every attempt, retries included, takes a rate-limiter slot.
+        { ...this.opts, ...http, beforeAttempt: () => limiter.take(this.opts.sleep) }
+      );
+    } catch (err) {
+      throw version2 === "v1beta" ? betaError(err, path2, method) : err;
+    }
+  }
+  async paginate(quota, path2, key, opts = {}) {
+    const out = [];
+    let pageToken;
+    do {
+      const qs = new URLSearchParams({ pageSize: "1000", ...opts.params });
+      if (pageToken) qs.set("pageToken", pageToken);
+      const page = await this.request(quota, "GET", `${path2}?${qs}`, void 0, opts.version);
+      out.push(...page?.[key] ?? []);
+      pageToken = page?.nextPageToken || void 0;
+    } while (pageToken);
+    return out;
+  }
+  listAccounts() {
+    return this.paginate("account", "accounts", "account");
+  }
+  listApps(account) {
+    return this.paginate("inventory", `${accountName(account)}/apps`, "apps");
+  }
+  listAdUnits(account) {
+    return this.paginate("inventory", `${accountName(account)}/adUnits`, "adUnits");
+  }
+  async networkReport(account, spec) {
+    const raw = await this.request("reporting", "POST", `${accountName(account)}/networkReport:generate`, { reportSpec: spec });
+    return parseReport(raw);
+  }
+  async mediationReport(account, spec) {
+    const raw = await this.request("reporting", "POST", `${accountName(account)}/mediationReport:generate`, { reportSpec: spec });
+    return parseReport(raw);
+  }
+  // ── v1beta reads ──────────────────────────────────────────────────
+  listAdSources(account) {
+    return this.paginate("inventory", `${accountName(account)}/adSources`, "adSources", { version: "v1beta" });
+  }
+  listAdapters(account, adSourceId) {
+    return this.paginate("inventory", `${accountName(account)}/adSources/${adSourceId}/adapters`, "adapters", { version: "v1beta" });
+  }
+  /** `filter` uses the API's EBNF syntax, e.g. IN(FORMAT, "BANNER") AND CONTAINS_ANY(APP_IDS, "…"). */
+  listMediationGroups(account, filter) {
+    return this.paginate("inventory", `${accountName(account)}/mediationGroups`, "mediationGroups", {
+      version: "v1beta",
+      params: filter ? { filter } : void 0
+    });
+  }
+  /** `adUnit` is the ad unit's resource name, accounts/{pub}/adUnits/{fragment}. */
+  listAdUnitMappings(adUnit) {
+    return this.paginate("inventory", `${adUnit}/adUnitMappings`, "adUnitMappings", { version: "v1beta" });
+  }
+  // ── v1beta writes (admob.monetization scope) ─────────────────────
+  /** Send a write to v1beta. `path` is relative to the version root, e.g. accounts/pub-1/adUnits. */
+  async write(method, path2, body, query) {
+    const qs = query && Object.keys(query).length ? `?${new URLSearchParams(query)}` : "";
+    const token = await this.opts.getToken();
+    try {
+      return await this.request("inventory", method, `${path2}${qs}`, body, "v1beta", { retries: 0 }, token);
+    } catch (err) {
+      if (err instanceof AdmobctlError && (err.status === void 0 || err.status >= 500)) {
+        throw new WriteOutcomeUnknownError(err.code, `${err.message} The change may have been applied anyway.`, {
+          status: err.status,
+          cause: err,
+          fix: "Check with admobctl (e.g. apps list, ad-units list, mediation-groups show) before retrying, so it is not applied twice."
+        });
+      }
+      if (err instanceof AdmobctlError && err.code === "AUTH_SCOPE_MISSING") {
+        throw new AdmobctlError("AUTH_SCOPE_MISSING", "Write commands need the admob.monetization scope, which your credentials do not include.", {
+          status: err.status,
+          cause: err,
+          fix: "admobctl setup login --features write --yes"
+        });
+      }
+      throw err;
+    }
+  }
+  // ── AdSense Management API (adsense.readonly scope) ──────────────
+  /** All payments of the publisher's Google payments account: `unpaid` plus paid ones. Not paginated. */
+  async listPayments(account) {
+    try {
+      const page = await this.request("account", "GET", `${accountName(account)}/payments`, void 0, "adsense");
+      return page?.payments ?? [];
+    } catch (err) {
+      throw paymentsError(err, account.replace(/^accounts\//, ""));
+    }
+  }
+  async campaignReport(account, spec) {
+    try {
+      const raw = await this.request("reporting", "POST", `${accountName(account)}/campaignReport:generate`, { reportSpec: spec }, "v1beta");
+      return parseReport(raw);
+    } catch (err) {
+      if (err instanceof AdmobctlError && err.status === 400) {
+        throw new AdmobctlError(
+          "CAMPAIGN_REPORT_REJECTED",
+          `The AdMob API rejected the campaign report (400: ${err.message.replace(/^AdMob API error 400: /, "")}). This usually means the account has no AdMob app-promotion campaigns, or is not enabled for campaignReport (AdMob API v1beta).`,
+          {
+            status: 400,
+            cause: err,
+            fix: "Check AdMob \u2192 Campaigns for app-promotion campaigns. If you run some there, ask your Google AdMob account manager to enable AdMob API (v1beta) campaign reporting for this account."
+          }
+        );
+      }
+      throw err;
+    }
+  }
+};
+function methodName(path2, httpMethod) {
+  const segments = path2.split("?")[0].split("/");
+  const last = segments[segments.length - 1];
+  if (last.includes(":")) return last.replace(":", ".");
+  const collection = segments.length % 2 === 1 ? last : segments[segments.length - 2];
+  return `${collection}.${httpMethod === "GET" ? "list" : httpMethod === "PATCH" ? "patch" : "create"}`;
+}
+function betaError(err, path2, httpMethod) {
+  if (!(err instanceof AdmobctlError) || err.code !== "PERMISSION_DENIED") return err;
+  return new AdmobctlError(
+    "BETA_ACCESS_DENIED",
+    `Permission denied for ${methodName(path2, httpMethod)} (AdMob API v1beta). Google limits several v1beta methods to allowlisted accounts.`,
+    {
+      status: err.status,
+      cause: err,
+      fix: "If `admobctl accounts list` works, ask your Google AdMob account manager to enable AdMob API (v1beta) access for this publisher account."
+    }
+  );
+}
+function paymentsError(err, publisherId) {
+  if (!(err instanceof AdmobctlError)) return err;
+  const opts = { status: err.status, cause: err };
+  switch (err.code) {
+    case "AUTH_SCOPE_MISSING":
+      return new AdmobctlError("AUTH_SCOPE_MISSING", "finance balance needs the adsense.readonly scope, which your credentials do not include.", {
+        ...opts,
+        fix: "admobctl setup login --features payments --yes"
+      });
+    case "PERMISSION_DENIED":
+    case "NOT_FOUND":
+      return new AdmobctlError("PAYMENTS_UNAVAILABLE", `No Google payments (AdSense) account was found or accessible for ${publisherId}, so the unpaid balance is unavailable. (Google: ${err.message})`, {
+        ...opts,
+        fix: "Check AdMob \u2192 Payments in the web UI. If your balance shows there, run admobctl auth doctor and make sure you signed in as the AdMob account owner."
+      });
+    default:
+      return err;
+  }
+}
+
 // src/core/write.ts
 var MAPPING_BATCH_MAX = 100;
 var usd = (micros) => `${formatMicros(micros)} USD`;
@@ -13712,7 +14153,14 @@ async function applyPlan(svc, plan) {
   try {
     result = await svc.client.write(plan.method, plan.path, plan.body, plan.query);
   } catch (err) {
-    audit(svc, { ...entry, ok: false, error: err instanceof AdmobctlError ? err.code : String(err) });
+    audit(svc, {
+      ...entry,
+      ok: false,
+      // Sent, then a timeout, network error or 5xx: not a rejection, the API may have applied it.
+      ...err instanceof WriteOutcomeUnknownError ? { outcome: "unknown" } : {},
+      error: err instanceof AdmobctlError ? err.code : String(err),
+      ...err instanceof AdmobctlError ? { message: err.message } : {}
+    });
     throw err;
   }
   const name = result?.name;
@@ -13858,444 +14306,6 @@ function mergeCampaignChunks(chunks, dimensions) {
     if ("AVERAGE_CPI" in m) m.AVERAGE_CPI = m.INSTALLS ? Math.round((m.ESTIMATED_COST ?? 0) / m.INSTALLS) : 0;
   }
   return { rows, warnings: chunks.flatMap((c) => c.warnings) };
-}
-
-// src/core/ratelimit.ts
-var MINUTE = 6e4;
-var QUOTAS = { account: 900, inventory: 120, reporting: 900 };
-var RateLimiter = class {
-  constructor(limit, windowMs, now = Date.now) {
-    this.limit = limit;
-    this.windowMs = windowMs;
-    this.now = now;
-  }
-  limit;
-  windowMs;
-  now;
-  starts = [];
-  /** Wait until a call may start. `sleep` is the caller's, so tests with a fake sleep never block. */
-  async take(sleep = defaultSleep) {
-    const t = this.now();
-    this.starts = this.starts.filter((s) => s > t - this.windowMs);
-    const at = this.starts.length >= this.limit ? this.starts[this.starts.length - this.limit] + this.windowMs : t;
-    this.starts.push(at);
-    this.starts.sort((a, b) => a - b);
-    if (at > t) {
-      log.debug(`rate limit: waiting ${at - t}ms for a free slot`);
-      await sleep(at - t);
-    }
-  }
-};
-function createLimiters(now) {
-  const make = (c) => new RateLimiter(QUOTAS[c], MINUTE, now);
-  return { account: make("account"), inventory: make("inventory"), reporting: make("reporting") };
-}
-var processLimiters = createLimiters();
-
-// src/core/report.ts
-var DIMENSIONS = {
-  network: [
-    "DATE",
-    "MONTH",
-    "WEEK",
-    "AD_UNIT",
-    "APP",
-    "AD_TYPE",
-    "COUNTRY",
-    "FORMAT",
-    "PLATFORM",
-    "MOBILE_OS_VERSION",
-    "GMA_SDK_VERSION",
-    "APP_VERSION_NAME",
-    "SERVING_RESTRICTION"
-  ],
-  mediation: [
-    "DATE",
-    "MONTH",
-    "WEEK",
-    "AD_SOURCE",
-    "AD_SOURCE_INSTANCE",
-    "AD_UNIT",
-    "APP",
-    "MEDIATION_GROUP",
-    "COUNTRY",
-    "FORMAT",
-    "PLATFORM",
-    "MOBILE_OS_VERSION",
-    "GMA_SDK_VERSION",
-    "APP_VERSION_NAME",
-    "SERVING_RESTRICTION"
-  ],
-  // v1beta campaignReport: AdMob app-promotion campaigns (the publisher as advertiser).
-  campaign: [
-    "DATE",
-    "CAMPAIGN_ID",
-    "CAMPAIGN_NAME",
-    "AD_ID",
-    "AD_NAME",
-    "PLACEMENT_ID",
-    "PLACEMENT_NAME",
-    "PLACEMENT_PLATFORM",
-    "COUNTRY",
-    "FORMAT"
-  ]
-};
-var METRICS = {
-  network: [
-    "AD_REQUESTS",
-    "CLICKS",
-    "ESTIMATED_EARNINGS",
-    "IMPRESSIONS",
-    "IMPRESSION_CTR",
-    "IMPRESSION_RPM",
-    "MATCHED_REQUESTS",
-    "MATCH_RATE",
-    "SHOW_RATE"
-  ],
-  mediation: [
-    "AD_REQUESTS",
-    "CLICKS",
-    "ESTIMATED_EARNINGS",
-    "IMPRESSIONS",
-    "IMPRESSION_CTR",
-    "MATCHED_REQUESTS",
-    "MATCH_RATE",
-    "OBSERVED_ECPM"
-  ],
-  campaign: ["IMPRESSIONS", "CLICKS", "CLICK_THROUGH_RATE", "INSTALLS", "ESTIMATED_COST", "AVERAGE_CPI", "INTERACTIONS"]
-};
-var MONEY_METRICS = /* @__PURE__ */ new Set(["ESTIMATED_EARNINGS", "IMPRESSION_RPM", "OBSERVED_ECPM", "ESTIMATED_COST", "AVERAGE_CPI"]);
-var METRIC_ALIASES = {
-  EARNINGS: "ESTIMATED_EARNINGS",
-  REVENUE: "ESTIMATED_EARNINGS",
-  REQUESTS: "AD_REQUESTS",
-  MATCHED: "MATCHED_REQUESTS",
-  CTR: "IMPRESSION_CTR",
-  RPM: "IMPRESSION_RPM",
-  ECPM: "OBSERVED_ECPM",
-  COST: "ESTIMATED_COST",
-  CPI: "AVERAGE_CPI"
-};
-var KIND_METRIC_ALIASES = {
-  campaign: { CTR: "CLICK_THROUGH_RATE" }
-};
-var DIMENSION_ALIASES = {
-  UNIT: "AD_UNIT",
-  SOURCE: "AD_SOURCE",
-  OS_VERSION: "MOBILE_OS_VERSION",
-  SDK_VERSION: "GMA_SDK_VERSION",
-  APP_VERSION: "APP_VERSION_NAME",
-  CAMPAIGN: "CAMPAIGN_NAME",
-  AD: "AD_NAME",
-  PLACEMENT: "PLACEMENT_NAME"
-};
-function canonical(name) {
-  return name.trim().toUpperCase().replace(/-/g, "_");
-}
-function friendlyName(apiName) {
-  return apiName.toLowerCase().replace(/_/g, "-");
-}
-function friendlyMetric(apiName) {
-  const alias = Object.keys(METRIC_ALIASES).find((k) => METRIC_ALIASES[k] === apiName);
-  return friendlyName(alias ?? apiName);
-}
-function normalizeDimension(name, kind) {
-  const c = canonical(name);
-  const resolved = DIMENSION_ALIASES[c] ?? c;
-  if (!DIMENSIONS[kind].includes(resolved)) {
-    throw usageError(
-      `Dimension "${name}" is not supported by ${kind} reports. Valid: ${DIMENSIONS[kind].map(friendlyName).join(", ")}`
-    );
-  }
-  return resolved;
-}
-function normalizeMetric(name, kind) {
-  const c = canonical(name);
-  const resolved = KIND_METRIC_ALIASES[kind]?.[c] ?? METRIC_ALIASES[c] ?? c;
-  if (!METRICS[kind].includes(resolved)) {
-    throw usageError(
-      `Metric "${name}" is not supported by ${kind} reports. Valid: ${METRICS[kind].map(friendlyName).join(", ")}`
-    );
-  }
-  return resolved;
-}
-var API_MAX_ROWS = 1e5;
-var TIME_DIMENSIONS = ["DATE", "WEEK", "MONTH"];
-var INCOMPATIBLE = {
-  AD_TYPE: ["AD_REQUESTS", "MATCH_RATE", "IMPRESSION_RPM"]
-};
-var DISCOURAGED = {
-  MOBILE_OS_VERSION: ["ESTIMATED_EARNINGS", "OBSERVED_ECPM", "IMPRESSION_RPM"],
-  GMA_SDK_VERSION: ["ESTIMATED_EARNINGS", "OBSERVED_ECPM", "IMPRESSION_RPM"],
-  APP_VERSION_NAME: ["ESTIMATED_EARNINGS", "OBSERVED_ECPM", "IMPRESSION_RPM"]
-};
-function compatibleMetrics(_kind, dimensions, metrics) {
-  const excluded = new Set(dimensions.flatMap((d) => [...INCOMPATIBLE[d] ?? [], ...DISCOURAGED[d] ?? []]));
-  return { kept: metrics.filter((m) => !excluded.has(m)), dropped: metrics.filter((m) => excluded.has(m)) };
-}
-function checkCombination(dimensions, metrics) {
-  const timeDims = dimensions.filter((d) => TIME_DIMENSIONS.includes(d));
-  if (timeDims.length > 1) {
-    throw usageError(`A report can use only one time dimension (date, week or month), got ${timeDims.map(friendlyName).join(", ")}.`);
-  }
-  for (const d of dimensions) {
-    const bad = metrics.filter((m) => INCOMPATIBLE[d]?.includes(m));
-    if (bad.length) {
-      throw usageError(`${friendlyName(d)} cannot be combined with ${bad.map(friendlyMetric).join(", ")} (an AdMob API restriction). Drop one of them.`);
-    }
-  }
-}
-function normalizeCurrency(code2) {
-  const c = code2.trim().toUpperCase();
-  if (!/^[A-Z]{3}$/.test(c)) throw usageError(`Currency must be an ISO 4217 code like USD or EUR, got "${code2}"`);
-  return c;
-}
-function parseSort(input2, kind, dimensions, metrics) {
-  const [field = "", dir, ...rest] = input2.split(":").map((p) => p.trim());
-  const order = dir?.toLowerCase();
-  if (rest.length || order !== void 0 && order !== "asc" && order !== "desc") {
-    throw usageError(`--sort expects <field>[:asc|desc] with asc or desc, got "${input2}"`);
-  }
-  const named = (resolve) => {
-    try {
-      return resolve();
-    } catch {
-      return void 0;
-    }
-  };
-  const dimension = named(() => normalizeDimension(field, kind));
-  if (dimension && dimensions.includes(dimension)) return { dimension, order: order === "desc" ? "DESCENDING" : "ASCENDING" };
-  const metric2 = named(() => normalizeMetric(field, kind));
-  if (metric2 && metrics.includes(metric2)) return { metric: metric2, order: order === "asc" ? "ASCENDING" : "DESCENDING" };
-  throw usageError(
-    `Cannot sort by "${field}": it is not in this report. Sort by one of: ${[...dimensions.map(friendlyName), ...metrics.map(friendlyMetric)].join(", ")}`
-  );
-}
-function buildReportSpec(kind, input2) {
-  const dimensions = input2.dimensions.map((d) => normalizeDimension(d, kind));
-  const metrics = input2.metrics.map((m) => normalizeMetric(m, kind));
-  checkCombination(dimensions, metrics);
-  const spec = { dateRange: input2.dateRange, dimensions, metrics };
-  const filters = Object.entries(input2.filters ?? {});
-  if (filters.length) {
-    spec.dimensionFilters = filters.map(([dim, values]) => ({
-      dimension: normalizeDimension(dim, kind),
-      matchesAny: { values }
-    }));
-  }
-  const timeDim = dimensions.find((d) => TIME_DIMENSIONS.includes(d));
-  if (input2.sort !== void 0) spec.sortConditions = [parseSort(input2.sort, kind, dimensions, metrics)];
-  else if (timeDim) spec.sortConditions = [{ dimension: timeDim, order: "ASCENDING" }];
-  else if (metrics.includes("ESTIMATED_EARNINGS")) {
-    spec.sortConditions = [{ metric: "ESTIMATED_EARNINGS", order: "DESCENDING" }];
-  }
-  if (input2.currency !== void 0) spec.localizationSettings = { currencyCode: normalizeCurrency(input2.currency) };
-  if (input2.maxRows !== void 0) spec.maxReportRows = input2.maxRows;
-  return spec;
-}
-function metricNumber(key, v) {
-  if (v.microsValue !== void 0) return parseMicros(v.microsValue);
-  if (v.integerValue !== void 0) return Number(v.integerValue);
-  if (MONEY_METRICS.has(key) && v.doubleValue !== void 0) return Math.round(v.doubleValue * 1e6);
-  return v.doubleValue ?? 0;
-}
-function parseReport(raw) {
-  const rows = raw?.rows;
-  const chunks = Array.isArray(raw) ? raw : Array.isArray(rows) ? rows.map((row) => ({ row })) : [raw];
-  const report = { rows: [], warnings: [] };
-  for (const chunk of chunks) {
-    if (chunk.header) {
-      report.currency = chunk.header.localizationSettings?.currencyCode;
-      report.timeZone = chunk.header.reportingTimeZone;
-      report.dateRange = chunk.header.dateRange;
-    }
-    if (chunk.row) {
-      const dimensions = {};
-      for (const [k, v] of Object.entries(chunk.row.dimensionValues ?? {})) {
-        dimensions[k] = v.displayLabel === void 0 ? { value: v.value ?? "" } : { value: v.value ?? "", label: v.displayLabel };
-      }
-      const metrics = {};
-      for (const [k, v] of Object.entries(chunk.row.metricValues ?? {})) metrics[k] = metricNumber(k, v);
-      report.rows.push({ dimensions, metrics });
-    }
-    if (chunk.footer) {
-      if (chunk.footer.matchingRowCount !== void 0) report.matchingRowCount = Number(chunk.footer.matchingRowCount);
-      for (const w of chunk.footer.warnings ?? []) report.warnings.push(w.description ?? w.type ?? "unknown warning");
-    }
-  }
-  return report;
-}
-
-// src/core/client.ts
-var API_BASE = "https://admob.googleapis.com/v1";
-var API_BASE_BETA = "https://admob.googleapis.com/v1beta";
-var ADSENSE_API_BASE = "https://adsense.googleapis.com/v2";
-function accountName(account) {
-  return account.startsWith("accounts/") ? account : `accounts/${account}`;
-}
-var AdmobClient = class {
-  constructor(opts) {
-    this.opts = opts;
-  }
-  opts;
-  async request(quota, method, path2, body, version2 = "v1", http = {}) {
-    const limiter = (this.opts.limiters ?? processLimiters)[quota];
-    const headers = {
-      authorization: `Bearer ${await this.opts.getToken()}`,
-      accept: "application/json"
-    };
-    if (this.opts.quotaProject) headers["x-goog-user-project"] = this.opts.quotaProject;
-    if (body !== void 0) headers["content-type"] = "application/json";
-    const base = version2 === "v1" ? this.opts.baseUrl ?? API_BASE : version2 === "v1beta" ? this.opts.betaBaseUrl ?? API_BASE_BETA : this.opts.adsenseBaseUrl ?? ADSENSE_API_BASE;
-    try {
-      return await requestJson(
-        `${base}/${path2}`,
-        { method, headers, body: body === void 0 ? void 0 : JSON.stringify(body) },
-        // Every attempt, retries included, takes a rate-limiter slot.
-        { ...this.opts, ...http, beforeAttempt: () => limiter.take(this.opts.sleep) }
-      );
-    } catch (err) {
-      throw version2 === "v1beta" ? betaError(err, path2, method) : err;
-    }
-  }
-  async paginate(quota, path2, key, opts = {}) {
-    const out = [];
-    let pageToken;
-    do {
-      const qs = new URLSearchParams({ pageSize: "1000", ...opts.params });
-      if (pageToken) qs.set("pageToken", pageToken);
-      const page = await this.request(quota, "GET", `${path2}?${qs}`, void 0, opts.version);
-      out.push(...page?.[key] ?? []);
-      pageToken = page?.nextPageToken || void 0;
-    } while (pageToken);
-    return out;
-  }
-  listAccounts() {
-    return this.paginate("account", "accounts", "account");
-  }
-  listApps(account) {
-    return this.paginate("inventory", `${accountName(account)}/apps`, "apps");
-  }
-  listAdUnits(account) {
-    return this.paginate("inventory", `${accountName(account)}/adUnits`, "adUnits");
-  }
-  async networkReport(account, spec) {
-    const raw = await this.request("reporting", "POST", `${accountName(account)}/networkReport:generate`, { reportSpec: spec });
-    return parseReport(raw);
-  }
-  async mediationReport(account, spec) {
-    const raw = await this.request("reporting", "POST", `${accountName(account)}/mediationReport:generate`, { reportSpec: spec });
-    return parseReport(raw);
-  }
-  // ── v1beta reads ──────────────────────────────────────────────────
-  listAdSources(account) {
-    return this.paginate("inventory", `${accountName(account)}/adSources`, "adSources", { version: "v1beta" });
-  }
-  listAdapters(account, adSourceId) {
-    return this.paginate("inventory", `${accountName(account)}/adSources/${adSourceId}/adapters`, "adapters", { version: "v1beta" });
-  }
-  /** `filter` uses the API's EBNF syntax, e.g. IN(FORMAT, "BANNER") AND CONTAINS_ANY(APP_IDS, "…"). */
-  listMediationGroups(account, filter) {
-    return this.paginate("inventory", `${accountName(account)}/mediationGroups`, "mediationGroups", {
-      version: "v1beta",
-      params: filter ? { filter } : void 0
-    });
-  }
-  /** `adUnit` is the ad unit's resource name, accounts/{pub}/adUnits/{fragment}. */
-  listAdUnitMappings(adUnit) {
-    return this.paginate("inventory", `${adUnit}/adUnitMappings`, "adUnitMappings", { version: "v1beta" });
-  }
-  // ── v1beta writes (admob.monetization scope) ─────────────────────
-  /** Send a write to v1beta. `path` is relative to the version root, e.g. accounts/pub-1/adUnits. */
-  async write(method, path2, body, query) {
-    const qs = query && Object.keys(query).length ? `?${new URLSearchParams(query)}` : "";
-    try {
-      return await this.request("inventory", method, `${path2}${qs}`, body, "v1beta", { retries: 0 });
-    } catch (err) {
-      if (err instanceof AdmobctlError && (err.status === void 0 || err.status >= 500)) {
-        throw new AdmobctlError(err.code, `${err.message} The change may have been applied anyway.`, {
-          status: err.status,
-          cause: err,
-          fix: "Check with admobctl (e.g. apps list, ad-units list, mediation-groups show) before retrying, so it is not applied twice."
-        });
-      }
-      if (err instanceof AdmobctlError && err.code === "AUTH_SCOPE_MISSING") {
-        throw new AdmobctlError("AUTH_SCOPE_MISSING", "Write commands need the admob.monetization scope, which your credentials do not include.", {
-          status: err.status,
-          cause: err,
-          fix: "admobctl setup login --features write --yes"
-        });
-      }
-      throw err;
-    }
-  }
-  // ── AdSense Management API (adsense.readonly scope) ──────────────
-  /** All payments of the publisher's Google payments account: `unpaid` plus paid ones. Not paginated. */
-  async listPayments(account) {
-    try {
-      const page = await this.request("account", "GET", `${accountName(account)}/payments`, void 0, "adsense");
-      return page?.payments ?? [];
-    } catch (err) {
-      throw paymentsError(err, account.replace(/^accounts\//, ""));
-    }
-  }
-  async campaignReport(account, spec) {
-    try {
-      const raw = await this.request("reporting", "POST", `${accountName(account)}/campaignReport:generate`, { reportSpec: spec }, "v1beta");
-      return parseReport(raw);
-    } catch (err) {
-      if (err instanceof AdmobctlError && err.status === 400) {
-        throw new AdmobctlError(
-          "CAMPAIGN_REPORT_REJECTED",
-          `The AdMob API rejected the campaign report (400: ${err.message.replace(/^AdMob API error 400: /, "")}). This usually means the account has no AdMob app-promotion campaigns, or is not enabled for campaignReport (AdMob API v1beta).`,
-          {
-            status: 400,
-            cause: err,
-            fix: "Check AdMob \u2192 Campaigns for app-promotion campaigns. If you run some there, ask your Google AdMob account manager to enable AdMob API (v1beta) campaign reporting for this account."
-          }
-        );
-      }
-      throw err;
-    }
-  }
-};
-function methodName(path2, httpMethod) {
-  const segments = path2.split("?")[0].split("/");
-  const last = segments[segments.length - 1];
-  if (last.includes(":")) return last.replace(":", ".");
-  const collection = segments.length % 2 === 1 ? last : segments[segments.length - 2];
-  return `${collection}.${httpMethod === "GET" ? "list" : httpMethod === "PATCH" ? "patch" : "create"}`;
-}
-function betaError(err, path2, httpMethod) {
-  if (!(err instanceof AdmobctlError) || err.code !== "PERMISSION_DENIED") return err;
-  return new AdmobctlError(
-    "BETA_ACCESS_DENIED",
-    `Permission denied for ${methodName(path2, httpMethod)} (AdMob API v1beta). Google limits several v1beta methods to allowlisted accounts.`,
-    {
-      status: err.status,
-      cause: err,
-      fix: "If `admobctl accounts list` works, ask your Google AdMob account manager to enable AdMob API (v1beta) access for this publisher account."
-    }
-  );
-}
-function paymentsError(err, publisherId) {
-  if (!(err instanceof AdmobctlError)) return err;
-  const opts = { status: err.status, cause: err };
-  switch (err.code) {
-    case "AUTH_SCOPE_MISSING":
-      return new AdmobctlError("AUTH_SCOPE_MISSING", "finance balance needs the adsense.readonly scope, which your credentials do not include.", {
-        ...opts,
-        fix: "admobctl setup login --features payments --yes"
-      });
-    case "PERMISSION_DENIED":
-    case "NOT_FOUND":
-      return new AdmobctlError("PAYMENTS_UNAVAILABLE", `No Google payments (AdSense) account was found or accessible for ${publisherId}, so the unpaid balance is unavailable. (Google: ${err.message})`, {
-        ...opts,
-        fix: "Check AdMob \u2192 Payments in the web UI. If your balance shows there, run admobctl auth doctor and make sure you signed in as the AdMob account owner."
-      });
-    default:
-      return err;
-  }
 }
 
 // src/core/freshness.ts
@@ -15534,6 +15544,7 @@ function writeView(plans, results) {
   };
 }
 function auditLogView(log2) {
+  const unknown2 = log2.entries.filter((e) => !e.ok && e.outcome === "unknown").length;
   return {
     data: log2,
     table: {
@@ -15548,12 +15559,15 @@ function auditLogView(log2) {
         time: e.time.replace("T", " ").replace(/\.\d+Z$/, ""),
         action: e.action,
         request: `${e.method} ${e.path}`,
-        outcome: e.ok ? e.result ?? "ok" : `failed: ${e.error ?? "unknown"}`,
+        outcome: e.ok ? e.result ?? "ok" : `${e.outcome === "unknown" ? "unknown (may have been applied)" : "failed"}: ${e.error ?? "unknown"}`,
         profile: e.profile
       }))
     },
     notes: [
       ...log2.entries.length ? [] : [`No applied writes recorded in ${log2.file}.`],
+      ...unknown2 ? [
+        `${unknown2} ${unknown2 === 1 ? "write has" : "writes have"} an unknown outcome: sent, then a timeout, network error or server error. Check with admobctl (e.g. apps list, ad-units list, mediation-groups show) what was applied before retrying.`
+      ] : [],
       ...log2.skipped ? [`Skipped ${log2.skipped} unreadable ${log2.skipped === 1 ? "line" : "lines"} in ${log2.file}.`] : []
     ]
   };
@@ -16088,7 +16102,7 @@ function buildProgram(io) {
     });
     await new Promise((resolve) => process.stdin.on("close", resolve));
   });
-  program2.command("audit-log").description("Show the writes applied with --yes (from the local audit log), newest first").option("--last <n>", "only the newest n entries", positiveInt).option("--failed", "only writes the API rejected").action((o, cmd) => emit(cmd, auditLogView(readAudit(dir(), o))));
+  program2.command("audit-log").description("Show the writes applied with --yes (from the local audit log), newest first").option("--last <n>", "only the newest n entries", positiveInt).option("--failed", "only writes that failed, or whose outcome is unknown (a timeout, network or server error after sending)").action((o, cmd) => emit(cmd, auditLogView(readAudit(dir(), o))));
   const config2 = program2.command("config").description("Read and write ~/.admobctl/config.json (no secrets)");
   config2.command("get [key]").description("Show the resolved profile, or one key").action((key, _o, cmd) => {
     const p = resolveProfile(loadConfig(dir()), g(cmd).profile);

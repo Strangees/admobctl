@@ -114,6 +114,12 @@ export interface AdmobClientOptions extends HttpOptions {
   limiters?: Limiters;
 }
 
+/**
+ * A write that failed after it was sent (timeout, network error, 5xx): the API may have applied it anyway, so it is
+ * neither a success nor safe to retry blindly.
+ */
+export class WriteOutcomeUnknownError extends AdmobctlError {}
+
 /** "pub-123" or "accounts/pub-123" → "accounts/pub-123" */
 export function accountName(account: string): string {
   return account.startsWith("accounts/") ? account : `accounts/${account}`;
@@ -130,10 +136,11 @@ export class AdmobClient {
     body?: unknown,
     version: ApiVersion = "v1",
     http: Pick<HttpOptions, "retries"> = {},
+    token?: string,
   ): Promise<T> {
     const limiter = (this.opts.limiters ?? processLimiters)[quota];
     const headers: Record<string, string> = {
-      authorization: `Bearer ${await this.opts.getToken()}`,
+      authorization: `Bearer ${token ?? (await this.opts.getToken())}`,
       accept: "application/json",
     };
     if (this.opts.quotaProject) headers["x-goog-user-project"] = this.opts.quotaProject;
@@ -224,12 +231,14 @@ export class AdmobClient {
   /** Send a write to v1beta. `path` is relative to the version root, e.g. accounts/pub-1/adUnits. */
   async write<T = unknown>(method: "POST" | "PATCH", path: string, body: unknown, query?: Record<string, string>): Promise<T> {
     const qs = query && Object.keys(query).length ? `?${new URLSearchParams(query)}` : "";
+    // Taken before the request, outside its try: a sign-in failure sends nothing and keeps its own message and fix.
+    const token = await this.opts.getToken();
     try {
       // Writes are not idempotent (creates, new "-1" lines): a retry after a timeout or 5xx could apply them twice.
-      return await this.request<T>("inventory", method, `${path}${qs}`, body, "v1beta", { retries: 0 });
+      return await this.request<T>("inventory", method, `${path}${qs}`, body, "v1beta", { retries: 0 }, token);
     } catch (err) {
       if (err instanceof AdmobctlError && (err.status === undefined || err.status >= 500)) {
-        throw new AdmobctlError(err.code, `${err.message} The change may have been applied anyway.`, {
+        throw new WriteOutcomeUnknownError(err.code, `${err.message} The change may have been applied anyway.`, {
           status: err.status,
           cause: err,
           fix: "Check with admobctl (e.g. apps list, ad-units list, mediation-groups show) before retrying, so it is not applied twice.",

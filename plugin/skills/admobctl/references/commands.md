@@ -234,7 +234,10 @@ With `--yes` it applies them in order (JSON: `{applied: true, plans, results}`) 
 | `mediation-groups experiment stop <group> --keep A\|B` | Stop it, keeping the original (A) or treatment (B) lines |
 
 `admobctl audit-log [--last <n>] [--failed]` reads that log back, newest first: time, action, request, outcome
-(the created resource, or `failed: <code>`), profile. It is local and calls no API.
+(the created resource, `failed: <code>`, or `unknown (may have been applied): <code>`), profile. It is local and calls
+no API. An unknown outcome (JSON: `outcome: "unknown"`) means the write failed after it was sent (timeout, network
+error, 5xx): check whether it was applied before retrying. Failed writes carry `error` (the code) and `message`.
+`--failed` lists both failed and unknown ones.
 
 ## Errors
 

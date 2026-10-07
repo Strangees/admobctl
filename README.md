@@ -203,7 +203,9 @@ calls use the AdMob API's v1beta write methods, which need two things beyond the
 Every write command is a **dry run unless you add `--yes`**: it prints the exact request (method, URL, update mask and
 JSON body) and a plain-words summary, then exits without sending anything. Input is checked first: formats and ad
 types, adapter platform and format, required adapter settings, CPMs, experiment state. Applied writes, including
-failed ones, are appended to `~/.admobctl/audit.log`; `admobctl audit-log` shows them, newest first.
+failed ones, are appended to `~/.admobctl/audit.log`; `admobctl audit-log` shows them, newest first. A write that
+failed after it was sent (a timeout, network error or server error) is recorded with an **unknown outcome**, since the
+API may have applied it: check before you retry it. `audit-log --failed` lists those and the failed ones.
 
 ```bash
 admobctl apps create --platform android --store-id com.example.game
