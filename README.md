@@ -117,7 +117,7 @@ Global flags:
 | `-o, --output json\|table\|csv\|markdown` | Default: `table` on a terminal, `json` when piped |
 | `--profile <name>` | Use a named profile from the config |
 | `--account pub-…` | Pick the publisher account (otherwise auto-selected when there is only one) |
-| `-v, --verbose` | Debug logs to stderr |
+| `-v, --verbose` | Debug logs to stderr, including the API's full error response when a request fails |
 
 Network and mediation reports take `--sort <field>[:asc|desc]` (any dimension or metric in the report) and `--compare previous`, which adds each row's value in the equal-length period just before and the change.
 `--filter` is repeatable, and filters on one dimension add up (`--filter country=NO --filter country=SE`). `--max-rows`

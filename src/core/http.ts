@@ -1,4 +1,4 @@
-import { AdmobctlError, diagnoseApiError } from "./errors.js";
+import { AdmobctlError, diagnoseApiError, summarizeBody } from "./errors.js";
 import { log } from "./log.js";
 
 export interface HttpOptions {
@@ -47,9 +47,31 @@ function retryAfterMs(res: Response): number | undefined {
   const h = res.headers.get("retry-after");
   if (!h) return undefined;
   const secs = Number(h);
-  if (Number.isFinite(secs)) return secs * 1000;
-  const at = Date.parse(h);
-  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined;
+  const ms = Number.isFinite(secs) ? secs * 1000 : Date.parse(h) - Date.now();
+  // 0, a negative number or a date already past asks for no wait at all: ignore it and back off as usual.
+  return Number.isFinite(ms) && ms > 0 ? ms : undefined;
+}
+
+/** Names the API a request went to, for error messages; undefined for a host we do not know. */
+const API_NAMES: Record<string, string> = {
+  "admob.googleapis.com": "AdMob API",
+  "adsense.googleapis.com": "AdSense Management API",
+  "cloudresourcemanager.googleapis.com": "Cloud Resource Manager API",
+  "serviceusage.googleapis.com": "Service Usage API",
+};
+
+/**
+ * A 2xx whose body is not JSON: typically a captive portal, proxy or firewall answering in Google's place. No status
+ * on the error: like a timeout, it leaves open whether a write reached Google.
+ */
+function notJsonError(url: string, status: number, body: unknown): AdmobctlError {
+  const host = new URL(url).host;
+  const what = body === undefined ? `an empty response (HTTP ${status})` : `a response that is not JSON (HTTP ${status}: ${summarizeBody(body)})`;
+  return new AdmobctlError(
+    "API_ERROR",
+    `The ${API_NAMES[host] ?? host} request got ${what}. A proxy, firewall or Wi-Fi sign-in page may be answering instead of Google.`,
+    { fix: "Check your network connection (sign in to the Wi-Fi if it asks you to), then retry." },
+  );
 }
 
 async function readBody(res: Response): Promise<unknown> {
@@ -94,7 +116,7 @@ async function attemptOnce(
     return { kind: "fail", status: res.status, body: await readBody(res), retryAfterMs: retryAfter };
   }
   await res.body?.cancel().catch(() => {});
-  return { kind: "retry", status: res.status, wait: retryAfter ?? backoff };
+  return { kind: "retry", status: res.status, wait: Math.max(retryAfter ?? 0, backoff) };
 }
 
 /** fetch + JSON with exponential backoff on 429/5xx and transient network errors. */
@@ -147,10 +169,16 @@ export async function requestJson<T = unknown>(url: string, init: RequestInit, o
 
     // URL and status only: headers carry the access token and are never logged.
     log.debug(`${init.method ?? "GET"} ${url} → ${outcome.status} (${Date.now() - started}ms)`);
-    if (outcome.kind === "ok") return outcome.body as T;
+    if (outcome.kind === "ok") {
+      // Every call here expects JSON (Google sends {} for an empty result); only 204 No Content has no body.
+      if (outcome.status !== 204 && (outcome.body === undefined || typeof outcome.body === "string")) {
+        throw notJsonError(url, outcome.status, outcome.body);
+      }
+      return outcome.body as T;
+    }
     if (outcome.kind === "fail") {
       log.debug(`response: ${(typeof outcome.body === "string" ? outcome.body : JSON.stringify(outcome.body) ?? "").slice(0, 2000)}`);
-      throw diagnoseApiError(outcome.status, outcome.body, { retryAfterMs: outcome.retryAfterMs });
+      throw diagnoseApiError(outcome.status, outcome.body, { retryAfterMs: outcome.retryAfterMs, api: API_NAMES[new URL(url).host] });
     }
     log.debug(`HTTP ${outcome.status}; retrying in ${outcome.wait}ms`);
     await sleep(outcome.wait);

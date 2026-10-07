@@ -56,6 +56,31 @@ describe("AdmobClient", () => {
     });
     await expect(client.listAccounts()).rejects.toMatchObject({ code: "AUTH_SCOPE_MISSING" });
   });
+
+  describe("a 200 that is not the API's data", () => {
+    const portal = () => new Response("<html>Sign in to Wi-Fi</html>", { status: 200, headers: { "content-type": "text/html" } });
+
+    it("fails apps.list instead of returning no apps", async () => {
+      const { client } = makeClient({ "GET /apps": portal });
+      await expect(client.listApps("pub-0000000000000001")).rejects.toMatchObject({ code: "API_ERROR", message: expect.stringContaining("Sign in to Wi-Fi") });
+    });
+
+    it("fails a report instead of returning no rows", async () => {
+      const { client } = makeClient({ "POST /networkReport:generate": portal });
+      await expect(client.networkReport("pub-0000000000000001", {})).rejects.toMatchObject({ code: "API_ERROR" });
+    });
+
+    it("fails a report whose stream ends in an error instead of returning the rows before it", async () => {
+      const [header, row] = fixture<unknown[]>("network-report-by-app.json");
+      const { client } = makeClient({
+        "POST /networkReport:generate": () => jsonResponse([header, row, { error: { code: 500, message: "Internal error encountered.", status: "INTERNAL" } }]),
+      });
+      await expect(client.networkReport("pub-0000000000000001", {})).rejects.toMatchObject({
+        code: "API_ERROR",
+        message: expect.stringContaining("Internal error encountered."),
+      });
+    });
+  });
 });
 
 describe("AdmobClient.listPayments (AdSense Management API)", () => {

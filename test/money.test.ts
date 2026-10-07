@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { formatMicros, microsToAmount, parseMicros, sumMicros } from "../src/core/money.js";
+import { AdmobctlError } from "../src/core/errors.js";
+
+function catching(fn: () => unknown): AdmobctlError {
+  try {
+    fn();
+  } catch (e) {
+    return e as AdmobctlError;
+  }
+  throw new Error("expected a throw");
+}
 
 describe("parseMicros", () => {
   it("parses the API's string micros into an integer", () => {
@@ -9,6 +19,17 @@ describe("parseMicros", () => {
 
   it("refuses values that would lose precision", () => {
     expect(() => parseMicros("99999999999999999999")).toThrow(/precision/);
+  });
+
+  it("refuses them with an AdmobctlError that says how to get a smaller amount", () => {
+    const err = catching(() => parseMicros("99999999999999999999"));
+    expect(err).toBeInstanceOf(AdmobctlError);
+    expect(err.fix).toMatch(/date range.*--currency USD/);
+  });
+
+  it("refuses a value that is not a number with an API error, not a bare Error", () => {
+    expect(catching(() => parseMicros("abc"))).toMatchObject({ code: "API_ERROR" });
+    expect(catching(() => parseMicros("1.5"))).toMatchObject({ code: "API_ERROR" });
   });
 });
 
@@ -36,5 +57,17 @@ describe("microsToAmount", () => {
 describe("sumMicros", () => {
   it("sums integers exactly", () => {
     expect(sumMicros([100_000_001, 200_000_002, 3])).toBe(300_000_006);
+  });
+
+  it("refuses a total past safe-integer precision (a year in VND) with an AdmobctlError and a fix", () => {
+    const fiveBillionVnd = 5_000_000_000 * 1_000_000;
+    const err = catching(() => sumMicros([fiveBillionVnd, fiveBillionVnd]));
+    expect(err).toBeInstanceOf(AdmobctlError);
+    expect(err.message).toMatch(/precision/);
+    expect(err.fix).toMatch(/--currency USD/);
+  });
+
+  it("refuses a sum that passes the limit on the way, even if it ends below it", () => {
+    expect(() => sumMicros([Number.MAX_SAFE_INTEGER, 2, -2])).toThrow(AdmobctlError);
   });
 });

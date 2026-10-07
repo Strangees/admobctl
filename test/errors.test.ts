@@ -134,6 +134,50 @@ describe("diagnoseApiError", () => {
     expect(e.message).toContain("Account not found");
   });
 
+  it("gives NOT_FOUND a fix that lists the IDs the login can see", () => {
+    const e = diagnoseApiError(404, { error: { code: 404, message: "Requested entity was not found.", status: "NOT_FOUND" } });
+    expect(e.fix).toMatch(/^admobctl accounts list\b/);
+    expect(e.fix).toContain("apps list");
+  });
+
+  it("gives a rejected request (400) a fix that shows the API's full error body", () => {
+    const e = diagnoseApiError(400, { error: { code: 400, message: "Request contains an invalid argument.", status: "INVALID_ARGUMENT" } });
+    expect(e.code).toBe("API_ERROR");
+    expect(e.fix).toMatch(/-v\b/);
+  });
+
+  it("gives a server error a fix to retry later", () => {
+    const e = diagnoseApiError(500, { error: { code: 500, message: "Internal error encountered.", status: "INTERNAL" } });
+    expect(e.code).toBe("API_ERROR");
+    expect(e.fix).toMatch(/retry/i);
+  });
+
+  it("names the API that failed when the caller knows it", () => {
+    expect(diagnoseApiError(500, { error: { message: "boom" } }, { api: "AdSense Management API" }).message).toBe("AdSense Management API error 500: boom");
+    expect(diagnoseApiError(429, { error: { message: "Quota exceeded" } }, { api: "Service Usage API" }).message).toBe(
+      "Rate limited by the Service Usage API: Quota exceeded",
+    );
+    expect(diagnoseApiError(500, { error: { message: "boom" } }).message).toBe("AdMob API error 500: boom");
+  });
+
+  it("shows an HTML error page by its title instead of copying the page into the message", () => {
+    const page = `<!DOCTYPE html>\n<html lang=en>\n  <meta charset=utf-8>\n  <title>Error 502 (Server Error)!!1</title>\n  <style>${"*{margin:0;padding:0}".repeat(300)}</style>\n  <p><b>502.</b> <ins>That’s an error.</ins>\n</html>`;
+    const e = diagnoseApiError(502, page);
+    expect(e.code).toBe("API_ERROR");
+    expect(e.message).toBe("AdMob API error 502: Error 502 (Server Error)!!1");
+  });
+
+  it("cuts a long text body to its start", () => {
+    const e = diagnoseApiError(500, `upstream exploded ${"x".repeat(5000)}`);
+    expect(e.message).toMatch(/^AdMob API error 500: upstream exploded x+…$/);
+    expect(e.message.length).toBeLessThan(250);
+  });
+
+  it("uses the HTTP status text for an empty body", () => {
+    expect(diagnoseApiError(500, undefined).message).toBe("AdMob API error 500: Internal Server Error");
+    expect(diagnoseApiError(503, "").message).toBe("AdMob API error 503: Service Unavailable");
+  });
+
   it("keeps the generic rate-limit fix when no Retry-After hint is given", () => {
     const e = diagnoseApiError(429, { error: { code: 429, message: "Quota exceeded", status: "RESOURCE_EXHAUSTED" } });
     expect(e.code).toBe("RATE_LIMITED");

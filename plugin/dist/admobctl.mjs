@@ -10573,6 +10573,7 @@ function useColor() {
 var program = new Command();
 
 // src/core/errors.ts
+import { STATUS_CODES } from "node:http";
 var ADMOB_SCOPE = "https://www.googleapis.com/auth/admob.readonly";
 var CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
 var MONETIZATION_SCOPE = "https://www.googleapis.com/auth/admob.monetization";
@@ -10609,9 +10610,21 @@ function formatDuration(ms) {
   if (mins < 120) return mins % 60 === 0 ? plural(mins / 60, "hour") : plural(mins, "minute");
   return plural(Math.round(ms / 36e5), "hour");
 }
+var MAX_BODY_CHARS = 200;
+function summarizeBody(body, status) {
+  let text = "";
+  if (typeof body === "string") {
+    const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(body)?.[1];
+    text = title ?? body.replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, " ").replace(/<[^>]*>/g, " ");
+  } else if (body !== void 0 && body !== null) text = JSON.stringify(body);
+  text = text.replace(/\s+/g, " ").trim();
+  if (!text) return (status === void 0 ? void 0 : STATUS_CODES[status]) ?? "empty response";
+  return text.length > MAX_BODY_CHARS ? `${text.slice(0, MAX_BODY_CHARS)}\u2026` : text;
+}
 function diagnoseApiError(status, body, hints = {}) {
   const parsed = typeof body === "object" && body !== null ? body : {};
-  const message = parsed.error?.message ?? (typeof body === "string" ? body : JSON.stringify(body));
+  const message = parsed.error?.message ?? summarizeBody(body, status);
+  const api = hints.api ?? "AdMob API";
   const info = errorInfo(parsed);
   const reason = info?.reason;
   const opts = { status };
@@ -10649,14 +10662,23 @@ function diagnoseApiError(status, body, hints = {}) {
       fix: "Check that the signed-in Google user has access to this AdMob account (admobctl accounts list)."
     });
   }
-  if (status === 404) return new AdmobctlError("NOT_FOUND", `Not found: ${message}`, opts);
+  if (status === 404) {
+    return new AdmobctlError("NOT_FOUND", `Not found: ${message}`, {
+      ...opts,
+      fix: "admobctl accounts list, apps list, ad-units list and mediation-groups list show the IDs you can use; check the one in the command."
+    });
+  }
   if (status === 429) {
-    return new AdmobctlError("RATE_LIMITED", `Rate limited by the AdMob API: ${message}`, {
+    return new AdmobctlError("RATE_LIMITED", `Rate limited by the ${api}: ${message}`, {
       ...opts,
       fix: hints.retryAfterMs === void 0 ? "Wait a minute and retry, or narrow the report." : `The API asked to wait: retry in about ${formatDuration(hints.retryAfterMs)}, or narrow the report.`
     });
   }
-  return new AdmobctlError("API_ERROR", `AdMob API error ${status}: ${message}`, opts);
+  return new AdmobctlError("API_ERROR", `${api} error ${status}: ${message}`, {
+    ...opts,
+    // -v logs the response body, where Google puts the details (e.g. which field of the request was invalid).
+    fix: status >= 500 ? "Retry in a few minutes; if it keeps failing, re-run the command with -v to see the API's full response." : "Re-run the command with -v to see the API's full error response."
+  });
 }
 
 // src/core/aliases.ts
@@ -10980,9 +11002,23 @@ function retryAfterMs(res) {
   const h = res.headers.get("retry-after");
   if (!h) return void 0;
   const secs = Number(h);
-  if (Number.isFinite(secs)) return secs * 1e3;
-  const at = Date.parse(h);
-  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : void 0;
+  const ms = Number.isFinite(secs) ? secs * 1e3 : Date.parse(h) - Date.now();
+  return Number.isFinite(ms) && ms > 0 ? ms : void 0;
+}
+var API_NAMES = {
+  "admob.googleapis.com": "AdMob API",
+  "adsense.googleapis.com": "AdSense Management API",
+  "cloudresourcemanager.googleapis.com": "Cloud Resource Manager API",
+  "serviceusage.googleapis.com": "Service Usage API"
+};
+function notJsonError(url2, status, body) {
+  const host = new URL(url2).host;
+  const what = body === void 0 ? `an empty response (HTTP ${status})` : `a response that is not JSON (HTTP ${status}: ${summarizeBody(body)})`;
+  return new AdmobctlError(
+    "API_ERROR",
+    `The ${API_NAMES[host] ?? host} request got ${what}. A proxy, firewall or Wi-Fi sign-in page may be answering instead of Google.`,
+    { fix: "Check your network connection (sign in to the Wi-Fi if it asks you to), then retry." }
+  );
 }
 async function readBody(res) {
   const text = await res.text();
@@ -11005,7 +11041,7 @@ async function attemptOnce(doFetch, url2, init, canRetry, backoff, maxRetryAfter
   }
   await res.body?.cancel().catch(() => {
   });
-  return { kind: "retry", status: res.status, wait: retryAfter ?? backoff };
+  return { kind: "retry", status: res.status, wait: Math.max(retryAfter ?? 0, backoff) };
 }
 async function requestJson(url2, init, opts = {}) {
   const doFetch = opts.fetch ?? fetch;
@@ -11051,10 +11087,15 @@ async function requestJson(url2, init, opts = {}) {
       clearTimeout(timeoutId);
     }
     log.debug(`${init.method ?? "GET"} ${url2} \u2192 ${outcome.status} (${Date.now() - started}ms)`);
-    if (outcome.kind === "ok") return outcome.body;
+    if (outcome.kind === "ok") {
+      if (outcome.status !== 204 && (outcome.body === void 0 || typeof outcome.body === "string")) {
+        throw notJsonError(url2, outcome.status, outcome.body);
+      }
+      return outcome.body;
+    }
     if (outcome.kind === "fail") {
       log.debug(`response: ${(typeof outcome.body === "string" ? outcome.body : JSON.stringify(outcome.body) ?? "").slice(0, 2e3)}`);
-      throw diagnoseApiError(outcome.status, outcome.body, { retryAfterMs: outcome.retryAfterMs });
+      throw diagnoseApiError(outcome.status, outcome.body, { retryAfterMs: outcome.retryAfterMs, api: API_NAMES[new URL(url2).host] });
     }
     log.debug(`HTTP ${outcome.status}; retrying in ${outcome.wait}ms`);
     await sleep(outcome.wait);
@@ -11863,19 +11904,28 @@ function splitRange(r, maxDays) {
 }
 
 // src/core/money.ts
+function tooLarge(what) {
+  return new AdmobctlError("USAGE", `${what} is too large to keep exact (integer precision ends near 9 billion in the report's currency).`, {
+    fix: "Narrow the date range (e.g. a month at a time), or report in a larger currency with --currency USD where the command takes it."
+  });
+}
 function parseMicros(value) {
   if (value === void 0 || value === null || value === "") return 0;
   const n = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(n)) throw new Error(`Invalid micros value: ${String(value)}`);
-  if (!Number.isSafeInteger(n)) {
-    throw new Error(`Micros value ${String(value)} exceeds safe integer precision`);
+  if (!Number.isInteger(n)) {
+    throw new AdmobctlError("API_ERROR", `The AdMob API sent an invalid money value: ${String(value)}`, {
+      fix: "Retry in a few minutes."
+    });
   }
+  if (!Number.isSafeInteger(n)) throw tooLarge(`The amount ${String(value)} micros`);
   return n;
 }
 function sumMicros(values) {
   let total = 0;
-  for (const v of values) total += v;
-  if (!Number.isSafeInteger(total)) throw new Error("Micros sum exceeds safe integer precision");
+  for (const v of values) {
+    total += v;
+    if (!Number.isSafeInteger(total)) throw tooLarge("The total");
+  }
   return total;
 }
 function formatMicros(micros, decimals = 2) {
@@ -14106,10 +14156,14 @@ function metricNumber(key, v) {
   return v.doubleValue ?? 0;
 }
 function parseReport(raw) {
-  const rows = raw?.rows;
+  if (!isObject(raw)) throw invalidReport(raw);
+  const rows = raw.rows;
   const chunks = Array.isArray(raw) ? raw : Array.isArray(rows) ? rows.map((row) => ({ row })) : [raw];
   const report = { rows: [], warnings: [] };
-  for (const chunk of chunks) {
+  for (const item of chunks) {
+    if (!isObject(item)) throw invalidReport(item);
+    const chunk = item;
+    if (chunk.error) throw diagnoseApiError(chunk.error.code ?? 500, chunk);
     if (chunk.header) {
       report.currency = chunk.header.localizationSettings?.currencyCode;
       report.timeZone = chunk.header.reportingTimeZone;
@@ -14130,6 +14184,15 @@ function parseReport(raw) {
     }
   }
   return report;
+}
+function isObject(v) {
+  return typeof v === "object" && v !== null;
+}
+function invalidReport(part) {
+  const got = part === void 0 ? "nothing" : part === null ? "null" : summarizeBody(part);
+  return new AdmobctlError("API_ERROR", `The AdMob API sent a report in an unexpected format (got ${got}).`, {
+    fix: "Retry in a few minutes; if it keeps happening, check for a proxy or firewall between you and Google."
+  });
 }
 
 // src/core/client.ts
@@ -20418,7 +20481,7 @@ __export(util_exports, {
   hexToUint8Array: () => hexToUint8Array,
   hide: () => hide,
   installLazyProp: () => installLazyProp,
-  isObject: () => isObject,
+  isObject: () => isObject2,
   isPlainObject: () => isPlainObject,
   issue: () => issue,
   joinValues: () => joinValues,
@@ -20642,7 +20705,7 @@ function slugify2(input2) {
 }
 var captureStackTrace = "captureStackTrace" in Error ? Error.captureStackTrace : (..._args) => {
 };
-function isObject(data) {
+function isObject2(data) {
   return typeof data === "object" && data !== null && !Array.isArray(data);
 }
 var allowsEval = /* @__PURE__ */ cached(() => {
@@ -20661,7 +20724,7 @@ var allowsEval = /* @__PURE__ */ cached(() => {
   }
 });
 function isPlainObject(o) {
-  if (isObject(o) === false)
+  if (isObject2(o) === false)
     return false;
   const ctor = o.constructor;
   if (ctor === void 0)
@@ -20669,7 +20732,7 @@ function isPlainObject(o) {
   if (typeof ctor !== "function")
     return true;
   const prot = ctor.prototype;
-  if (isObject(prot) === false)
+  if (isObject2(prot) === false)
     return false;
   if (Object.prototype.hasOwnProperty.call(prot, "isPrototypeOf") === false) {
     return false;
@@ -23317,7 +23380,7 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
     }
     return propValues;
   });
-  const isObject2 = isObject;
+  const isObject3 = isObject2;
   const catchall = def.catchall;
   let value;
   const memo2 = globalConfig.memoizer;
@@ -23325,7 +23388,7 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
   inst._zod.parse = (payload, ctx) => {
     value ?? (value = _normalized.value);
     const input2 = payload.value;
-    if (!isObject2(input2)) {
+    if (!isObject3(input2)) {
       payload.issues.push({
         expected: "object",
         code: "invalid_type",
@@ -23461,7 +23524,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
     return doc.compile();
   };
   let fastpass;
-  const isObject2 = isObject;
+  const isObject3 = isObject2;
   const jit = !globalConfig.jitless;
   const allowsEval2 = allowsEval;
   const fastEnabled = jit && allowsEval2.value;
@@ -23470,7 +23533,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
   inst._zod.parse = (payload, ctx) => {
     value ?? (value = _normalized.value);
     const input2 = payload.value;
-    if (!isObject2(input2)) {
+    if (!isObject3(input2)) {
       payload.issues.push({
         expected: "object",
         code: "invalid_type",
@@ -23678,7 +23741,7 @@ var $ZodDiscriminatedUnion = /* @__PURE__ */ $constructor("$ZodDiscriminatedUnio
   const disc = cached(() => discriminatorMap(def));
   inst._zod.parse = (payload, ctx) => {
     const input2 = payload.value;
-    if (!isObject(input2)) {
+    if (!isObject2(input2)) {
       payload.issues.push({
         code: "invalid_type",
         expected: "object",

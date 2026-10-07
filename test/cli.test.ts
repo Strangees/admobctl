@@ -1,8 +1,9 @@
 import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { run } from "../src/cli/program.js";
+import { log } from "../src/core/log.js";
 import { reportView } from "../src/cli/views.js";
 import type { ReportResult } from "../src/core/service.js";
 import type { TokenProvider } from "../src/core/auth/types.js";
@@ -131,6 +132,23 @@ describe("cli", () => {
     expect(r.code).toBe(2);
     expect(r.stderr).toContain("100000");
     expect(r.calls.some((c) => c.url.includes("networkReport"))).toBe(false);
+  });
+
+  it("shows the API's full error body when a rejected request is re-run with -v, as its fix says", async () => {
+    const body = { error: { code: 400, message: "Request contains an invalid argument.", details: [{ fieldViolations: [{ field: "report_spec.sort_conditions" }] }] } };
+    const routes = { "POST /networkReport:generate": () => jsonResponse(body, 400) };
+    const first = await cli(["report", "network", "--from", "2026-09", "--by", "app"], { routes });
+    expect(first.code).toBe(1);
+    expect(first.stderr).toMatch(/"fix":"Re-run the command with -v/);
+    const logged: string[] = [];
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: string) => logged.push(String(chunk)) > 0) as typeof process.stderr.write);
+    try {
+      await cli(["report", "network", "--from", "2026-09", "--by", "app", "-v"], { routes });
+    } finally {
+      spy.mockRestore();
+      log.setVerbose(false);
+    }
+    expect(logged.join("")).toContain("report_spec.sort_conditions");
   });
 
   it("returns exit code 2 and a readable message for usage errors", async () => {

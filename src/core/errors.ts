@@ -1,3 +1,5 @@
+import { STATUS_CODES } from "node:http";
+
 export const ADMOB_SCOPE = "https://www.googleapis.com/auth/admob.readonly";
 export const CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
 /** Needed only for the write commands (create apps, ad units, mappings; change mediation). */
@@ -79,12 +81,33 @@ export function formatDuration(ms: number): string {
 export interface DiagnoseHints {
   /** Server-requested wait (parsed Retry-After) from the response being diagnosed. */
   retryAfterMs?: number;
+  /** The API that answered, for the message (e.g. "AdSense Management API"). Default: AdMob API. */
+  api?: string;
+}
+
+const MAX_BODY_CHARS = 200;
+
+/**
+ * A short stand-in for a response body that is not Google's JSON error: an HTML page's <title> or the start of its
+ * text, else the start of the body; the HTTP status text when it is empty. A front end's 502 page would otherwise
+ * put kilobytes of HTML into the message.
+ */
+export function summarizeBody(body: unknown, status?: number): string {
+  let text = "";
+  if (typeof body === "string") {
+    const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(body)?.[1];
+    text = title ?? body.replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, " ").replace(/<[^>]*>/g, " ");
+  } else if (body !== undefined && body !== null) text = JSON.stringify(body);
+  text = text.replace(/\s+/g, " ").trim();
+  if (!text) return (status === undefined ? undefined : STATUS_CODES[status]) ?? "empty response";
+  return text.length > MAX_BODY_CHARS ? `${text.slice(0, MAX_BODY_CHARS)}…` : text;
 }
 
 /** Turn a Google API error response into an actionable AdmobctlError. */
 export function diagnoseApiError(status: number, body: unknown, hints: DiagnoseHints = {}): AdmobctlError {
   const parsed: GoogleErrorBody = typeof body === "object" && body !== null ? (body as GoogleErrorBody) : {};
-  const message = parsed.error?.message ?? (typeof body === "string" ? body : JSON.stringify(body));
+  const message = parsed.error?.message ?? summarizeBody(body, status);
+  const api = hints.api ?? "AdMob API";
   const info = errorInfo(parsed);
   const reason = info?.reason;
   const opts = { status };
@@ -123,9 +146,14 @@ export function diagnoseApiError(status: number, body: unknown, hints: DiagnoseH
       fix: "Check that the signed-in Google user has access to this AdMob account (admobctl accounts list).",
     });
   }
-  if (status === 404) return new AdmobctlError("NOT_FOUND", `Not found: ${message}`, opts);
+  if (status === 404) {
+    return new AdmobctlError("NOT_FOUND", `Not found: ${message}`, {
+      ...opts,
+      fix: "admobctl accounts list, apps list, ad-units list and mediation-groups list show the IDs you can use; check the one in the command.",
+    });
+  }
   if (status === 429) {
-    return new AdmobctlError("RATE_LIMITED", `Rate limited by the AdMob API: ${message}`, {
+    return new AdmobctlError("RATE_LIMITED", `Rate limited by the ${api}: ${message}`, {
       ...opts,
       fix:
         hints.retryAfterMs === undefined
@@ -133,5 +161,12 @@ export function diagnoseApiError(status: number, body: unknown, hints: DiagnoseH
           : `The API asked to wait: retry in about ${formatDuration(hints.retryAfterMs)}, or narrow the report.`,
     });
   }
-  return new AdmobctlError("API_ERROR", `AdMob API error ${status}: ${message}`, opts);
+  return new AdmobctlError("API_ERROR", `${api} error ${status}: ${message}`, {
+    ...opts,
+    // -v logs the response body, where Google puts the details (e.g. which field of the request was invalid).
+    fix:
+      status >= 500
+        ? "Retry in a few minutes; if it keeps failing, re-run the command with -v to see the API's full response."
+        : "Re-run the command with -v to see the API's full error response.",
+  });
 }

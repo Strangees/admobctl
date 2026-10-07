@@ -1,22 +1,39 @@
+import { AdmobctlError } from "./errors.js";
+
 /**
  * Money is carried as integer micros (1 unit = 1_000_000 micros) from the API
  * response all the way to the output layer. Rounding happens only here.
  */
 
+/**
+ * Integer micros stay exact up to about 9 billion currency units: reachable for a year of earnings in a currency
+ * with small units (VND, IDR). Past that, refuse rather than round.
+ */
+function tooLarge(what: string): AdmobctlError {
+  return new AdmobctlError("USAGE", `${what} is too large to keep exact (integer precision ends near 9 billion in the report's currency).`, {
+    fix: "Narrow the date range (e.g. a month at a time), or report in a larger currency with --currency USD where the command takes it.",
+  });
+}
+
 export function parseMicros(value: string | number | undefined | null): number {
   if (value === undefined || value === null || value === "") return 0;
   const n = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(n)) throw new Error(`Invalid micros value: ${String(value)}`);
-  if (!Number.isSafeInteger(n)) {
-    throw new Error(`Micros value ${String(value)} exceeds safe integer precision`);
+  if (!Number.isInteger(n)) {
+    throw new AdmobctlError("API_ERROR", `The AdMob API sent an invalid money value: ${String(value)}`, {
+      fix: "Retry in a few minutes.",
+    });
   }
+  if (!Number.isSafeInteger(n)) throw tooLarge(`The amount ${String(value)} micros`);
   return n;
 }
 
 export function sumMicros(values: Iterable<number>): number {
   let total = 0;
-  for (const v of values) total += v;
-  if (!Number.isSafeInteger(total)) throw new Error("Micros sum exceeds safe integer precision");
+  for (const v of values) {
+    total += v;
+    // Checked at every step: a sum that passes the limit loses precision even if it ends below it.
+    if (!Number.isSafeInteger(total)) throw tooLarge("The total");
+  }
   return total;
 }
 
