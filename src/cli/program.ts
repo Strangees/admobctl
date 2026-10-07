@@ -5,7 +5,7 @@ import { exec as defaultExec } from "../core/exec.js";
 import { CloudClient } from "../core/setup/cloud.js";
 import { parseFeatures } from "../core/setup/features.js";
 import { setupStatus } from "../core/setup/status.js";
-import { profileCommand } from "../core/setup/commands.js";
+import { cloudScopeFix, profileCommand } from "../core/setup/commands.js";
 import {
   applyApis,
   applyLogin,
@@ -208,7 +208,7 @@ export function buildProgram(io: CliIO): Command {
     const clientId = o.clientId ?? resolveProfile(loadConfig(dir()), g(cmd).profile).oauthClientId;
     if (!clientId) {
       throw new AdmobctlError("USAGE", "An OAuth client ID is required.", {
-        fix: "Create a Desktop app OAuth client in Google Cloud Console (APIs & Services → Credentials), then: admobctl auth login --client-id <id> --client-secret <secret>",
+        fix: "Create a Desktop app OAuth client in Google Cloud Console (APIs & Services → Credentials), then run admobctl auth login with its --client-id and --client-secret.",
       });
     }
     const store = defaultSecretStore(dir(), io.service?.exec);
@@ -236,10 +236,15 @@ export function buildProgram(io: CliIO): Command {
     const tp = s.tokenProvider;
     return {
       svc: s,
-      cloud: new CloudClient({ getToken: () => tp.getToken(), fetch: io.service?.fetch, sleep: io.service?.sleep }),
+      cloud: new CloudClient({
+        getToken: () => tp.getToken(),
+        fetch: io.service?.fetch,
+        sleep: io.service?.sleep,
+        scopeFix: cloudScopeFix(tp.mode, parseFeatures(s.profile.features)),
+      }),
       exec: io.service?.exec ?? defaultExec,
       interactive: io.stdinIsTTY ?? false,
-      tokenInfo: async () => fetchTokenInfo(await tp.getToken(), io.service?.fetch),
+      tokenInfo: async () => fetchTokenInfo(await tp.getToken(), io.service?.fetch, io.service?.sleep),
       oauthLogin: (o) => oauthSignIn(cmd, o),
     };
   };
@@ -296,7 +301,7 @@ export function buildProgram(io: CliIO): Command {
         account: s.configuredAccount ?? "(auto)",
       };
       try {
-        const ti = await fetchTokenInfo(await s.tokenProvider.getToken(), io.service?.fetch);
+        const ti = await fetchTokenInfo(await s.tokenProvider.getToken(), io.service?.fetch, io.service?.sleep);
         info.scopes = ti.scopes;
         if (ti.email) info.email = ti.email;
         info.tokenExpiresInSeconds = ti.expiresIn;

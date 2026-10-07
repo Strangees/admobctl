@@ -11,6 +11,7 @@ export type ErrorCode =
   | "AUTH_NO_CREDENTIALS"
   | "AUTH_SCOPE_MISSING"
   | "AUTH_QUOTA_PROJECT_MISSING"
+  | "AUTH_QUOTA_PROJECT_INVALID"
   | "AUTH_TOKEN_EXPIRED"
   | "AUTH_SERVICE_ACCOUNT"
   | "API_NOT_ENABLED"
@@ -89,6 +90,14 @@ export function diagnoseApiError(status: number, body: unknown, hints: DiagnoseH
   const reason = info?.reason;
   const opts = { status };
 
+  // The quota project is set but cannot be used: the caller lacks serviceusage.services.use on it, or it is gone.
+  if (reason === "USER_PROJECT_DENIED" || reason === "CONSUMER_INVALID") {
+    const project = info?.metadata?.consumer?.replace(/^projects\//, "");
+    return new AdmobctlError("AUTH_QUOTA_PROJECT_INVALID", `The quota project${project ? ` ${project}` : ""} cannot be used: ${message}`, {
+      ...opts,
+      fix: "admobctl setup project list",
+    });
+  }
   if (/quota project/i.test(message)) {
     return new AdmobctlError("AUTH_QUOTA_PROJECT_MISSING", "No quota project is set for your Application Default Credentials.", {
       ...opts,

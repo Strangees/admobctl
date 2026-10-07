@@ -1,4 +1,4 @@
-import { AdmobctlError } from "../errors.js";
+import { AdmobctlError, diagnoseApiError, type DiagnoseHints } from "../errors.js";
 import { defaultSleep, requestJson } from "../http.js";
 
 const CRM = "https://cloudresourcemanager.googleapis.com/v3";
@@ -16,6 +16,8 @@ export interface CloudClientOptions {
   fetch?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
+  /** The sign-in that adds the cloud-platform scope these APIs need. Default: admobctl setup login --yes. */
+  scopeFix?: string;
 }
 
 interface Operation {
@@ -38,8 +40,27 @@ export class CloudClient {
       url,
       { method, headers, body: body === undefined ? undefined : JSON.stringify(body) },
       // Enabling is not idempotent-safe to blind-retry mid-operation; reads may retry.
-      { fetch: this.o.fetch, sleep: this.o.sleep, retries: method === "GET" ? 2 : 0 },
+      { fetch: this.o.fetch, sleep: this.o.sleep, retries: method === "GET" ? 2 : 0, diagnose: (status, b, hints) => this.error(status, b, hints) },
     );
+  }
+
+  /** diagnoseApiError speaks of AdMob; these calls need cloud-platform and rights on a Google Cloud project instead. */
+  private error(status: number, body: unknown, hints: DiagnoseHints): AdmobctlError {
+    const err = diagnoseApiError(status, body, hints);
+    if (err.code === "AUTH_SCOPE_MISSING") {
+      return new AdmobctlError("AUTH_SCOPE_MISSING", "Your sign-in lacks the cloud-platform scope that Google Cloud project and API setup needs.", {
+        status,
+        fix: this.o.scopeFix ?? "admobctl setup login --yes",
+      });
+    }
+    if (err.code === "PERMISSION_DENIED") {
+      const detail = (body as { error?: { message?: string } } | undefined)?.error?.message ?? err.message;
+      return new AdmobctlError("PERMISSION_DENIED", `Google Cloud denied the request: ${detail}`, {
+        status,
+        fix: "admobctl setup project list  (then use a project where your Google account may enable APIs)",
+      });
+    }
+    return err;
   }
 
   async listProjects(): Promise<CloudProject[]> {

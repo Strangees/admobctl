@@ -8,6 +8,7 @@ export interface AuthDeps {
   configDir: string;
   exec?: Exec;
   fetch?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
   store?: SecretStore;
 }
 
@@ -21,6 +22,7 @@ export function resolveTokenProvider(profile: ResolvedProfile, deps: AuthDeps): 
       profile: profile.name,
       store: deps.store ?? defaultSecretStore(deps.configDir, deps.exec),
       fetch: deps.fetch,
+      sleep: deps.sleep,
     });
   }
   return new AdcTokenProvider({ exec: deps.exec });

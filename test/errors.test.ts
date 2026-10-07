@@ -122,6 +122,23 @@ describe("diagnoseApiError", () => {
     expect(e.fix).toBe("admobctl setup project list");
   });
 
+  it.each([
+    ["USER_PROJECT_DENIED", "Caller does not have required permission to use project example-q. Grant the caller the roles/serviceusage.serviceUsageConsumer role."],
+    ["CONSUMER_INVALID", "Project 'projects/example-q' not found or deleted."],
+  ])("maps %s to an unusable quota project, with the project list fix", (reason, message) => {
+    const e = diagnoseApiError(403, {
+      error: {
+        code: 403,
+        message,
+        status: "PERMISSION_DENIED",
+        details: [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason, metadata: { consumer: "projects/example-q", service: "admob.googleapis.com" } }],
+      },
+    });
+    expect(e.code).toBe("AUTH_QUOTA_PROJECT_INVALID");
+    expect(e.message).toContain("example-q");
+    expect(e.fix).toBe("admobctl setup project list");
+  });
+
   it("detects expired credentials", () => {
     const e = diagnoseApiError(401, expiredBody);
     expect(e.code).toBe("AUTH_TOKEN_EXPIRED");

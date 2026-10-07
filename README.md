@@ -36,7 +36,7 @@ Features decide which scopes and APIs setup asks for. `read` is always on:
 
 | Feature | Adds | For |
 |---|---|---|
-| `read` | admob.readonly, cloud-platform; AdMob API | reports, finance, insights, MCP |
+| `read` | admob.readonly, cloud-platform (own OAuth client: only when needed, see below); AdMob API | reports, finance, insights, MCP |
 | `write` | admob.monetization | create apps/ad units/mappings, mediation changes |
 | `payments` | adsense.readonly; AdSense Management API | `finance balance` |
 
@@ -47,9 +47,11 @@ admobctl setup --features write,payments --yes
 Setup never drops a feature you already have. The steps also run on their own:
 `setup login [--features …]`, `setup project list`, `setup project use <id>`, `setup apis [--features …] [--project <id>]`
 (change commands are dry runs without `--yes`; `project list` is read-only). Sign-in, scope, quota-project and API errors
-name the `admobctl setup …` command to run, and `auth doctor` is the same report as `setup status`. If
-`GOOGLE_APPLICATION_CREDENTIALS` selects a service account, first unset it in the terminal running admobctl;
-setup reports this manual prerequisite and refuses to open a login that would leave the override in place.
+name the `admobctl setup …` command to run (or, for a profile on your own OAuth client, the `admobctl auth login …`
+that re-asks for a missing scope), and `auth doctor` is the same report as `setup status`. If
+`GOOGLE_APPLICATION_CREDENTIALS` selects a service account, or credentials that are missing, expired or lack a scope,
+first unset it in the terminal running admobctl: the gcloud sign-in always writes gcloud's default credentials file,
+so setup reports this manual prerequisite and refuses to open a login that would leave the override in place.
 Account, aliases and finance settings use the existing `admobctl config set` commands below.
 
 Sign-in uses gcloud **Application Default Credentials** (setup tells you how to install gcloud if it is missing). The
@@ -61,14 +63,19 @@ the AdMob account.
 project with the AdMob API enabled, then:
 
 ```bash
-admobctl auth login --client-id <id> --client-secret <secret> --cloud-platform [--write] [--payments]
+admobctl auth login --client-id <id> --client-secret <secret> [--write] [--payments] [--cloud-platform]
 ```
 
 The refresh token is stored in the macOS Keychain (on other OSes, a `0600` file in `~/.admobctl/`). `admobctl auth logout` revokes it.
-After that, `admobctl setup login` uses this OAuth client and its saved secret, including `cloud-platform` for the
-setup APIs. Browser sign-in requires a terminal in both modes. A quota project is optional for your own OAuth
-client: without one, setup leaves API enablement to the client project and `setup status` probes actual API access.
-To enable APIs in a specific project without changing your profile, use
+`auth login` also saves the features its granted scopes allow. After that, `admobctl setup login` uses this OAuth client,
+its saved secret and those features; it is also the fix when the saved login expires (every 7 days while the client's
+consent screen is in "Testing"). Browser sign-in requires a terminal in both modes. A quota project is optional for your
+own OAuth client: without one, setup leaves API enablement to the client project and `setup status` probes actual API
+access. `cloud-platform` grants full access to your Google Cloud resources and only the Cloud project and API steps use
+it, so with your own client sign-in asks for it only when a quota project is set or being chosen
+(`setup --project <id>`). `setup project list` and `setup apis --project <id>` need it too; without it, their error names
+the `auth login … --cloud-platform` command that adds it. To enable APIs in a specific project without changing your
+profile, use
 `admobctl setup apis --project <client-project-id> --features payments --yes`. Google errors that name an API
 consumer project include that project in the fix command, so the fix targets the failing consumer.
 

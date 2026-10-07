@@ -1,4 +1,4 @@
-import { AdmobctlError, diagnoseApiError } from "./errors.js";
+import { AdmobctlError, diagnoseApiError, type DiagnoseHints } from "./errors.js";
 import { log } from "./log.js";
 
 export interface HttpOptions {
@@ -17,6 +17,8 @@ export interface HttpOptions {
   maxRetryAfterMs?: number;
   /** Awaited before every attempt, retries included (e.g. to take a rate-limiter slot). */
   beforeAttempt?: () => Promise<void>;
+  /** Turns a failed response into the error to throw. Default: diagnoseApiError (AdMob wording). */
+  diagnose?: (status: number, body: unknown, hints: DiagnoseHints) => AdmobctlError;
 }
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
@@ -150,7 +152,7 @@ export async function requestJson<T = unknown>(url: string, init: RequestInit, o
     if (outcome.kind === "ok") return outcome.body as T;
     if (outcome.kind === "fail") {
       log.debug(`response: ${(typeof outcome.body === "string" ? outcome.body : JSON.stringify(outcome.body) ?? "").slice(0, 2000)}`);
-      throw diagnoseApiError(outcome.status, outcome.body, { retryAfterMs: outcome.retryAfterMs });
+      throw (opts.diagnose ?? diagnoseApiError)(outcome.status, outcome.body, { retryAfterMs: outcome.retryAfterMs });
     }
     log.debug(`HTTP ${outcome.status}; retrying in ${outcome.wait}ms`);
     await sleep(outcome.wait);

@@ -34,9 +34,12 @@ export function mergeFeatures(...lists: Feature[][]): Feature[] {
   return sorted(lists.flat());
 }
 
-/** Scopes to request at sign-in, cloud-platform last (needed for quota projects and enabling APIs). */
-export function scopesFor(features: Feature[]): string[] {
-  return [...sorted(features).flatMap((f) => FEATURES[f].scopes), CLOUD_PLATFORM_SCOPE];
+/**
+ * Scopes to request at sign-in, cloud-platform last (needed for quota projects and enabling APIs; gcloud always asks
+ * for it, an own OAuth client only when a setup step will call those APIs).
+ */
+export function scopesFor(features: Feature[], o: { cloudPlatform?: boolean } = {}): string[] {
+  return [...sorted(features).flatMap((f) => FEATURES[f].scopes), ...(o.cloudPlatform === false ? [] : [CLOUD_PLATFORM_SCOPE])];
 }
 
 export function apisFor(features: Feature[]): string[] {

@@ -2986,7 +2986,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve.call(this, root, ref);
+      let _sch = resolve2.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a3 = root.localRefs) === null || _a3 === void 0 ? void 0 : _a3[ref];
         const { schemaId } = this.opts;
@@ -3013,7 +3013,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve(root, ref) {
+    function resolve2(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3843,7 +3843,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve(baseURI, relativeURI, options) {
+    function resolve2(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const {
         parsed: baseParsed,
@@ -4212,7 +4212,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize,
-      resolve,
+      resolve: resolve2,
       resolveComponent,
       equal,
       serialize,
@@ -10615,6 +10615,13 @@ function diagnoseApiError(status, body, hints = {}) {
   const info = errorInfo(parsed);
   const reason = info?.reason;
   const opts = { status };
+  if (reason === "USER_PROJECT_DENIED" || reason === "CONSUMER_INVALID") {
+    const project = info?.metadata?.consumer?.replace(/^projects\//, "");
+    return new AdmobctlError("AUTH_QUOTA_PROJECT_INVALID", `The quota project${project ? ` ${project}` : ""} cannot be used: ${message}`, {
+      ...opts,
+      fix: "admobctl setup project list"
+    });
+  }
   if (/quota project/i.test(message)) {
     return new AdmobctlError("AUTH_QUOTA_PROJECT_MISSING", "No quota project is set for your Application Default Credentials.", {
       ...opts,
@@ -10715,231 +10722,6 @@ function resolveApp(input2, index) {
   }
   throw usageError(`Unknown app "${input2}". Known apps: ${index.map((a) => a.alias).join(", ") || "(none)"}`);
 }
-
-// src/core/setup/features.ts
-var FEATURE_ORDER = ["read", "write", "payments"];
-var FEATURES = {
-  read: { scopes: [ADMOB_SCOPE], apis: ["admob.googleapis.com"] },
-  write: { scopes: [MONETIZATION_SCOPE], apis: [] },
-  payments: { scopes: [ADSENSE_SCOPE], apis: ["adsense.googleapis.com"] }
-};
-var sorted = (fs2) => {
-  const set2 = new Set(fs2);
-  return FEATURE_ORDER.filter((f) => set2.has(f));
-};
-function parseFeatures(input2) {
-  const names = (Array.isArray(input2) ? input2 : (input2 ?? "").split(",")).map((s) => s.trim()).filter(Boolean);
-  for (const n of names) {
-    if (!FEATURE_ORDER.includes(n)) throw usageError(`Unknown feature "${n}". Features: ${FEATURE_ORDER.join(", ")}.`);
-  }
-  return sorted(["read", ...names]);
-}
-function featuresFromScopes(scopes) {
-  return FEATURE_ORDER.filter((f) => FEATURES[f].scopes.every((s) => scopes.includes(s)));
-}
-function mergeFeatures(...lists) {
-  return sorted(lists.flat());
-}
-function scopesFor(features) {
-  return [...sorted(features).flatMap((f) => FEATURES[f].scopes), CLOUD_PLATFORM_SCOPE];
-}
-function apisFor(features) {
-  return sorted(features).flatMap((f) => FEATURES[f].apis);
-}
-function featuresFlag(features) {
-  const extra = sorted(features).filter((f) => f !== "read");
-  return extra.length ? ` --features ${extra.join(",")}` : "";
-}
-
-// src/core/auth/doctor.ts
-var ADMOB_SCOPES = ["https://www.googleapis.com/auth/admob.readonly", "https://www.googleapis.com/auth/admob.report"];
-function failed(id, err) {
-  if (err instanceof AdmobctlError) return { id, status: "fail", summary: err.message, fix: err.fix };
-  return { id, status: "fail", summary: err.message ?? String(err) };
-}
-async function fetchTokenInfo(token, doFetch = fetch) {
-  const res = await doFetch("https://oauth2.googleapis.com/tokeninfo", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ access_token: token }).toString()
-  });
-  if (!res.ok) throw new AdmobctlError("AUTH_TOKEN_EXPIRED", "Google rejected the access token.", { fix: "admobctl setup login --yes" });
-  const j = await res.json();
-  const info = { scopes: (j.scope ?? "").split(/\s+/).filter(Boolean) };
-  if (j.email) info.email = j.email;
-  if (j.expires_in) info.expiresIn = Number(j.expires_in);
-  return info;
-}
-async function runDoctor(d) {
-  const checks = await runChecks(d);
-  for (const c of checks) if (c.fix?.startsWith("admobctl ")) c.fix_command = c.fix.split("  (")[0];
-  return checks;
-}
-async function runChecks(d) {
-  const checks = [];
-  const setupChecks = d.features ? ["features", "apis"] : [];
-  const optional2 = [...d.listApps ? ["apps"] : [], ...d.betaProbes ? ["beta"] : []];
-  const skipRest = (ids, why) => {
-    for (const id of [...ids, ...optional2]) checks.push({ id, status: "skip", summary: why });
-  };
-  try {
-    await d.checkCredentials();
-    checks.push({
-      id: "credentials",
-      status: "ok",
-      summary: d.mode === "adc" ? "gcloud Application Default Credentials (user)" : "admobctl OAuth credentials"
-    });
-  } catch (err) {
-    checks.push(failed("credentials", err));
-    skipRest(["token", "scope", ...setupChecks, "quota-project", "api", "account"], "skipped: no usable credentials");
-    return checks;
-  }
-  let token;
-  try {
-    token = await d.getToken();
-    checks.push({ id: "token", status: "ok", summary: "Access token obtained" });
-  } catch (err) {
-    checks.push(failed("token", err));
-    skipRest(["scope", ...setupChecks, "quota-project", "api", "account"], "skipped: no access token");
-    return checks;
-  }
-  try {
-    const info = await d.tokenInfo(token);
-    const granted = ADMOB_SCOPES.filter((s) => info.scopes.includes(s));
-    const grantedFeatures = featuresFromScopes(info.scopes);
-    checks.push(
-      granted.length ? {
-        id: "scope",
-        status: "ok",
-        summary: `Scope granted: ${granted.map((s) => s.split("/").pop()).join(", ")}${info.scopes.includes(MONETIZATION_SCOPE) ? ", admob.monetization (write commands enabled)" : ""}${info.scopes.includes(ADSENSE_SCOPE) ? ", adsense.readonly (finance balance enabled)" : ""}`
-      } : {
-        id: "scope",
-        status: "fail",
-        summary: `Token lacks the AdMob scope (has: ${info.scopes.join(" ") || "none"})`,
-        fix: "admobctl setup login --yes"
-      }
-    );
-    if (d.features) {
-      const missing = d.features.filter((f) => !grantedFeatures.includes(f));
-      const missingCloudPlatform = !info.scopes.includes(CLOUD_PLATFORM_SCOPE);
-      const missingScopes = [...missing, ...missingCloudPlatform ? ["cloud-platform"] : []];
-      checks.push(
-        missingScopes.length ? {
-          id: "features",
-          status: "warn",
-          summary: missing.length ? `Your sign-in lacks the scopes for: ${missing.join(", ")}${missingCloudPlatform ? ", cloud-platform" : ""}` : "Your sign-in lacks the cloud-platform scope needed for setup.",
-          fix: `admobctl setup login${featuresFlag(mergeFeatures(d.features, grantedFeatures))} --yes`
-        } : { id: "features", status: "ok", summary: `Features: ${d.features.join(", ")}` }
-      );
-    }
-  } catch (err) {
-    checks.push(failed("scope", err));
-    if (d.features) checks.push({ id: "features", status: "skip", summary: "skipped: token scopes are unavailable" });
-  }
-  if (d.mode === "adc") {
-    checks.push(
-      d.quotaProject ? { id: "quota-project", status: "ok", summary: `Quota project: ${d.quotaProject}` } : {
-        id: "quota-project",
-        status: "warn",
-        summary: "No quota project set; ADC requests to the AdMob API usually need one.",
-        fix: "admobctl setup project list"
-      }
-    );
-  } else {
-    checks.push({ id: "quota-project", status: "ok", summary: "Not needed for your own OAuth client" });
-  }
-  if (d.serviceStates) {
-    try {
-      const states = await d.serviceStates();
-      const off = apisFor(d.features ?? ["read"]).filter((s) => states[s] !== "ENABLED");
-      checks.push(
-        off.length ? { id: "apis", status: "fail", summary: `Not enabled in the quota project: ${off.join(", ")}`, fix: `admobctl setup apis${featuresFlag(d.features ?? ["read"])} --yes` } : { id: "apis", status: "ok", summary: `APIs enabled: ${apisFor(d.features ?? ["read"]).join(", ")}` }
-      );
-    } catch (err) {
-      checks.push(failed("apis", err));
-    }
-  } else if (d.features) {
-    checks.push({
-      id: "apis",
-      status: "skip",
-      summary: d.mode === "oauth" ? "API enablement in the OAuth client project was not checked here; actual feature API requests will report access issues." : "API enablement was not checked because no service-state lookup is available."
-    });
-  }
-  try {
-    const accounts = await d.listAccounts();
-    checks.push({ id: "api", status: "ok", summary: `AdMob API reachable; ${accounts.length} account(s) accessible` });
-  } catch (err) {
-    checks.push(failed("api", err));
-    skipRest(["account"], "skipped: API not reachable");
-    return checks;
-  }
-  try {
-    const a = await d.account();
-    checks.push({ id: "account", status: "ok", summary: `Using ${a.publisherId} (${a.currencyCode}, ${a.reportingTimeZone})` });
-  } catch (err) {
-    checks.push(failed("account", err));
-    skipRest([], "skipped: no account");
-    return checks;
-  }
-  if (d.listApps) {
-    try {
-      const apps = await d.listApps();
-      const blocked = appsNeedingAction(apps);
-      const inReview = apps.filter((a) => a.approval === "IN_REVIEW").length;
-      const review = inReview ? `; ${inReview} in review` : "";
-      checks.push(
-        blocked.length ? {
-          id: "apps",
-          status: "warn",
-          summary: `${blocked.length} of ${apps.length} app(s) need action in AdMob review: ${blocked.map((a) => a.alias).join(", ")}${review}`,
-          fix: "Open AdMob \u2192 Apps \u2192 View all apps and follow the review steps for each app marked 'Action required'."
-        } : { id: "apps", status: "ok", summary: `${apps.length} app(s), none waiting on you in AdMob review${review}` }
-      );
-    } catch (err) {
-      checks.push(failed("apps", err));
-    }
-  }
-  if (d.betaProbes) {
-    const results = await Promise.all(
-      Object.entries(d.betaProbes).map(async ([name, probe2]) => {
-        try {
-          await probe2();
-          return { name, err: void 0 };
-        } catch (err) {
-          return { name, err };
-        }
-      })
-    );
-    const denied = results.find((r) => r.err instanceof AdmobctlError && r.err.code === "BETA_ACCESS_DENIED")?.err;
-    const summary = results.map(
-      (r) => `${r.name}: ${!r.err ? "ok" : r.err instanceof AdmobctlError && r.err.code === "BETA_ACCESS_DENIED" ? "no access" : `error (${r.err.message})`}`
-    ).join("; ");
-    checks.push(
-      results.every((r) => !r.err) ? { id: "beta", status: "ok", summary: `AdMob API v1beta: ${summary}` } : { id: "beta", status: "warn", summary: `AdMob API v1beta: ${summary}`, fix: denied?.fix }
-    );
-  }
-  return checks;
-}
-
-// src/core/exec.ts
-import { spawn } from "node:child_process";
-var exec = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
-  const child = spawn(cmd, args, { stdio: opts.interactive ? ["inherit", 2, "inherit"] : ["pipe", "pipe", "pipe"], shell: false, env: opts.env ?? process.env });
-  let stdout = "";
-  let stderr = "";
-  const timer = opts.timeoutMs ? setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs) : void 0;
-  child.stdout?.on("data", (d) => stdout += d);
-  child.stderr?.on("data", (d) => stderr += d);
-  child.on("error", (err) => {
-    if (timer) clearTimeout(timer);
-    reject(err);
-  });
-  child.on("close", (code2) => {
-    if (timer) clearTimeout(timer);
-    resolve({ code: code2 ?? 1, stdout, stderr });
-  });
-  child.stdin?.end(opts.input ?? "");
-});
 
 // src/core/log.ts
 var verbose = Boolean(process.env.ADMOBCTL_DEBUG);
@@ -11054,11 +10836,592 @@ async function requestJson(url2, init, opts = {}) {
     if (outcome.kind === "ok") return outcome.body;
     if (outcome.kind === "fail") {
       log.debug(`response: ${(typeof outcome.body === "string" ? outcome.body : JSON.stringify(outcome.body) ?? "").slice(0, 2e3)}`);
-      throw diagnoseApiError(outcome.status, outcome.body, { retryAfterMs: outcome.retryAfterMs });
+      throw (opts.diagnose ?? diagnoseApiError)(outcome.status, outcome.body, { retryAfterMs: outcome.retryAfterMs });
     }
     log.debug(`HTTP ${outcome.status}; retrying in ${outcome.wait}ms`);
     await sleep(outcome.wait);
   }
+}
+
+// src/core/setup/features.ts
+var FEATURE_ORDER = ["read", "write", "payments"];
+var FEATURES = {
+  read: { scopes: [ADMOB_SCOPE], apis: ["admob.googleapis.com"] },
+  write: { scopes: [MONETIZATION_SCOPE], apis: [] },
+  payments: { scopes: [ADSENSE_SCOPE], apis: ["adsense.googleapis.com"] }
+};
+var sorted = (fs2) => {
+  const set2 = new Set(fs2);
+  return FEATURE_ORDER.filter((f) => set2.has(f));
+};
+function parseFeatures(input2) {
+  const names = (Array.isArray(input2) ? input2 : (input2 ?? "").split(",")).map((s) => s.trim()).filter(Boolean);
+  for (const n of names) {
+    if (!FEATURE_ORDER.includes(n)) throw usageError(`Unknown feature "${n}". Features: ${FEATURE_ORDER.join(", ")}.`);
+  }
+  return sorted(["read", ...names]);
+}
+function featuresFromScopes(scopes) {
+  return FEATURE_ORDER.filter((f) => FEATURES[f].scopes.every((s) => scopes.includes(s)));
+}
+function mergeFeatures(...lists) {
+  return sorted(lists.flat());
+}
+function scopesFor(features, o = {}) {
+  return [...sorted(features).flatMap((f) => FEATURES[f].scopes), ...o.cloudPlatform === false ? [] : [CLOUD_PLATFORM_SCOPE]];
+}
+function apisFor(features) {
+  return sorted(features).flatMap((f) => FEATURES[f].apis);
+}
+function featuresFlag(features) {
+  const extra = sorted(features).filter((f) => f !== "read");
+  return extra.length ? ` --features ${extra.join(",")}` : "";
+}
+
+// src/core/auth/oauth.ts
+import { createHash, randomBytes } from "node:crypto";
+import { chmodSync as chmodSync2, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { join } from "node:path";
+
+// src/core/exec.ts
+import { spawn } from "node:child_process";
+import { statSync } from "node:fs";
+import { win32 } from "node:path";
+var exec = (cmd, args, opts = {}) => new Promise((resolve2, reject) => {
+  const env = opts.env ?? process.env;
+  const { file: file2, args: argv, windowsVerbatimArguments } = spawnTarget(cmd, args, { env });
+  if (opts.background) {
+    const child2 = spawn(file2, argv, { stdio: "ignore", detached: true, shell: false, env, windowsVerbatimArguments });
+    child2.once("error", reject);
+    child2.once("spawn", () => {
+      child2.unref();
+      resolve2({ code: 0, stdout: "", stderr: "" });
+    });
+    return;
+  }
+  const stdin = opts.input === void 0 ? "ignore" : "pipe";
+  const child = spawn(file2, argv, {
+    stdio: opts.interactive ? ["inherit", 2, "inherit"] : [stdin, "pipe", "pipe"],
+    shell: false,
+    env,
+    windowsVerbatimArguments
+  });
+  let stdout = "";
+  let stderr = "";
+  const timer = opts.timeoutMs ? setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs) : void 0;
+  child.stdout?.on("data", (d) => stdout += d);
+  child.stderr?.on("data", (d) => stderr += d);
+  child.on("error", (err) => {
+    if (timer) clearTimeout(timer);
+    reject(err);
+  });
+  child.on("close", (code2) => {
+    if (timer) clearTimeout(timer);
+    resolve2({ code: code2 ?? 1, stdout, stderr });
+  });
+  child.stdin?.on("error", () => {
+  });
+  child.stdin?.end(opts.input);
+});
+var isFile = (p) => {
+  try {
+    return statSync(p).isFile();
+  } catch {
+    return false;
+  }
+};
+var envValue = (env, name) => Object.entries(env).find(([k]) => k.toUpperCase() === name.toUpperCase())?.[1];
+function findBatchFile(cmd, env, exists) {
+  const batch = (p) => /\.(cmd|bat)$/i.test(p) ? p : void 0;
+  if (/[\\/]/.test(cmd)) return batch(cmd);
+  const exts = (envValue(env, "PATHEXT") ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+  const names = win32.extname(cmd) ? [cmd] : exts.map((e) => cmd + e);
+  for (const dir of (envValue(env, "PATH") ?? "").split(";")) {
+    const d = dir.replace(/"/g, "").trim();
+    if (!d) continue;
+    for (const name of names) {
+      const p = win32.join(d, name);
+      if (exists(p)) return batch(p);
+    }
+  }
+  return void 0;
+}
+var CMD_META = /([()[\]%!^"`<>&|;, *?])/g;
+function batchArg(arg) {
+  if (/[%!\r\n\0]/.test(arg)) throw new Error(`Argument ${JSON.stringify(arg)} cannot be passed safely to a Windows batch file.`);
+  const quoted = `"${arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, "$1$1")}"`;
+  return quoted.replace(CMD_META, "^$1").replace(CMD_META, "^$1");
+}
+function spawnTarget(cmd, args, o = {}) {
+  const env = o.env ?? process.env;
+  if ((o.platform ?? process.platform) !== "win32") return { file: cmd, args };
+  const batch = findBatchFile(cmd, env, o.isFile ?? isFile);
+  if (!batch) return { file: cmd, args };
+  if (/[%!"\r\n\0]/.test(batch)) throw new Error(`The path ${batch} cannot be passed safely to cmd.exe.`);
+  const line = [`"${batch}"`, ...args.map(batchArg)].join(" ");
+  return { file: envValue(env, "ComSpec") ?? "cmd.exe", args: ["/d", "/s", "/c", `"${line}"`], windowsVerbatimArguments: true };
+}
+
+// src/core/fs.ts
+import { chmodSync, mkdirSync, statSync as statSync2 } from "node:fs";
+import { basename } from "node:path";
+function ensurePrivateDir(dir) {
+  if (mkdirSync(dir, { recursive: true, mode: 448 }) !== void 0) {
+    chmodSync(dir, 448);
+    return;
+  }
+  if (process.platform === "win32" || typeof process.getuid !== "function") return;
+  const st = statSync2(dir);
+  if ((st.mode & 63) === 0) return;
+  const warning = `${dir} is accessible to other users (mode ${(st.mode & 511).toString(8)}). Fix: chmod 700 ${dir}`;
+  if (basename(dir) === ".admobctl" && st.uid === process.getuid()) {
+    try {
+      chmodSync(dir, 448);
+      return;
+    } catch {
+    }
+  }
+  log.warn(warning);
+}
+
+// src/core/setup/commands.ts
+function profileCommand(command, profile, configuredDefault = "default") {
+  if (profile === "default" && configuredDefault === "default") return command;
+  if (/--profile(?:[=\s]|$)/.test(command)) return command;
+  const quoted = /^[A-Za-z0-9._-]+$/.test(profile) ? profile : `'${profile.replace(/'/g, "'\\''")}'`;
+  return command.replace(/\badmobctl /, () => `admobctl --profile ${quoted} `);
+}
+function oauthLoginCommand(features, cloudPlatform, clientId) {
+  const id = clientId === void 0 ? "" : ` --client-id ${/^[A-Za-z0-9._-]+$/.test(clientId) ? clientId : `'${clientId.replace(/'/g, "'\\''")}'`}`;
+  return `admobctl auth login${id}${features.includes("write") ? " --write" : ""}${features.includes("payments") ? " --payments" : ""}${cloudPlatform ? " --cloud-platform" : ""}`;
+}
+function cloudScopeFix(mode, features) {
+  return mode === "oauth" ? oauthLoginCommand(features, true) : "admobctl setup login --yes";
+}
+
+// src/core/auth/oauth.ts
+var AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
+var TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
+var REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke";
+var KEYCHAIN_SERVICE = "admobctl";
+var KeychainSecretStore = class {
+  constructor(exec2 = exec) {
+    this.exec = exec2;
+  }
+  exec;
+  async get(profile) {
+    const r = await this.exec("security", ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", profile, "-w"]);
+    if (r.code === 44) return void 0;
+    if (r.code !== 0) {
+      throw new AdmobctlError("CONFIG", `Could not read admobctl's saved login from the macOS Keychain: ${r.stderr.trim() || `security exited with code ${r.code}`}`, {
+        fix: "Unlock your login keychain (over SSH: security unlock-keychain), then retry."
+      });
+    }
+    return r.stdout.replace(/\n$/, "") || void 0;
+  }
+  async set(profile, value) {
+    if (!/^[A-Za-z0-9._-]+$/.test(profile)) throw new AdmobctlError("USAGE", `Invalid profile name "${profile}"`);
+    const hex3 = Buffer.from(value, "utf8").toString("hex");
+    const r = await this.exec("security", ["-i"], {
+      input: `add-generic-password -U -s ${KEYCHAIN_SERVICE} -a ${profile} -X ${hex3}
+`
+    });
+    if (r.code !== 0) throw new AdmobctlError("CONFIG", `Could not write to the macOS Keychain: ${r.stderr.trim()}`);
+  }
+  async delete(profile) {
+    await this.exec("security", ["delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", profile]);
+  }
+};
+var FileSecretStore = class {
+  constructor(dir) {
+    this.dir = dir;
+  }
+  dir;
+  file(profile) {
+    if (!/^[A-Za-z0-9._-]+$/.test(profile)) throw new AdmobctlError("USAGE", `Invalid profile name "${profile}"`);
+    return join(this.dir, `credentials-${profile}.json`);
+  }
+  async get(profile) {
+    const f = this.file(profile);
+    return existsSync(f) ? readFileSync(f, "utf8") : void 0;
+  }
+  async set(profile, value) {
+    ensurePrivateDir(this.dir);
+    const file2 = this.file(profile);
+    const tmp = `${file2}.${process.pid}.tmp`;
+    rmSync(tmp, { force: true });
+    writeFileSync(tmp, value, { mode: 384, flag: "wx" });
+    renameSync(tmp, file2);
+    chmodSync2(file2, 384);
+  }
+  async delete(profile) {
+    rmSync(this.file(profile), { force: true });
+  }
+};
+function defaultSecretStore(configDir2, exec2) {
+  return process.platform === "darwin" ? new KeychainSecretStore(exec2) : new FileSecretStore(configDir2);
+}
+function createPkce() {
+  const verifier = randomBytes(48).toString("base64url");
+  const challenge = createHash("sha256").update(verifier).digest("base64url");
+  return { verifier, challenge };
+}
+function buildAuthUrl(o) {
+  const url2 = new URL(AUTH_ENDPOINT);
+  url2.search = new URLSearchParams({
+    client_id: o.clientId,
+    redirect_uri: o.redirectUri,
+    response_type: "code",
+    scope: [ADMOB_SCOPE, ...o.write ? [MONETIZATION_SCOPE] : [], ...o.payments ? [ADSENSE_SCOPE] : [], ...o.cloudPlatform ? [CLOUD_PLATFORM_SCOPE] : []].join(" "),
+    code_challenge: o.pkce.challenge,
+    code_challenge_method: "S256",
+    access_type: "offline",
+    prompt: "consent",
+    state: o.state
+  }).toString();
+  return url2.toString();
+}
+var DONE_PAGE = `<!doctype html><meta charset="utf-8"><title>admobctl</title>
+<body style="font:16px system-ui;margin:3em">Signed in. You can close this tab and return to the terminal.</body>`;
+function waitForLoopbackCode(o) {
+  const fix = o.fix ?? "admobctl setup login --yes";
+  let resolveReady;
+  let rejectReady;
+  const ready = new Promise((resolve2, reject) => {
+    resolveReady = resolve2;
+    rejectReady = reject;
+  });
+  const code2 = new Promise((resolve2, reject) => {
+    const server = createServer((req, res) => {
+      const url2 = new URL(req.url ?? "/", "http://127.0.0.1");
+      const err = url2.searchParams.get("error");
+      const got = url2.searchParams.get("code");
+      const finish = (status, body, outcome) => {
+        res.writeHead(status, { "content-type": "text/html; charset=utf-8" }).end(body);
+        clearTimeout(timer);
+        server.close();
+        outcome();
+      };
+      if (!got && !err) return void res.writeHead(404).end();
+      if (url2.searchParams.get("state") !== o.state) {
+        return finish(400, "State mismatch.", () => reject(new AdmobctlError("AUTH_NO_CREDENTIALS", "OAuth state mismatch; login aborted.", { fix })));
+      }
+      if (err) return finish(400, `Login failed: ${err}`, () => reject(new AdmobctlError("AUTH_NO_CREDENTIALS", `Google returned an error: ${err}`, { fix })));
+      finish(200, DONE_PAGE, () => resolve2(got));
+    });
+    const timer = setTimeout(() => {
+      server.close();
+      reject(new AdmobctlError("AUTH_NO_CREDENTIALS", "Timed out waiting for the browser login.", { fix }));
+    }, o.timeoutMs ?? 3e5);
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      resolveReady({ redirectUri: `http://127.0.0.1:${port}` });
+    });
+    server.on("error", (err) => {
+      clearTimeout(timer);
+      const e = new AdmobctlError("AUTH_NO_CREDENTIALS", `Could not listen on 127.0.0.1 for Google's sign-in redirect: ${err.message}`, {
+        cause: err,
+        fix
+      });
+      rejectReady(e);
+      reject(e);
+    });
+  });
+  ready.catch(() => {
+  });
+  code2.catch(() => {
+  });
+  return { ready, code: code2 };
+}
+function googleUnavailable(what, status, hints) {
+  return new AdmobctlError(status === 429 ? "RATE_LIMITED" : "API_ERROR", `${what} is unavailable right now (HTTP ${status}).`, {
+    status,
+    fix: hints.retryAfterMs === void 0 ? "Wait a minute and retry." : `Retry in about ${formatDuration(hints.retryAfterMs)}.`
+  });
+}
+function tokenError(json2, status, grantType, loginFix) {
+  const msg = `${json2.error ?? `HTTP ${status}`}${json2.error_description ? `: ${json2.error_description}` : ""}`;
+  if (json2.error === "invalid_grant") {
+    const what = grantType === "refresh_token" ? "Your saved login is no longer valid" : "Google did not accept the sign-in";
+    return new AdmobctlError("AUTH_TOKEN_EXPIRED", `${what} (${msg}).`, { status, fix: loginFix });
+  }
+  if (status === 400 || status === 401 || json2.error) {
+    return new AdmobctlError("AUTH_NO_CREDENTIALS", `Google token endpoint error: ${msg}`, {
+      status,
+      fix: "Check the OAuth client ID and secret (a Desktop app client in Google Cloud Console \u2192 APIs & Services \u2192 Credentials), then sign in again with admobctl auth login and that client's --client-id and --client-secret."
+    });
+  }
+  return new AdmobctlError("API_ERROR", `Google token endpoint error: HTTP ${status}`, { status, fix: "Wait a minute and retry." });
+}
+async function postToken(params, http, loginFix) {
+  const json2 = await requestJson(
+    TOKEN_ENDPOINT,
+    { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(params).toString() },
+    {
+      fetch: http.fetch,
+      sleep: http.sleep,
+      retries: 2,
+      diagnose: (status, body, hints) => status === 429 || status >= 500 ? googleUnavailable("Google's sign-in service (oauth2.googleapis.com)", status, hints) : tokenError(typeof body === "object" && body ? body : {}, status, params.grant_type, loginFix)
+    }
+  ) ?? {};
+  if (json2.error) throw tokenError(json2, void 0, params.grant_type, loginFix);
+  return json2;
+}
+async function exchangeCode(o, doFetch = fetch, sleep) {
+  const params = {
+    grant_type: "authorization_code",
+    code: o.code,
+    code_verifier: o.verifier,
+    client_id: o.clientId,
+    redirect_uri: o.redirectUri
+  };
+  if (o.clientSecret) params.client_secret = o.clientSecret;
+  const fix = o.fix ?? "admobctl setup login --yes";
+  const t = await postToken(params, { fetch: doFetch, sleep }, fix);
+  if (!t.refresh_token) {
+    throw new AdmobctlError("AUTH_NO_CREDENTIALS", "Google did not return a refresh token.", {
+      fix: `Remove admobctl's access at https://myaccount.google.com/permissions, then run ${fix}`
+    });
+  }
+  return { refreshToken: t.refresh_token, accessToken: t.access_token, scope: t.scope };
+}
+async function revokeToken(token, doFetch = fetch) {
+  await doFetch(REVOKE_ENDPOINT, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ token }).toString()
+  }).catch(() => void 0);
+}
+var OAuthTokenProvider = class {
+  constructor(deps) {
+    this.deps = deps;
+  }
+  deps;
+  mode = "oauth";
+  cached;
+  /** Sign in again with the profile's saved client and features (`auth login` alone would ask for read access only). */
+  loginFix() {
+    return profileCommand("admobctl setup login --yes", this.deps.profile);
+  }
+  async stored() {
+    const raw = await this.deps.store.get(this.deps.profile);
+    if (!raw) {
+      throw new AdmobctlError("AUTH_NO_CREDENTIALS", `No saved admobctl login for profile "${this.deps.profile}".`, { fix: this.loginFix() });
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = void 0;
+    }
+    const s = typeof parsed === "object" && parsed !== null ? parsed : void 0;
+    const text = (v) => typeof v === "string" && v !== "";
+    if (!s || !text(s.clientId) || !text(s.refreshToken) || s.clientSecret != null && typeof s.clientSecret !== "string") {
+      throw new AdmobctlError("AUTH_NO_CREDENTIALS", "The saved login is corrupt.", { fix: this.loginFix() });
+    }
+    const stored = { clientId: s.clientId, refreshToken: s.refreshToken };
+    if (s.clientSecret) stored.clientSecret = s.clientSecret;
+    return stored;
+  }
+  async checkCredentials() {
+    return this.stored();
+  }
+  resetCache() {
+    this.cached = void 0;
+  }
+  async getToken() {
+    const now = (this.deps.now ?? Date.now)();
+    if (this.cached && now < this.cached.expiresAt) return this.cached.token;
+    const s = await this.stored();
+    const params = { grant_type: "refresh_token", refresh_token: s.refreshToken, client_id: s.clientId };
+    if (s.clientSecret) params.client_secret = s.clientSecret;
+    const t = await postToken(params, { fetch: this.deps.fetch, sleep: this.deps.sleep }, this.loginFix());
+    if (!t.access_token) throw new AdmobctlError("AUTH_NO_CREDENTIALS", "Google returned no access token.", { fix: this.loginFix() });
+    this.cached = { token: t.access_token, expiresAt: now + ((t.expires_in ?? 3600) - 60) * 1e3 };
+    return t.access_token;
+  }
+  quotaProject() {
+    return void 0;
+  }
+};
+
+// src/core/auth/doctor.ts
+var ADMOB_SCOPES = ["https://www.googleapis.com/auth/admob.readonly", "https://www.googleapis.com/auth/admob.report"];
+function failed(id, err) {
+  if (err instanceof AdmobctlError) return { id, status: "fail", summary: err.message, fix: err.fix };
+  return { id, status: "fail", summary: err.message ?? String(err) };
+}
+async function fetchTokenInfo(token, doFetch = fetch, sleep) {
+  const j = await requestJson(
+    "https://oauth2.googleapis.com/tokeninfo",
+    { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ access_token: token }).toString() },
+    {
+      fetch: doFetch,
+      sleep,
+      retries: 2,
+      diagnose: (status, _body, hints) => status === 400 || status === 401 ? new AdmobctlError("AUTH_TOKEN_EXPIRED", "Google rejected the access token.", { status, fix: "admobctl setup login --yes" }) : googleUnavailable("Google's token information service (oauth2.googleapis.com)", status, hints)
+    }
+  ) ?? {};
+  const info = { scopes: (j.scope ?? "").split(/\s+/).filter(Boolean) };
+  if (j.email) info.email = j.email;
+  if (j.expires_in) info.expiresIn = Number(j.expires_in);
+  return info;
+}
+async function runDoctor(d) {
+  const checks = await runChecks(d);
+  for (const c of checks) {
+    if (d.signInBlocked && c.fix?.startsWith("admobctl setup login")) c.fix = d.signInBlocked;
+    const command = c.fix?.split("  (")[0];
+    if (command?.startsWith("admobctl ") && !/<[^>]*>/.test(command)) c.fix_command = command;
+  }
+  return checks;
+}
+async function runChecks(d) {
+  const checks = [];
+  const setupChecks = d.features ? ["features", "apis"] : [];
+  const optional2 = [...d.listApps ? ["apps"] : [], ...d.betaProbes ? ["beta"] : []];
+  const skipRest = (ids, why) => {
+    for (const id of [...ids, ...optional2]) checks.push({ id, status: "skip", summary: why });
+  };
+  try {
+    await d.checkCredentials();
+    checks.push({
+      id: "credentials",
+      status: "ok",
+      summary: d.mode === "adc" ? "gcloud Application Default Credentials (user)" : "admobctl OAuth credentials"
+    });
+  } catch (err) {
+    checks.push(failed("credentials", err));
+    skipRest(["token", "scope", ...setupChecks, "quota-project", "api", "account"], "skipped: no usable credentials");
+    return checks;
+  }
+  let token;
+  try {
+    token = await d.getToken();
+    checks.push({ id: "token", status: "ok", summary: "Access token obtained" });
+  } catch (err) {
+    checks.push(failed("token", err));
+    skipRest(["scope", ...setupChecks, "quota-project", "api", "account"], "skipped: no access token");
+    return checks;
+  }
+  try {
+    const info = await d.tokenInfo(token);
+    const granted = ADMOB_SCOPES.filter((s) => info.scopes.includes(s));
+    const grantedFeatures = featuresFromScopes(info.scopes);
+    checks.push(
+      granted.length ? {
+        id: "scope",
+        status: "ok",
+        summary: `Scope granted: ${granted.map((s) => s.split("/").pop()).join(", ")}${info.scopes.includes(MONETIZATION_SCOPE) ? ", admob.monetization (write commands enabled)" : ""}${info.scopes.includes(ADSENSE_SCOPE) ? ", adsense.readonly (finance balance enabled)" : ""}`
+      } : {
+        id: "scope",
+        status: "fail",
+        summary: `Token lacks the AdMob scope (has: ${info.scopes.join(" ") || "none"})`,
+        fix: "admobctl setup login --yes"
+      }
+    );
+    if (d.features) {
+      const missing = d.features.filter((f) => !grantedFeatures.includes(f));
+      const missingCloudPlatform = (d.mode === "adc" || Boolean(d.quotaProject)) && !info.scopes.includes(CLOUD_PLATFORM_SCOPE);
+      const missingScopes = [...missing, ...missingCloudPlatform ? ["cloud-platform"] : []];
+      checks.push(
+        missingScopes.length ? {
+          id: "features",
+          status: "warn",
+          summary: missing.length ? `Your sign-in lacks the scopes for: ${missing.join(", ")}${missingCloudPlatform ? ", cloud-platform" : ""}` : "Your sign-in lacks the cloud-platform scope needed for setup.",
+          fix: `admobctl setup login${featuresFlag(mergeFeatures(d.features, grantedFeatures))} --yes`
+        } : { id: "features", status: "ok", summary: `Features: ${d.features.join(", ")}` }
+      );
+    }
+  } catch (err) {
+    checks.push(failed("scope", err));
+    if (d.features) checks.push({ id: "features", status: "skip", summary: "skipped: token scopes are unavailable" });
+  }
+  if (d.mode === "adc") {
+    checks.push(
+      d.quotaProject ? { id: "quota-project", status: "ok", summary: `Quota project: ${d.quotaProject}` } : {
+        id: "quota-project",
+        status: "warn",
+        summary: "No quota project set; ADC requests to the AdMob API usually need one.",
+        fix: "admobctl setup project list"
+      }
+    );
+  } else {
+    checks.push({ id: "quota-project", status: "ok", summary: "Not needed for your own OAuth client" });
+  }
+  if (d.serviceStates) {
+    try {
+      const states = await d.serviceStates();
+      const off = apisFor(d.features ?? ["read"]).filter((s) => states[s] !== "ENABLED");
+      checks.push(
+        off.length ? { id: "apis", status: "fail", summary: `Not enabled in the quota project: ${off.join(", ")}`, fix: `admobctl setup apis${featuresFlag(d.features ?? ["read"])} --yes` } : { id: "apis", status: "ok", summary: `APIs enabled: ${apisFor(d.features ?? ["read"]).join(", ")}` }
+      );
+    } catch (err) {
+      checks.push(failed("apis", err));
+    }
+  } else if (d.features) {
+    checks.push({
+      id: "apis",
+      status: "skip",
+      summary: d.mode === "oauth" ? "API enablement in the OAuth client project was not checked here; actual feature API requests will report access issues." : "API enablement was not checked because no service-state lookup is available."
+    });
+  }
+  try {
+    const accounts = await d.listAccounts();
+    checks.push({ id: "api", status: "ok", summary: `AdMob API reachable; ${accounts.length} account(s) accessible` });
+  } catch (err) {
+    checks.push(failed("api", err));
+    skipRest(["account"], "skipped: API not reachable");
+    return checks;
+  }
+  try {
+    const a = await d.account();
+    checks.push({ id: "account", status: "ok", summary: `Using ${a.publisherId} (${a.currencyCode}, ${a.reportingTimeZone})` });
+  } catch (err) {
+    checks.push(failed("account", err));
+    skipRest([], "skipped: no account");
+    return checks;
+  }
+  if (d.listApps) {
+    try {
+      const apps = await d.listApps();
+      const blocked = appsNeedingAction(apps);
+      const inReview = apps.filter((a) => a.approval === "IN_REVIEW").length;
+      const review = inReview ? `; ${inReview} in review` : "";
+      checks.push(
+        blocked.length ? {
+          id: "apps",
+          status: "warn",
+          summary: `${blocked.length} of ${apps.length} app(s) need action in AdMob review: ${blocked.map((a) => a.alias).join(", ")}${review}`,
+          fix: "Open AdMob \u2192 Apps \u2192 View all apps and follow the review steps for each app marked 'Action required'."
+        } : { id: "apps", status: "ok", summary: `${apps.length} app(s), none waiting on you in AdMob review${review}` }
+      );
+    } catch (err) {
+      checks.push(failed("apps", err));
+    }
+  }
+  if (d.betaProbes) {
+    const results = await Promise.all(
+      Object.entries(d.betaProbes).map(async ([name, probe2]) => {
+        try {
+          await probe2();
+          return { name, err: void 0 };
+        } catch (err) {
+          return { name, err };
+        }
+      })
+    );
+    const denied = results.find((r) => r.err instanceof AdmobctlError && r.err.code === "BETA_ACCESS_DENIED")?.err;
+    const summary = results.map(
+      (r) => `${r.name}: ${!r.err ? "ok" : r.err instanceof AdmobctlError && r.err.code === "BETA_ACCESS_DENIED" ? "no access" : `error (${r.err.message})`}`
+    ).join("; ");
+    checks.push(
+      results.every((r) => !r.err) ? { id: "beta", status: "ok", summary: `AdMob API v1beta: ${summary}` } : { id: "beta", status: "warn", summary: `AdMob API v1beta: ${summary}`, fix: denied?.fix }
+    );
+  }
+  return checks;
 }
 
 // src/core/setup/cloud.ts
@@ -11078,8 +11441,26 @@ var CloudClient = class {
       url2,
       { method, headers, body: body === void 0 ? void 0 : JSON.stringify(body) },
       // Enabling is not idempotent-safe to blind-retry mid-operation; reads may retry.
-      { fetch: this.o.fetch, sleep: this.o.sleep, retries: method === "GET" ? 2 : 0 }
+      { fetch: this.o.fetch, sleep: this.o.sleep, retries: method === "GET" ? 2 : 0, diagnose: (status, b, hints) => this.error(status, b, hints) }
     );
+  }
+  /** diagnoseApiError speaks of AdMob; these calls need cloud-platform and rights on a Google Cloud project instead. */
+  error(status, body, hints) {
+    const err = diagnoseApiError(status, body, hints);
+    if (err.code === "AUTH_SCOPE_MISSING") {
+      return new AdmobctlError("AUTH_SCOPE_MISSING", "Your sign-in lacks the cloud-platform scope that Google Cloud project and API setup needs.", {
+        status,
+        fix: this.o.scopeFix ?? "admobctl setup login --yes"
+      });
+    }
+    if (err.code === "PERMISSION_DENIED") {
+      const detail = body?.error?.message ?? err.message;
+      return new AdmobctlError("PERMISSION_DENIED", `Google Cloud denied the request: ${detail}`, {
+        status,
+        fix: "admobctl setup project list  (then use a project where your Google account may enable APIs)"
+      });
+    }
+    return err;
   }
   async listProjects() {
     const out = [];
@@ -11145,33 +11526,9 @@ var CloudClient = class {
 };
 
 // src/core/config.ts
-import { chmodSync as chmodSync2, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync as chmodSync3, existsSync as existsSync2, readFileSync as readFileSync2, renameSync as renameSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
-
-// src/core/fs.ts
-import { chmodSync, mkdirSync, statSync } from "node:fs";
-import { basename } from "node:path";
-function ensurePrivateDir(dir) {
-  if (mkdirSync(dir, { recursive: true, mode: 448 }) !== void 0) {
-    chmodSync(dir, 448);
-    return;
-  }
-  if (process.platform === "win32" || typeof process.getuid !== "function") return;
-  const st = statSync(dir);
-  if ((st.mode & 63) === 0) return;
-  const warning = `${dir} is accessible to other users (mode ${(st.mode & 511).toString(8)}). Fix: chmod 700 ${dir}`;
-  if (basename(dir) === ".admobctl" && st.uid === process.getuid()) {
-    try {
-      chmodSync(dir, 448);
-      return;
-    } catch {
-    }
-  }
-  log.warn(warning);
-}
-
-// src/core/config.ts
+import { join as join2 } from "node:path";
 var DEFAULT_FINANCE = {
   receivableAccount: "1509",
   revenueAccount: "3120",
@@ -11182,16 +11539,16 @@ var DEFAULT_FINANCE = {
   decimalSeparator: "."
 };
 function configDir(env = process.env, home = homedir()) {
-  return env.ADMOBCTL_HOME || join(home, ".admobctl");
+  return env.ADMOBCTL_HOME || join2(home, ".admobctl");
 }
 function configPath(dir) {
-  return join(dir, "config.json");
+  return join2(dir, "config.json");
 }
 function loadConfig(dir) {
   const file2 = configPath(dir);
-  if (!existsSync(file2)) return { profiles: {} };
+  if (!existsSync2(file2)) return { profiles: {} };
   try {
-    const parsed = JSON.parse(readFileSync(file2, "utf8"));
+    const parsed = JSON.parse(readFileSync2(file2, "utf8"));
     return { ...parsed, profiles: parsed.profiles ?? {} };
   } catch (err) {
     throw new AdmobctlError("CONFIG", `Could not parse ${file2}: ${err.message}`, {
@@ -11203,10 +11560,10 @@ function saveConfig(dir, config2) {
   ensurePrivateDir(dir);
   const file2 = configPath(dir);
   const tmp = `${file2}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(config2, null, 2)}
+  writeFileSync2(tmp, `${JSON.stringify(config2, null, 2)}
 `, { mode: 384 });
-  renameSync(tmp, file2);
-  chmodSync2(file2, 384);
+  renameSync2(tmp, file2);
+  chmodSync3(file2, 384);
 }
 function resolveProfile(config2, name) {
   const profileName = name ?? config2.defaultProfile ?? "default";
@@ -11260,20 +11617,12 @@ function setProfileValue(config2, profile, key, value) {
   throw usageError(`Unknown config key "${key}". Settable keys: ${SETTABLE_KEYS.join(", ")}`);
 }
 
-// src/core/setup/commands.ts
-function profileCommand(command, profile, configuredDefault = "default") {
-  if (profile === "default" && configuredDefault === "default") return command;
-  if (/--profile(?:[=\s]|$)/.test(command)) return command;
-  const quoted = /^[A-Za-z0-9._-]+$/.test(profile) ? profile : `'${profile.replace(/'/g, "'\\''")}'`;
-  return command.replace(/\badmobctl /, () => `admobctl --profile ${quoted} `);
-}
-
 // src/core/setup/status.ts
 async function setupStatus(svc, deps = {}) {
   const tp = svc.tokenProvider;
   const features = parseFeatures(svc.profile.features);
   const quotaProject = svc.profile.quotaProject ?? tp.quotaProject();
-  const cloud = new CloudClient({ getToken: () => tp.getToken(), fetch: deps.fetch });
+  const cloud = new CloudClient({ getToken: () => tp.getToken(), fetch: deps.fetch, scopeFix: cloudScopeFix(tp.mode, features) });
   const checks = await runDoctor({
     mode: tp.mode,
     checkCredentials: () => tp.checkCredentials?.(),
@@ -11285,7 +11634,8 @@ async function setupStatus(svc, deps = {}) {
     listAccounts: () => svc.listAccounts(),
     account: () => svc.account(),
     listApps: () => svc.apps(),
-    betaProbes: { "ad sources": () => svc.adSources(), "mediation groups": () => svc.mediationGroups() }
+    betaProbes: { "ad sources": () => svc.adSources(), "mediation groups": () => svc.mediationGroups() },
+    signInBlocked: tp.signInBlocked?.()
   });
   const configuredDefault = loadConfig(svc.configDir).defaultProfile;
   for (const check3 of checks) {
@@ -11297,20 +11647,20 @@ async function setupStatus(svc, deps = {}) {
 }
 
 // src/core/audit.ts
-import { appendFileSync, chmodSync as chmodSync3, readFileSync as readFileSync2 } from "node:fs";
-import { join as join2 } from "node:path";
+import { appendFileSync, chmodSync as chmodSync4, readFileSync as readFileSync3 } from "node:fs";
+import { join as join3 } from "node:path";
 function appendAudit(dir, entry) {
   ensurePrivateDir(dir);
-  const file2 = join2(dir, "audit.log");
+  const file2 = join3(dir, "audit.log");
   appendFileSync(file2, `${JSON.stringify(entry)}
 `, { mode: 384 });
-  chmodSync3(file2, 384);
+  chmodSync4(file2, 384);
 }
 function readAudit(dir, opts = {}) {
-  const file2 = join2(dir, "audit.log");
+  const file2 = join3(dir, "audit.log");
   let text = "";
   try {
-    text = readFileSync2(file2, "utf8");
+    text = readFileSync3(file2, "utf8");
   } catch (err) {
     if (err.code !== "ENOENT") {
       throw new AdmobctlError("CONFIG", `Could not read ${file2}: ${err.message}`, {
@@ -11372,11 +11722,12 @@ function store(ctx, key, value) {
   setProfileValue(cfg, ctx.svc.profile.name, key, value);
   saveConfig(ctx.svc.configDir, cfg);
 }
-async function planLogin(ctx, requested) {
+var needsCloudPlatform = (ctx, project) => ctx.svc.tokenProvider.mode === "adc" || Boolean(project ?? profileNow(ctx).quotaProject);
+async function planLogin(ctx, requested, o = {}) {
   try {
     await ctx.svc.tokenProvider.checkCredentials?.();
   } catch (err) {
-    if (err instanceof AdmobctlError && err.code === "AUTH_SERVICE_ACCOUNT" && !err.fix?.startsWith("admobctl ")) throw err;
+    if (err instanceof AdmobctlError && err.fix && !err.fix.startsWith("admobctl ")) throw err;
   }
   let granted;
   try {
@@ -11385,18 +11736,28 @@ async function planLogin(ctx, requested) {
     granted = void 0;
   }
   const features = mergeFeatures(["read"], profileNow(ctx).features ?? [], granted ? featuresFromScopes(granted) : [], requested);
-  const scopes = scopesFor(features);
+  const cloudPlatform = needsCloudPlatform(ctx, o.project);
+  const scopes = scopesFor(features, { cloudPlatform });
   if (granted && scopes.every((s) => granted.includes(s))) {
     return { step: "login", status: "done", features, scopes, summary: [`Signed in with the scopes for: ${features.join(", ")}`] };
   }
-  const how = ctx.svc.tokenProvider.mode === "oauth" ? `Sign in with your own OAuth client: ${commandFor(ctx, `admobctl auth login${features.includes("write") ? " --write" : ""}${features.includes("payments") ? " --payments" : ""} --cloud-platform`)}` : `Sign in with gcloud (it opens your browser): ${loginCommand(scopes)}`;
+  const lacking = granted ? `Your sign-in lacks scopes: ${scopes.filter((s) => !granted.includes(s)).map((s) => s.split("/").pop()).join(", ")}` : "Not signed in.";
+  const blocked = ctx.svc.tokenProvider.signInBlocked?.();
+  if (blocked) {
+    throw new AdmobctlError(granted ? "AUTH_SCOPE_MISSING" : "AUTH_NO_CREDENTIALS", `${lacking.replace(/\.$/, "")}, and GOOGLE_APPLICATION_CREDENTIALS selects credentials that a gcloud sign-in does not replace.`, {
+      fix: blocked
+    });
+  }
+  const oauth = ctx.svc.tokenProvider.mode === "oauth";
+  const how = oauth ? `Sign in with your own OAuth client: ${commandFor(ctx, oauthLoginCommand(features, cloudPlatform))}` : `Sign in with gcloud (it opens your browser): ${loginCommand(scopes)}`;
+  const next = oauth && o.project && !profileNow(ctx).quotaProject ? `admobctl setup${featuresFlag(features)} --project ${o.project} --yes` : `admobctl setup login${featuresFlag(features)} --yes`;
   return {
     step: "login",
     status: "planned",
     features,
     scopes,
-    summary: [granted ? `Your sign-in lacks scopes: ${scopes.filter((s) => !granted.includes(s)).map((s) => s.split("/").pop()).join(", ")}` : "Not signed in.", how, ...ctx.svc.tokenProvider.mode === "adc" ? [`Requires Google Cloud CLI (gcloud): ${GCLOUD_INSTALL_URL}`] : []],
-    next_command: commandFor(ctx, `admobctl setup login${featuresFlag(features)} --yes`)
+    summary: [lacking, how, ...ctx.svc.tokenProvider.mode === "adc" ? [`Requires Google Cloud CLI (gcloud): ${GCLOUD_INSTALL_URL}`] : []],
+    next_command: commandFor(ctx, next)
   };
 }
 async function applyLogin(ctx, plan) {
@@ -11408,7 +11769,11 @@ async function applyLogin(ctx, plan) {
     }
     if (ctx.svc.tokenProvider.mode === "oauth") {
       if (!ctx.oauthLogin) throw usageError("OAuth sign-in is only available from the CLI: admobctl setup login --yes");
-      await ctx.oauthLogin({ write: plan.features.includes("write"), payments: plan.features.includes("payments"), cloudPlatform: true });
+      await ctx.oauthLogin({
+        write: plan.features.includes("write"),
+        payments: plan.features.includes("payments"),
+        cloudPlatform: plan.scopes.includes(CLOUD_PLATFORM_SCOPE)
+      });
     } else {
       if (!await gcloudInstalled(ctx.exec)) {
         throw new AdmobctlError("AUTH_NO_CREDENTIALS", `The Google Cloud CLI (gcloud) is needed for the sign-in. Install it from ${GCLOUD_INSTALL_URL}, then run the fix.`, {
@@ -11496,7 +11861,7 @@ async function applyApis(ctx, plan) {
 async function runSetup(ctx, o) {
   const steps = [];
   const stop = (s) => ({ steps: [...steps, s], ...s.next_command ? { next_command: s.next_command } : {} });
-  const login2 = await planLogin(ctx, o.features);
+  const login2 = await planLogin(ctx, o.features, { project: o.project });
   if (login2.status === "planned") {
     if (!o.yes) return stop(login2);
     if (!ctx.interactive) {
@@ -11515,220 +11880,18 @@ async function runSetup(ctx, o) {
 
 // src/core/auth/login.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
-
-// src/core/auth/oauth.ts
-import { createHash, randomBytes } from "node:crypto";
-import { chmodSync as chmodSync4, existsSync as existsSync2, readFileSync as readFileSync3, renameSync as renameSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
-import { createServer } from "node:http";
-import { join as join3 } from "node:path";
-var AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
-var TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
-var REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke";
-var KEYCHAIN_SERVICE = "admobctl";
-var KeychainSecretStore = class {
-  constructor(exec2 = exec) {
-    this.exec = exec2;
-  }
-  exec;
-  async get(profile) {
-    const r = await this.exec("security", ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", profile, "-w"]);
-    if (r.code !== 0) return void 0;
-    return r.stdout.replace(/\n$/, "") || void 0;
-  }
-  async set(profile, value) {
-    if (!/^[A-Za-z0-9._-]+$/.test(profile)) throw new AdmobctlError("USAGE", `Invalid profile name "${profile}"`);
-    const hex3 = Buffer.from(value, "utf8").toString("hex");
-    const r = await this.exec("security", ["-i"], {
-      input: `add-generic-password -U -s ${KEYCHAIN_SERVICE} -a ${profile} -X ${hex3}
-`
-    });
-    if (r.code !== 0) throw new AdmobctlError("CONFIG", `Could not write to the macOS Keychain: ${r.stderr.trim()}`);
-  }
-  async delete(profile) {
-    await this.exec("security", ["delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", profile]);
-  }
-};
-var FileSecretStore = class {
-  constructor(dir) {
-    this.dir = dir;
-  }
-  dir;
-  file(profile) {
-    if (!/^[A-Za-z0-9._-]+$/.test(profile)) throw new AdmobctlError("USAGE", `Invalid profile name "${profile}"`);
-    return join3(this.dir, `credentials-${profile}.json`);
-  }
-  async get(profile) {
-    const f = this.file(profile);
-    return existsSync2(f) ? readFileSync3(f, "utf8") : void 0;
-  }
-  async set(profile, value) {
-    ensurePrivateDir(this.dir);
-    const file2 = this.file(profile);
-    const tmp = `${file2}.${process.pid}.tmp`;
-    rmSync(tmp, { force: true });
-    writeFileSync2(tmp, value, { mode: 384, flag: "wx" });
-    renameSync2(tmp, file2);
-    chmodSync4(file2, 384);
-  }
-  async delete(profile) {
-    rmSync(this.file(profile), { force: true });
-  }
-};
-function defaultSecretStore(configDir2, exec2) {
-  return process.platform === "darwin" ? new KeychainSecretStore(exec2) : new FileSecretStore(configDir2);
-}
-function createPkce() {
-  const verifier = randomBytes(48).toString("base64url");
-  const challenge = createHash("sha256").update(verifier).digest("base64url");
-  return { verifier, challenge };
-}
-function buildAuthUrl(o) {
-  const url2 = new URL(AUTH_ENDPOINT);
-  url2.search = new URLSearchParams({
-    client_id: o.clientId,
-    redirect_uri: o.redirectUri,
-    response_type: "code",
-    scope: [ADMOB_SCOPE, ...o.write ? [MONETIZATION_SCOPE] : [], ...o.payments ? [ADSENSE_SCOPE] : [], ...o.cloudPlatform ? [CLOUD_PLATFORM_SCOPE] : []].join(" "),
-    code_challenge: o.pkce.challenge,
-    code_challenge_method: "S256",
-    access_type: "offline",
-    prompt: "consent",
-    state: o.state
-  }).toString();
-  return url2.toString();
-}
-var DONE_PAGE = `<!doctype html><meta charset="utf-8"><title>admobctl</title>
-<body style="font:16px system-ui;margin:3em">Signed in. You can close this tab and return to the terminal.</body>`;
-function waitForLoopbackCode(o) {
-  let resolveReady;
-  const ready = new Promise((r) => resolveReady = r);
-  const code2 = new Promise((resolve, reject) => {
-    const server = createServer((req, res) => {
-      const url2 = new URL(req.url ?? "/", "http://127.0.0.1");
-      const err = url2.searchParams.get("error");
-      const got = url2.searchParams.get("code");
-      const finish = (status, body, outcome) => {
-        res.writeHead(status, { "content-type": "text/html; charset=utf-8" }).end(body);
-        clearTimeout(timer);
-        server.close();
-        outcome();
-      };
-      if (!got && !err) return void res.writeHead(404).end();
-      if (url2.searchParams.get("state") !== o.state) {
-        return finish(400, "State mismatch.", () => reject(new AdmobctlError("AUTH_NO_CREDENTIALS", "OAuth state mismatch; login aborted.")));
-      }
-      if (err) return finish(400, `Login failed: ${err}`, () => reject(new AdmobctlError("AUTH_NO_CREDENTIALS", `Google returned an error: ${err}`)));
-      finish(200, DONE_PAGE, () => resolve(got));
-    });
-    const timer = setTimeout(() => {
-      server.close();
-      reject(new AdmobctlError("AUTH_NO_CREDENTIALS", "Timed out waiting for the browser login.", { fix: "admobctl auth login" }));
-    }, o.timeoutMs ?? 3e5);
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address();
-      const port = typeof addr === "object" && addr ? addr.port : 0;
-      resolveReady({ redirectUri: `http://127.0.0.1:${port}` });
-    });
-    server.on("error", reject);
-  });
-  return { ready, code: code2 };
-}
-async function postToken(params, doFetch) {
-  const res = await doFetch(TOKEN_ENDPOINT, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams(params).toString()
-  });
-  const json2 = await res.json().catch(() => ({}));
-  if (!res.ok || json2.error) {
-    const msg = `${json2.error ?? res.status}${json2.error_description ? `: ${json2.error_description}` : ""}`;
-    if (json2.error === "invalid_grant") {
-      throw new AdmobctlError("AUTH_TOKEN_EXPIRED", `Your saved login is no longer valid (${msg}).`, { fix: "admobctl auth login" });
-    }
-    throw new AdmobctlError("AUTH_NO_CREDENTIALS", `Google token endpoint error: ${msg}`, {
-      fix: "Check the OAuth client ID/secret (a Desktop app client in Google Cloud Console), then: admobctl auth login"
-    });
-  }
-  return json2;
-}
-async function exchangeCode(o, doFetch = fetch) {
-  const params = {
-    grant_type: "authorization_code",
-    code: o.code,
-    code_verifier: o.verifier,
-    client_id: o.clientId,
-    redirect_uri: o.redirectUri
-  };
-  if (o.clientSecret) params.client_secret = o.clientSecret;
-  const t = await postToken(params, doFetch);
-  if (!t.refresh_token) {
-    throw new AdmobctlError("AUTH_NO_CREDENTIALS", "Google did not return a refresh token.", {
-      fix: "Remove admobctl's access at https://myaccount.google.com/permissions and run admobctl auth login again."
-    });
-  }
-  return { refreshToken: t.refresh_token, accessToken: t.access_token, scope: t.scope };
-}
-async function revokeToken(token, doFetch = fetch) {
-  await doFetch(REVOKE_ENDPOINT, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ token }).toString()
-  }).catch(() => void 0);
-}
-var OAuthTokenProvider = class {
-  constructor(deps) {
-    this.deps = deps;
-  }
-  deps;
-  mode = "oauth";
-  cached;
-  loginFix() {
-    return `admobctl auth login --client-id <id>${this.deps.profile === "default" ? "" : ` --profile ${this.deps.profile}`}`;
-  }
-  async stored() {
-    const raw = await this.deps.store.get(this.deps.profile);
-    if (!raw) {
-      throw new AdmobctlError("AUTH_NO_CREDENTIALS", `No saved admobctl login for profile "${this.deps.profile}".`, { fix: this.loginFix() });
-    }
-    try {
-      return JSON.parse(raw);
-    } catch {
-      throw new AdmobctlError("AUTH_NO_CREDENTIALS", "The saved login is corrupt.", { fix: this.loginFix() });
-    }
-  }
-  async checkCredentials() {
-    return this.stored();
-  }
-  resetCache() {
-    this.cached = void 0;
-  }
-  async getToken() {
-    const now = (this.deps.now ?? Date.now)();
-    if (this.cached && now < this.cached.expiresAt) return this.cached.token;
-    const s = await this.stored();
-    const params = { grant_type: "refresh_token", refresh_token: s.refreshToken, client_id: s.clientId };
-    if (s.clientSecret) params.client_secret = s.clientSecret;
-    const t = await postToken(params, this.deps.fetch ?? fetch);
-    if (!t.access_token) throw new AdmobctlError("AUTH_NO_CREDENTIALS", "Google returned no access token.", { fix: this.loginFix() });
-    this.cached = { token: t.access_token, expiresAt: now + ((t.expires_in ?? 3600) - 60) * 1e3 };
-    return t.access_token;
-  }
-  quotaProject() {
-    return void 0;
-  }
-};
-
-// src/core/auth/login.ts
 function systemBrowser(exec2 = exec) {
   return async (url2) => {
     const [cmd, args] = process.platform === "darwin" ? ["open", [url2]] : process.platform === "win32" ? ["rundll32", ["url.dll,FileProtocolHandler", url2]] : ["xdg-open", [url2]];
-    await exec2(cmd, args).catch(() => void 0);
+    await exec2(cmd, args, { background: true }).catch(() => void 0);
   };
 }
 async function login(o) {
   const pkce = createPkce();
   const state = randomBytes2(16).toString("hex");
-  const wait = waitForLoopbackCode({ state });
+  const requested = ["read", ...o.write ? ["write"] : [], ...o.payments ? ["payments"] : []];
+  const fix = `${oauthLoginCommand(requested, Boolean(o.cloudPlatform), o.clientId)}${o.clientSecret ? "  (with --client-secret too if you passed it)" : ""}`;
+  const wait = waitForLoopbackCode({ state, timeoutMs: o.timeoutMs, fix });
   const { redirectUri } = await wait.ready;
   const url2 = buildAuthUrl({ clientId: o.clientId, redirectUri, pkce, state, write: o.write, payments: o.payments, cloudPlatform: o.cloudPlatform });
   o.print(`Opening your browser to sign in to Google. If it does not open, visit:
@@ -11736,15 +11899,17 @@ async function login(o) {
   ${url2}
 
 `);
-  await (o.openBrowser ?? systemBrowser())(url2);
+  const open2 = o.openBrowser ?? systemBrowser();
+  void Promise.resolve().then(() => open2(url2)).catch(() => void 0);
   const code2 = await wait.code;
-  const t = await exchangeCode({ clientId: o.clientId, clientSecret: o.clientSecret, code: code2, verifier: pkce.verifier, redirectUri }, o.fetch);
+  const t = await exchangeCode({ clientId: o.clientId, clientSecret: o.clientSecret, code: code2, verifier: pkce.verifier, redirectUri, fix }, o.fetch);
   const stored = { clientId: o.clientId, refreshToken: t.refreshToken };
   if (o.clientSecret) stored.clientSecret = o.clientSecret;
   await o.store.set(o.profile, JSON.stringify({ clientId: stored.clientId, clientSecret: stored.clientSecret, refreshToken: stored.refreshToken }));
   const cfg = loadConfig(o.configDir);
   setProfileValue(cfg, o.profile, "oauthClientId", o.clientId);
   setProfileValue(cfg, o.profile, "authMode", "oauth");
+  setProfileValue(cfg, o.profile, "features", (t.scope ? featuresFromScopes(t.scope.split(" ")) : requested).join(","));
   saveConfig(o.configDir, cfg);
   return { profile: o.profile, scope: t.scope };
 }
@@ -13730,7 +13895,7 @@ function audit(svc, e) {
 // src/core/auth/adc.ts
 import { readFileSync as readFileSync4 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { join as join4 } from "node:path";
+import { join as join4, resolve } from "node:path";
 function adcPath(env = process.env, platform = process.platform, home = homedir2()) {
   if (env.GOOGLE_APPLICATION_CREDENTIALS) return env.GOOGLE_APPLICATION_CREDENTIALS;
   const file2 = "application_default_credentials.json";
@@ -13756,6 +13921,7 @@ function readAdcInfo(path2 = adcPath(), read = (p) => readFileSync4(p, "utf8")) 
   }
 }
 var TOKEN_TTL_MS = 45 * 60 * 1e3;
+var UNSET_FIX = "Unset GOOGLE_APPLICATION_CREDENTIALS in the terminal that runs admobctl, then run admobctl setup login --yes.";
 var AdcTokenProvider = class {
   mode = "adc";
   cached;
@@ -13772,19 +13938,34 @@ var AdcTokenProvider = class {
   resetCache() {
     this.cached = void 0;
   }
+  /**
+   * `gcloud auth application-default login` always writes the default ADC file. When GOOGLE_APPLICATION_CREDENTIALS
+   * selects another file, admobctl keeps reading that one, so a sign-in cannot fix it: this returns the manual step.
+   */
+  signInBlocked() {
+    const selected = this.env.GOOGLE_APPLICATION_CREDENTIALS;
+    if (!selected || resolve(selected) === resolve(adcPath({ ...this.env, GOOGLE_APPLICATION_CREDENTIALS: void 0 }))) return void 0;
+    return UNSET_FIX;
+  }
+  /** The fix when the credentials in use are the problem. */
+  loginFix() {
+    return this.signInBlocked() ?? "admobctl setup login --yes";
+  }
   checkCredentials() {
     const info = this.info();
     if (!info) {
-      throw new AdmobctlError("AUTH_NO_CREDENTIALS", "No gcloud Application Default Credentials found.", {
-        fix: "admobctl setup login --yes"
-      });
+      const selected = this.signInBlocked() && this.env.GOOGLE_APPLICATION_CREDENTIALS;
+      throw new AdmobctlError(
+        "AUTH_NO_CREDENTIALS",
+        selected ? `GOOGLE_APPLICATION_CREDENTIALS points at ${selected}, which cannot be read.` : "No gcloud Application Default Credentials found.",
+        { fix: this.loginFix() }
+      );
     }
     if (info.type && info.type !== "authorized_user") {
-      const fix = this.env.GOOGLE_APPLICATION_CREDENTIALS ? "Unset GOOGLE_APPLICATION_CREDENTIALS in the terminal that runs admobctl, then run admobctl setup login --yes." : "admobctl setup login --yes";
       throw new AdmobctlError(
         "AUTH_SERVICE_ACCOUNT",
         `Your Application Default Credentials are a ${info.type}; the AdMob API only accepts user credentials (service accounts are not supported).`,
-        { fix }
+        { fix: this.loginFix() }
       );
     }
     return info;
@@ -13806,9 +13987,9 @@ var AdcTokenProvider = class {
     if (res.code !== 0 || !token) {
       const detail = res.stderr.trim().split("\n").pop() ?? "";
       if (/reauth|invalid_grant|refresh|expired/i.test(res.stderr)) {
-        throw new AdmobctlError("AUTH_TOKEN_EXPIRED", `gcloud could not refresh your credentials: ${detail}`, { fix: "admobctl setup login --yes" });
+        throw new AdmobctlError("AUTH_TOKEN_EXPIRED", `gcloud could not refresh your credentials: ${detail}`, { fix: this.loginFix() });
       }
-      throw new AdmobctlError("AUTH_NO_CREDENTIALS", `gcloud failed to print an access token: ${detail}`, { fix: "admobctl setup login --yes" });
+      throw new AdmobctlError("AUTH_NO_CREDENTIALS", `gcloud failed to print an access token: ${detail}`, { fix: this.loginFix() });
     }
     this.cached = { token, at: this.now() };
     return token;
@@ -13824,7 +14005,8 @@ function resolveTokenProvider(profile, deps) {
     return new OAuthTokenProvider({
       profile: profile.name,
       store: deps.store ?? defaultSecretStore(deps.configDir, deps.exec),
-      fetch: deps.fetch
+      fetch: deps.fetch,
+      sleep: deps.sleep
     });
   }
   return new AdcTokenProvider({ exec: deps.exec });
@@ -14056,9 +14238,9 @@ function parseSort(input2, kind, dimensions, metrics) {
   if (rest.length || order !== void 0 && order !== "asc" && order !== "desc") {
     throw usageError(`--sort expects <field>[:asc|desc] with asc or desc, got "${input2}"`);
   }
-  const named = (resolve) => {
+  const named = (resolve2) => {
     try {
-      return resolve();
+      return resolve2();
     } catch {
       return void 0;
     }
@@ -14466,7 +14648,7 @@ var AdmobService = class _AdmobService {
   static create(opts = {}, deps = {}) {
     const dir = deps.configDir ?? configDir();
     const profile = resolveProfile(loadConfig(dir), opts.profile);
-    const tokenProvider = deps.tokenProvider ?? resolveTokenProvider(profile, { configDir: dir, exec: deps.exec, fetch: deps.fetch });
+    const tokenProvider = deps.tokenProvider ?? resolveTokenProvider(profile, { configDir: dir, exec: deps.exec, fetch: deps.fetch, sleep: deps.sleep });
     const client = new AdmobClient({
       getToken: () => tokenProvider.getToken(),
       quotaProject: profile.quotaProject ?? tokenProvider.quotaProject(),
@@ -14512,7 +14694,11 @@ var AdmobService = class _AdmobService {
       const wanted = this.accountOverride?.replace(/^accounts\//, "");
       if (wanted) {
         const hit = accounts.find((a) => a.publisherId === wanted);
-        if (!hit) throw new AdmobctlError("NOT_FOUND", `Account ${wanted} is not accessible. Accessible accounts: ${ids}`);
+        if (!hit) {
+          throw new AdmobctlError("NOT_FOUND", `Account ${wanted} is not accessible. Accessible accounts: ${ids}`, {
+            fix: "admobctl accounts list  (then set the account to use with admobctl config set account, or pass --account)"
+          });
+        }
         return hit;
       }
       if (accounts.length === 1) return accounts[0];
@@ -14522,7 +14708,7 @@ var AdmobService = class _AdmobService {
         });
       }
       throw new AdmobctlError("USAGE", `Several AdMob accounts are accessible (${ids}). Pick one.`, {
-        fix: "admobctl config set account <pub-\u2026>  (or pass --account)"
+        fix: "admobctl accounts list  (then set the one to use with admobctl config set account, or pass --account)"
       });
     });
   }
@@ -15763,7 +15949,7 @@ function buildProgram(io) {
     const clientId = o.clientId ?? resolveProfile(loadConfig(dir()), g(cmd).profile).oauthClientId;
     if (!clientId) {
       throw new AdmobctlError("USAGE", "An OAuth client ID is required.", {
-        fix: "Create a Desktop app OAuth client in Google Cloud Console (APIs & Services \u2192 Credentials), then: admobctl auth login --client-id <id> --client-secret <secret>"
+        fix: "Create a Desktop app OAuth client in Google Cloud Console (APIs & Services \u2192 Credentials), then run admobctl auth login with its --client-id and --client-secret."
       });
     }
     const store2 = defaultSecretStore(dir(), io.service?.exec);
@@ -15795,10 +15981,15 @@ function buildProgram(io) {
     const tp = s.tokenProvider;
     return {
       svc: s,
-      cloud: new CloudClient({ getToken: () => tp.getToken(), fetch: io.service?.fetch, sleep: io.service?.sleep }),
+      cloud: new CloudClient({
+        getToken: () => tp.getToken(),
+        fetch: io.service?.fetch,
+        sleep: io.service?.sleep,
+        scopeFix: cloudScopeFix(tp.mode, parseFeatures(s.profile.features))
+      }),
       exec: io.service?.exec ?? exec,
       interactive: io.stdinIsTTY ?? false,
-      tokenInfo: async () => fetchTokenInfo(await tp.getToken(), io.service?.fetch),
+      tokenInfo: async () => fetchTokenInfo(await tp.getToken(), io.service?.fetch, io.service?.sleep),
       oauthLogin: (o) => oauthSignIn(cmd, o)
     };
   };
@@ -15839,7 +16030,7 @@ function buildProgram(io) {
       account: s.configuredAccount ?? "(auto)"
     };
     try {
-      const ti = await fetchTokenInfo(await s.tokenProvider.getToken(), io.service?.fetch);
+      const ti = await fetchTokenInfo(await s.tokenProvider.getToken(), io.service?.fetch, io.service?.sleep);
       info.scopes = ti.scopes;
       if (ti.email) info.email = ti.email;
       info.tokenExpiresInSeconds = ti.expiresIn;
@@ -16086,7 +16277,7 @@ function buildProgram(io) {
     await io.runMcp({
       service: (opts) => AdmobService.create({ profile, account: opts.account ?? account }, io.service)
     });
-    await new Promise((resolve) => process.stdin.on("close", resolve));
+    await new Promise((resolve2) => process.stdin.on("close", resolve2));
   });
   program2.command("audit-log").description("Show the writes applied with --yes (from the local audit log), newest first").option("--last <n>", "only the newest n entries", positiveInt).option("--failed", "only writes the API rejected").action((o, cmd) => emit(cmd, auditLogView(readAudit(dir(), o))));
   const config2 = program2.command("config").description("Read and write ~/.admobctl/config.json (no secrets)");
@@ -24812,7 +25003,7 @@ var recursive = /* @__PURE__ */ new WeakMap();
 var NONE = 0;
 var ASSUMED = 1;
 var PROVEN = 2;
-function isRecursive(inst, stack, resolve) {
+function isRecursive(inst, stack, resolve2) {
   const cached2 = recursive.get(inst);
   if (cached2 !== void 0)
     return cached2 ? PROVEN : NONE;
@@ -24822,7 +25013,7 @@ function isRecursive(inst, stack, resolve) {
   let result = NONE;
   const check3 = (child) => {
     if (result !== PROVEN && child?._zod) {
-      const answer = isRecursive(child, stack, resolve);
+      const answer = isRecursive(child, stack, resolve2);
       if (answer > result)
         result = answer;
     }
@@ -24833,7 +25024,7 @@ function isRecursive(inst, stack, resolve) {
       const desc = Object.getOwnPropertyDescriptor(sh, key);
       if (spread && !desc.enumerable)
         continue;
-      const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve) : NONE;
+      const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve2) : NONE;
       if (child > answer)
         answer = child;
     }
@@ -24897,7 +25088,7 @@ function isRecursive(inst, stack, resolve) {
       break;
     // `$ZodLazy` caches its inner on the def, so a resolved edge is followed exactly
     case "lazy": {
-      const inner = def._cachedInner ?? (resolve ? inst._zod.innerType : void 0);
+      const inner = def._cachedInner ?? (resolve2 ? inst._zod.innerType : void 0);
       merge2(inner ? isRecursive(inner, stack, false) : ASSUMED);
       break;
     }
@@ -43305,7 +43496,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+        await new Promise((resolve2) => setTimeout(resolve2, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error62) {
@@ -43322,7 +43513,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       const earlyReject = (error62) => {
         reject(error62);
       };
@@ -43400,7 +43591,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve(parseResult.data);
+            resolve2(parseResult.data);
           }
         } catch (error62) {
           reject(error62);
@@ -43661,12 +43852,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve, interval);
+      const timeoutId = setTimeout(resolve2, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -44757,7 +44948,7 @@ var McpServer = class {
     let task = createTaskResult.task;
     const pollInterval = task.pollInterval ?? 5e3;
     while (task.status !== "completed" && task.status !== "failed" && task.status !== "cancelled") {
-      await new Promise((resolve) => setTimeout(resolve, pollInterval));
+      await new Promise((resolve2) => setTimeout(resolve2, pollInterval));
       const updatedTask = await extra.taskStore.getTask(taskId);
       if (!updatedTask) {
         throw new McpError(ErrorCode.InternalError, `Task ${taskId} not found during polling`);
@@ -45421,12 +45612,12 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve) => {
+    return new Promise((resolve2) => {
       const json2 = serializeMessage(message);
       if (this._stdout.write(json2)) {
-        resolve();
+        resolve2();
       } else {
-        this._stdout.once("drain", resolve);
+        this._stdout.once("drain", resolve2);
       }
     });
   }
@@ -45456,8 +45647,9 @@ var INSTRUCTIONS = `Read-only access to the user's Google AdMob account via admo
 - For any sign-in, scope, quota project or API error, call admobctl_setup_status and run its next_command (an admobctl
   command) in the terminal exactly as given. Never improvise gcloud commands. Commands with --yes change the user's setup:
   show them first. The browser sign-in (admobctl setup login --yes) must run in the user's own terminal.
-  If a service-account credential override prevents sign-in, pass on the full manual fix; the user must unset
-  GOOGLE_APPLICATION_CREDENTIALS in their terminal before login. Do not repeatedly run login while it is set.`;
+  If GOOGLE_APPLICATION_CREDENTIALS prevents sign-in (it selects a service account, or credentials a sign-in cannot
+  replace), pass on the full manual fix; the user must unset it in their terminal before login. Do not repeatedly run
+  login while it is set.`;
 var annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 var appArg = { app: external_exports.string().optional().describe("Only this app (alias, app ID or name)") };
 var accountArg = { account: external_exports.string().optional().describe("Publisher ID (pub-\u2026). Defaults to the configured or only account.") };

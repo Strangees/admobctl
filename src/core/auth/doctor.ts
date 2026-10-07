@@ -1,7 +1,9 @@
 import { appsNeedingAction, type AppRef } from "../aliases.js";
 import type { PublisherAccount } from "../client.js";
 import { AdmobctlError, ADSENSE_SCOPE, CLOUD_PLATFORM_SCOPE, MONETIZATION_SCOPE } from "../errors.js";
+import { requestJson } from "../http.js";
 import { apisFor, featuresFlag, featuresFromScopes, mergeFeatures, type Feature } from "../setup/features.js";
+import { googleUnavailable } from "./oauth.js";
 
 export type CheckStatus = "ok" | "warn" | "fail" | "skip";
 
@@ -37,6 +39,8 @@ export interface DoctorDeps {
   features?: Feature[];
   /** State of each API the features need, in the quota project. */
   serviceStates?: () => Promise<Record<string, string>>;
+  /** When a sign-in cannot replace the credentials in use, the manual step that replaces every `setup login` fix. */
+  signInBlocked?: string;
 }
 
 const ADMOB_SCOPES = ["https://www.googleapis.com/auth/admob.readonly", "https://www.googleapis.com/auth/admob.report"];
@@ -46,15 +50,22 @@ function failed(id: Check["id"], err: unknown): Check {
   return { id, status: "fail", summary: (err as Error).message ?? String(err) };
 }
 
-/** POST so the token never appears in a URL. */
-export async function fetchTokenInfo(token: string, doFetch: typeof fetch = fetch): Promise<TokenInfo> {
-  const res = await doFetch("https://oauth2.googleapis.com/tokeninfo", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ access_token: token }).toString(),
-  });
-  if (!res.ok) throw new AdmobctlError("AUTH_TOKEN_EXPIRED", "Google rejected the access token.", { fix: "admobctl setup login --yes" });
-  const j = (await res.json()) as { scope?: string; email?: string; expires_in?: string };
+/** POST so the token never appears in a URL. Retries network errors and 429/5xx; only 400/401 means a rejected token. */
+export async function fetchTokenInfo(token: string, doFetch: typeof fetch = fetch, sleep?: (ms: number) => Promise<void>): Promise<TokenInfo> {
+  const j =
+    (await requestJson<{ scope?: string; email?: string; expires_in?: string } | undefined>(
+      "https://oauth2.googleapis.com/tokeninfo",
+      { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ access_token: token }).toString() },
+      {
+        fetch: doFetch,
+        sleep,
+        retries: 2,
+        diagnose: (status, _body, hints) =>
+          status === 400 || status === 401
+            ? new AdmobctlError("AUTH_TOKEN_EXPIRED", "Google rejected the access token.", { status, fix: "admobctl setup login --yes" })
+            : googleUnavailable("Google's token information service (oauth2.googleapis.com)", status, hints),
+      },
+    )) ?? {};
   const info: TokenInfo = { scopes: (j.scope ?? "").split(/\s+/).filter(Boolean) };
   if (j.email) info.email = j.email;
   if (j.expires_in) info.expiresIn = Number(j.expires_in);
@@ -64,7 +75,12 @@ export async function fetchTokenInfo(token: string, doFetch: typeof fetch = fetc
 /** Run the auth checks in order. Later checks are skipped when an earlier one makes them meaningless. */
 export async function runDoctor(d: DoctorDeps): Promise<Check[]> {
   const checks = await runChecks(d);
-  for (const c of checks) if (c.fix?.startsWith("admobctl ")) c.fix_command = c.fix.split("  (")[0];
+  for (const c of checks) {
+    if (d.signInBlocked && c.fix?.startsWith("admobctl setup login")) c.fix = d.signInBlocked;
+    const command = c.fix?.split("  (")[0];
+    // Only a command that runs as given: never one with a <placeholder> to fill in.
+    if (command?.startsWith("admobctl ") && !/<[^>]*>/.test(command)) c.fix_command = command;
+  }
   return checks;
 }
 
@@ -122,7 +138,8 @@ async function runChecks(d: DoctorDeps): Promise<Check[]> {
     );
     if (d.features) {
       const missing = d.features.filter((f) => !grantedFeatures.includes(f));
-      const missingCloudPlatform = !info.scopes.includes(CLOUD_PLATFORM_SCOPE);
+      // gcloud's sign-in always includes cloud-platform; an own OAuth client needs it only for a quota project's APIs.
+      const missingCloudPlatform = (d.mode === "adc" || Boolean(d.quotaProject)) && !info.scopes.includes(CLOUD_PLATFORM_SCOPE);
       const missingScopes = [...missing, ...(missingCloudPlatform ? ["cloud-platform"] : [])];
       checks.push(
         missingScopes.length

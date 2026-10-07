@@ -10,7 +10,7 @@ import { fakeFetch, fixture, jsonResponse, noSleep } from "./helpers.js";
 
 const token: TokenProvider = { mode: "adc", getToken: async () => "t", quotaProject: () => "example-project", checkCredentials: () => ({}) };
 
-function service(adsense: "ENABLED" | "DISABLED", scopes: string, profileName = "default") {
+function service(adsense: "ENABLED" | "DISABLED", scopes: string, profileName = "default", tokenProvider: TokenProvider = token) {
   const dir = mkdtempSync(join(tmpdir(), "admobctl-status-"));
   saveConfig(dir, { profiles: { [profileName]: { features: ["read", "payments"] } } });
   const f = fakeFetch({
@@ -22,7 +22,7 @@ function service(adsense: "ENABLED" | "DISABLED", scopes: string, profileName = 
     "GET /services/admob.googleapis.com": () => jsonResponse({ state: "ENABLED" }),
     "GET /services/adsense.googleapis.com": () => jsonResponse({ state: adsense }),
   });
-  return { svc: AdmobService.create({ profile: profileName }, { configDir: dir, tokenProvider: token, fetch: f.fetch, sleep: noSleep }), fetch: f.fetch, calls: f.calls };
+  return { svc: AdmobService.create({ profile: profileName }, { configDir: dir, tokenProvider, fetch: f.fetch, sleep: noSleep }), fetch: f.fetch, calls: f.calls };
 }
 
 const ALL = "https://www.googleapis.com/auth/admob.readonly https://www.googleapis.com/auth/adsense.readonly https://www.googleapis.com/auth/cloud-platform";
@@ -57,4 +57,43 @@ it("fix commands preserve a named profile instead of modifying default", async (
   const s = await setupStatus(svc, { fetch });
   expect(s.next_command).toBe("admobctl --profile work setup apis --features payments --yes");
   expect(s.checks.find((c) => c.id === "apis")!.fix_command).toBe(s.next_command);
+});
+
+it("gives the manual GOOGLE_APPLICATION_CREDENTIALS step instead of a setup login that cannot help", async () => {
+  const UNSET = "Unset GOOGLE_APPLICATION_CREDENTIALS in the terminal that runs admobctl, then run admobctl setup login --yes.";
+  const { svc, fetch } = service("ENABLED", "https://www.googleapis.com/auth/admob.readonly https://www.googleapis.com/auth/cloud-platform", "default", {
+    ...token,
+    signInBlocked: () => UNSET,
+  });
+  const s = await setupStatus(svc, { fetch });
+  expect(s.checks.find((c) => c.id === "features")).toMatchObject({ status: "warn", fix: UNSET });
+  expect(s.checks.find((c) => c.id === "features")!.fix_command).toBeUndefined();
+  expect(s.next_command).toBeUndefined();
+});
+
+it("an OAuth profile with a quota project but no cloud-platform gets the auth login that adds it", async () => {
+  const scopeError = {
+    error: {
+      code: 403,
+      message: "Request had insufficient authentication scopes.",
+      details: [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "ACCESS_TOKEN_SCOPE_INSUFFICIENT" }],
+    },
+  };
+  const dir = mkdtempSync(join(tmpdir(), "admobctl-status-"));
+  saveConfig(dir, { profiles: { default: { authMode: "oauth", features: ["read", "payments"], quotaProject: "example-project" } } });
+  const f = fakeFetch({
+    "POST /tokeninfo": () => jsonResponse({ scope: "https://www.googleapis.com/auth/admob.readonly https://www.googleapis.com/auth/adsense.readonly" }),
+    "GET /v1/accounts?": () => jsonResponse(fixture("accounts.json")),
+    "GET /apps": (c) => jsonResponse(fixture(c.url.includes("pageToken=page2") ? "apps-page2.json" : "apps-page1.json")),
+    "GET /adSources": () => jsonResponse(fixture("ad-sources.json")),
+    "GET /mediationGroups": () => jsonResponse(fixture("mediation-groups.json")),
+    "GET /services/": () => jsonResponse(scopeError, 403),
+  });
+  const tp: TokenProvider = { mode: "oauth", getToken: async () => "t", quotaProject: () => undefined, checkCredentials: () => ({}) };
+  const svc = AdmobService.create({}, { configDir: dir, tokenProvider: tp, fetch: f.fetch, sleep: noSleep });
+  const s = await setupStatus(svc, { fetch: f.fetch });
+  const apis = s.checks.find((c) => c.id === "apis")!;
+  expect(apis).toMatchObject({ status: "fail", fix_command: "admobctl auth login --payments --cloud-platform" });
+  expect(apis.summary).toMatch(/cloud-platform/);
+  expect(s.checks.find((c) => c.id === "features")).toMatchObject({ status: "warn", fix_command: "admobctl setup login --features payments --yes" });
 });

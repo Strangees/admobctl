@@ -1,7 +1,7 @@
 import { fetchTokenInfo, runDoctor, type Check } from "../auth/doctor.js";
 import type { AdmobService } from "../service.js";
 import { loadConfig } from "../config.js";
-import { profileCommand } from "./commands.js";
+import { cloudScopeFix, profileCommand } from "./commands.js";
 import { CloudClient } from "./cloud.js";
 import { apisFor, parseFeatures } from "./features.js";
 
@@ -17,7 +17,7 @@ export async function setupStatus(svc: AdmobService, deps: { fetch?: typeof fetc
   const tp = svc.tokenProvider;
   const features = parseFeatures(svc.profile.features);
   const quotaProject = svc.profile.quotaProject ?? tp.quotaProject();
-  const cloud = new CloudClient({ getToken: () => tp.getToken(), fetch: deps.fetch });
+  const cloud = new CloudClient({ getToken: () => tp.getToken(), fetch: deps.fetch, scopeFix: cloudScopeFix(tp.mode, features) });
   const checks = await runDoctor({
     mode: tp.mode,
     checkCredentials: () => tp.checkCredentials?.(),
@@ -30,6 +30,7 @@ export async function setupStatus(svc: AdmobService, deps: { fetch?: typeof fetc
     account: () => svc.account(),
     listApps: () => svc.apps(),
     betaProbes: { "ad sources": () => svc.adSources(), "mediation groups": () => svc.mediationGroups() },
+    signInBlocked: tp.signInBlocked?.(),
   });
   const configuredDefault = loadConfig(svc.configDir).defaultProfile;
   for (const check of checks) {

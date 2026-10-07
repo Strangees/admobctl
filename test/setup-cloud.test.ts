@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { AdmobctlError } from "../src/core/errors.js";
 import { CloudClient } from "../src/core/setup/cloud.js";
 import { fakeFetch, jsonResponse, noSleep } from "./helpers.js";
 
-function client(routes: Parameters<typeof fakeFetch>[0]) {
+function client(routes: Parameters<typeof fakeFetch>[0], scopeFix?: string) {
   const f = fakeFetch(routes);
   let t = 0;
-  const c = new CloudClient({ getToken: async () => "tok", fetch: f.fetch, sleep: async (ms) => void (t += ms), now: () => t });
+  const c = new CloudClient({ getToken: async () => "tok", fetch: f.fetch, sleep: async (ms) => void (t += ms), now: () => t, scopeFix });
   return { c, calls: f.calls };
 }
 
@@ -83,5 +84,40 @@ describe("CloudClient", () => {
       "GET /v1/operations/x": () => jsonResponse({ name: "operations/x", done: false }),
     });
     await expect(c.enableServices("example-a", ["x.googleapis.com"])).rejects.toMatchObject({ code: "API_ERROR", fix: "admobctl setup status" });
+  });
+});
+
+describe("CloudClient errors", () => {
+  const scopeBody = {
+    error: {
+      code: 403,
+      message: "Request had insufficient authentication scopes.",
+      status: "PERMISSION_DENIED",
+      details: [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "ACCESS_TOKEN_SCOPE_INSUFFICIENT", metadata: { service: "cloudresourcemanager.googleapis.com" } }],
+    },
+  };
+  const deniedBody = {
+    error: { code: 403, message: "Permission denied to enable service [adsense.googleapis.com]", status: "PERMISSION_DENIED" },
+  };
+
+  it("says a scope error is the missing cloud-platform scope, not the AdMob scope", async () => {
+    const { c } = client({ "GET /v3/projects:search": () => jsonResponse(scopeBody, 403) });
+    const err = (await c.listProjects().catch((e: unknown) => e)) as AdmobctlError;
+    expect(err).toMatchObject({ code: "AUTH_SCOPE_MISSING", fix: "admobctl setup login --yes" });
+    expect(err.message).toMatch(/cloud-platform/);
+    expect(err.message).not.toMatch(/AdMob/);
+  });
+
+  it("uses the sign-in fix it was given for a missing cloud-platform scope", async () => {
+    const { c } = client({ "GET /services/admob.googleapis.com": () => jsonResponse(scopeBody, 403) }, "admobctl auth login --cloud-platform");
+    await expect(c.serviceStates("example-a", ["admob.googleapis.com"])).rejects.toMatchObject({ fix: "admobctl auth login --cloud-platform" });
+  });
+
+  it("says a 403 is about the Google Cloud project, with the project list fix", async () => {
+    const { c } = client({ "POST /services:batchEnable": () => jsonResponse(deniedBody, 403) });
+    const err = (await c.enableServices("example-a", ["adsense.googleapis.com"]).catch((e: unknown) => e)) as AdmobctlError;
+    expect(err).toMatchObject({ code: "PERMISSION_DENIED", fix: expect.stringMatching(/^admobctl setup project list/) });
+    expect(err.message).toContain("Permission denied to enable service [adsense.googleapis.com]");
+    expect(`${err.message} ${err.fix}`).not.toMatch(/AdMob account/);
   });
 });

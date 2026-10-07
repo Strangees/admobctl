@@ -206,6 +206,20 @@ describe("requestJson", () => {
   });
 });
 
+describe("requestJson diagnose", () => {
+  it("turns a failed response into the caller's own error, with the body and Retry-After", async () => {
+    const { fetch, sleep } = sequence([jsonResponse({ error: "invalid_grant" }, 400)]);
+    const seen: unknown[] = [];
+    const err = await requestJson("https://oauth2.googleapis.com/token", { method: "POST" }, {
+      fetch,
+      sleep,
+      diagnose: (status, body, hints) => (seen.push([status, body, hints]), new AdmobctlError("AUTH_TOKEN_EXPIRED", "custom")),
+    }).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: "AUTH_TOKEN_EXPIRED", message: "custom" });
+    expect(seen).toEqual([[400, { error: "invalid_grant" }, { retryAfterMs: undefined }]]);
+  });
+});
+
 describe("requestJson beforeAttempt", () => {
   it("runs before every attempt, retries included, so a rate limiter sees each request", async () => {
     const s = sequence([jsonResponse({}, 503), jsonResponse({}, 429), jsonResponse({ ok: true })]);

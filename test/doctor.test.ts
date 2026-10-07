@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { runDoctor, type DoctorDeps } from "../src/core/auth/doctor.js";
+import { fetchTokenInfo, runDoctor, type DoctorDeps } from "../src/core/auth/doctor.js";
 import { AdmobctlError, CLOUD_PLATFORM_SCOPE } from "../src/core/errors.js";
-import { fixture } from "./helpers.js";
+import { fakeFetch, fixture, jsonResponse, noSleep } from "./helpers.js";
 
 const okDeps = (): DoctorDeps => ({
   mode: "adc",
@@ -149,6 +149,11 @@ describe("runDoctor setup checks", () => {
     expect(checks.features!.fix).toBe("admobctl setup login --features payments --yes");
   });
 
+  it("does not ask an OAuth sign-in for cloud-platform when no quota project needs it", async () => {
+    const checks = byId(await runDoctor({ ...okDeps(), mode: "oauth", quotaProject: undefined, features: ["read", "payments"], tokenInfo: async () => ({ scopes: [READ, ADSENSE] }) }));
+    expect(checks.features).toMatchObject({ status: "ok" });
+  });
+
   it("does not claim OAuth client APIs are enabled when Service Usage state is unavailable", async () => {
     const checks = byId(await runDoctor({ ...okDeps(), mode: "oauth", features: ["read", "payments"] }));
     expect(checks.apis!.status).toBe("skip");
@@ -169,6 +174,23 @@ describe("runDoctor setup checks", () => {
     expect(checks.credentials!.fix_command).toBeUndefined();
   });
 
+  it("gives the manual step instead of setup login when a sign-in cannot replace the credentials in use", async () => {
+    const UNSET = "Unset GOOGLE_APPLICATION_CREDENTIALS in the terminal that runs admobctl, then run admobctl setup login --yes.";
+    const checks = byId(
+      await runDoctor({
+        ...okDeps(),
+        signInBlocked: UNSET,
+        features: ["read", "payments"],
+        tokenInfo: async () => ({ scopes: ["openid"] }),
+        listAccounts: async () => Promise.reject(new AdmobctlError("AUTH_SCOPE_MISSING", "no AdMob scope", { fix: "admobctl setup login --yes" })),
+      }),
+    );
+    for (const id of ["scope", "features", "api"] as const) {
+      expect(checks[id]!.fix, id).toBe(UNSET);
+      expect(checks[id]!.fix_command, id).toBeUndefined();
+    }
+  });
+
   it("fails when a needed API is disabled, with the setup apis fix", async () => {
     const checks = byId(
       await runDoctor({
@@ -182,11 +204,50 @@ describe("runDoctor setup checks", () => {
     expect(checks.apis!.fix_command).toBe("admobctl setup apis --features payments --yes");
   });
 
+  it("never turns a fix with a <placeholder> into a fix_command", async () => {
+    const checks = byId(
+      await runDoctor({ ...okDeps(), account: async () => Promise.reject(new AdmobctlError("USAGE", "pick one", { fix: "admobctl config set account <pub-id>" })) }),
+    );
+    expect(checks.account!.fix).toBe("admobctl config set account <pub-id>");
+    expect(checks.account!.fix_command).toBeUndefined();
+  });
+
   it("only sets fix_command for admobctl commands", async () => {
     const checks = await runDoctor({ ...okDeps(), quotaProject: undefined, listApps: async () => [{ alias: "a", appId: "a~1", name: "A", platform: "IOS", resource: "r", approval: "ACTION_REQUIRED" }] as never });
     const byIdx = byId(checks);
     expect(byIdx["quota-project"]!.fix_command).toBe("admobctl setup project list");
     expect(byIdx.apps!.fix).toBeTruthy();
     expect(byIdx.apps!.fix_command).toBeUndefined();
+  });
+});
+
+describe("fetchTokenInfo", () => {
+  const READ = "https://www.googleapis.com/auth/admob.readonly";
+
+  it("retries a transient 5xx", async () => {
+    const f = fakeFetch({ "POST /tokeninfo": () => (f.calls.length === 1 ? jsonResponse({}, 503) : jsonResponse({ scope: READ, expires_in: "3000" })) });
+    expect(await fetchTokenInfo("t", f.fetch, noSleep)).toEqual({ scopes: [READ], expiresIn: 3000 });
+    expect(f.calls).toHaveLength(2);
+  });
+
+  it("reports a tokeninfo outage as such, not as a rejected token", async () => {
+    const f = fakeFetch({ "POST /tokeninfo": () => jsonResponse({}, 500) });
+    const err = await fetchTokenInfo("t", f.fetch, noSleep).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: "API_ERROR", status: 500 });
+    expect((err as Error).message).not.toMatch(/rejected/);
+  });
+
+  it("is a rejected token only on 400/401", async () => {
+    for (const status of [400, 401]) {
+      const f = fakeFetch({ "POST /tokeninfo": () => jsonResponse({ error_description: "Invalid Value" }, status) });
+      await expect(fetchTokenInfo("t", f.fetch, noSleep)).rejects.toMatchObject({ code: "AUTH_TOKEN_EXPIRED", fix: "admobctl setup login --yes" });
+    }
+  });
+
+  it("turns a network failure into an AdmobctlError", async () => {
+    const down = (async () => {
+      throw new TypeError("fetch failed");
+    }) as unknown as typeof fetch;
+    await expect(fetchTokenInfo("t", down, noSleep)).rejects.toBeInstanceOf(AdmobctlError);
   });
 });
