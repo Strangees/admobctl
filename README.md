@@ -121,11 +121,11 @@ Global flags:
 
 Network and mediation reports take `--sort <field>[:asc|desc]` (any dimension or metric in the report) and `--compare previous`, which adds each row's value in the equal-length period just before and the change.
 
-Reports, `insights` and `analyze consent|waterfall` take `--currency USD` (any ISO 4217 code) to convert earnings at
-Google's daily average rate; the default is the account currency. Combinations the AdMob API rejects (two time
-dimensions, `ad-type` with requests, match rate or RPM) fail before any API call, and default metrics that do not
-fit the chosen dimensions are left out with a note. Reports also note when they include data that is still arriving
-(today's AdMob data; the last day of third-party mediation data).
+Network and mediation reports, `insights` and `analyze consent|waterfall|geo|trend` take `--currency USD` (any ISO 4217
+code) to convert earnings at Google's daily average rate; the default is the account currency. Combinations the AdMob
+API rejects (two time dimensions, `ad-type` with requests, match rate or RPM) fail before any API call, and default
+metrics that do not fit the chosen dimensions are left out with a note. Reports also note when they include data that
+is still arriving (today's AdMob data; the last day of third-party mediation data).
 
 Dates are `YYYY-MM` (whole month) or `YYYY-MM-DD`. Dimensions and metrics accept friendly names
 (`app`, `ad-unit`, `country`, `format`, `platform`, `date`, `month`; `earnings`, `requests`, `impressions`,
@@ -270,7 +270,9 @@ admobctl config set quotaProject my-project
 admobctl config set websites.game-android example.com   # developer website for the app-ads.txt check (Android)
 admobctl config set aliases.game ca-app-pub-XXXXXXXXXXXXXXXX~NNNNNNNNNN
 admobctl config set finance.revenueAccount 3120
-admobctl config get
+admobctl config get                      # the resolved profile; `config get <key>` shows one key
+admobctl config unset website
+admobctl config path                     # where the file is (ADMOBCTL_HOME moves it)
 ```
 
 ## Data and privacy
@@ -311,10 +313,34 @@ the version and merge to `main`:
 npm version <patch|minor|major> --no-git-tag-version   # package.json + lockfile
 # set the same version in plugin/.claude-plugin/plugin.json and plugin/.codex-plugin/plugin.json
 npm run check                                          # rebuilds the bundle with the new version
+npm run eval:mocks                                     # the admobctl_finance_export mock embeds the version
 ```
+
+Commit the bundle and `plugin/evals/mocks/` with the version bump; CI fails when either is stale.
 
 When CI passes on `main`, it tags `v<version>` and publishes a GitHub release with the bundle and its checksum.
 A push that does not change the version releases nothing.
+
+Dependabot ([.github/dependabot.yml](.github/dependabot.yml)) opens weekly grouped updates. The `dev-tools` group
+(TypeScript, vitest, the Node.js types) passes CI as it is. The `bundled` group holds esbuild and the packages it builds
+into the bundle (commander, zod, the MCP SDK, ajv). Dependabot does not rebuild the bundle, so when it changes, CI
+fails "Committed bundle is up to date" until you finish the pull request:
+
+```bash
+gh pr checkout <number>
+npm ci && npm run check                       # rebuilds plugin/dist/admobctl.mjs
+npm run eval:mocks                            # in case the tool schemas changed
+git add plugin/dist plugin/evals/mocks && git commit -m "Rebuild the bundle" && git push
+```
+
+The new packages reach users only with a release, so bump the version as well when they should get them (a security
+fix, say).
+
+`npm run typecheck` also checks `src/` against the types of Node.js 20, the oldest version admobctl runs on
+([tsconfig.node20.json](tsconfig.node20.json)), so code that needs a newer Node.js fails it. Those types are
+`@types/node@20` installed as `@types-node20/node`, because vitest needs `@types/node` 22 or later; keep that alias on
+the 20 line (Dependabot skips its major updates). On Node.js 20, where vitest does not run, CI runs the bundle instead:
+`--help` for every command (`scripts/smoke-bundle.mjs`) and the MCP tool list.
 
 ## License
 

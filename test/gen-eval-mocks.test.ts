@@ -2,16 +2,58 @@
  * Regenerates plugin/evals/mocks/admobctl/*.md (canned MCP tool results for `claude plugin eval`)
  * by running the real tools against synthetic fixtures. Skipped unless GEN_MOCKS=1:
  *   npm run eval:mocks
+ * The check that every MCP tool has a mock always runs.
  */
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { it } from "vitest";
+import { expect, it } from "vitest";
+import { GOOGLE_CERT_ID } from "../src/core/app-ads.js";
 import { AdmobService } from "../src/core/service.js";
-import { createMcpServer } from "../src/mcp/server.js";
+import { createMcpServer, type McpDeps } from "../src/mcp/server.js";
 import { fakeFetch, fixture, jsonResponse, noSleep, synthReport, type RecordedCall } from "./helpers.js";
+
+const mocksDir = new URL("../plugin/evals/mocks/admobctl/", import.meta.url);
+
+/** One mocked call per MCP tool; its result becomes plugin/evals/mocks/admobctl/<tool>.md. */
+const calls: Record<string, Record<string, unknown>> = {
+  admobctl_list_accounts: {},
+  admobctl_list_apps: {},
+  admobctl_list_ad_units: {},
+  admobctl_check_app_ads: {},
+  admobctl_network_report: { from: "2026-09", by: ["app"] },
+  admobctl_mediation_report: { from: "2026-09", by: ["app"] },
+  admobctl_finance_month: { month: "2026-09", include_journal: true },
+  admobctl_finance_range: { from: "2026-07", to: "2026-09" },
+  admobctl_finance_export: { month: "2026-09" },
+  admobctl_finance_forecast: {},
+  admobctl_finance_balance: {},
+  admobctl_setup_status: {},
+  admobctl_insights: { last_days: 30, by: "ad-unit" },
+  admobctl_check: {},
+  admobctl_lint: {},
+  admobctl_analyze_versions: { by: "sdk", last_days: 30 },
+  admobctl_analyze_consent: { last_days: 30 },
+  admobctl_analyze_waterfall: { last_days: 30 },
+  admobctl_analyze_trend: { last_days: 30 },
+  admobctl_analyze_geo: { last_days: 30 },
+  admobctl_campaign_report: { from: "2026-09", by: ["campaign"] },
+  admobctl_list_ad_sources: {},
+  admobctl_list_adapters: { ad_source: "Example Bidder" },
+  admobctl_list_mediation_groups: {},
+  admobctl_list_ad_unit_mappings: { ad_unit: "Quiz banner" },
+};
+
+async function connect(service: McpDeps["service"]): Promise<Client> {
+  const server = createMcpServer({ service });
+  const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverT);
+  const client = new Client({ name: "gen-eval-mocks", version: "0" });
+  await client.connect(clientT);
+  return client;
+}
 
 type Unit = [id: string, label: string, earnings: number, requests: number, matched: number, impressions: number, clicks: number];
 const unitId = (n: number) => `ca-app-pub-0000000000000001/900000000${n}`;
@@ -87,6 +129,9 @@ it.skipIf(!process.env.GEN_MOCKS)("generate eval mocks", async () => {
   const f = fakeFetch({
     "GET /v1/accounts?": () => jsonResponse(fixture("accounts.json")),
     "GET /apps": (c) => jsonResponse(fixture(c.url.includes("pageToken=page2") ? "apps-page2.json" : "apps-page1.json")),
+    "GET itunes.apple.com/lookup": () => jsonResponse(fixture("itunes-lookup.json")),
+    "GET https://example.com/app-ads.txt": () =>
+      new Response(`google.com, pub-0000000000000001, DIRECT, ${GOOGLE_CERT_ID}\n`, { headers: { "content-type": "text/plain" } }),
     "GET /v2/accounts/": () => jsonResponse(fixture("adsense-payments.json")),
     "POST /tokeninfo": () =>
       jsonResponse({ scope: "https://www.googleapis.com/auth/admob.readonly https://www.googleapis.com/auth/cloud-platform", expires_in: "3000" }),
@@ -112,48 +157,31 @@ it.skipIf(!process.env.GEN_MOCKS)("generate eval mocks", async () => {
     },
   });
   const dir = mkdtempSync(join(tmpdir(), "admobctl-mocks-"));
-  const server = createMcpServer({
-    service: (o) =>
-      AdmobService.create(o, {
-        configDir: dir,
-        fetch: f.fetch,
-        sleep: noSleep,
-        tokenProvider: { mode: "adc", getToken: async () => "t", quotaProject: () => "q" },
-        now: () => new Date("2026-10-02T08:00:00Z"),
-      }),
-  });
-  const [clientT, serverT] = InMemoryTransport.createLinkedPair();
-  await server.connect(serverT);
-  const client = new Client({ name: "gen-eval-mocks", version: "0" });
-  await client.connect(clientT);
-  const calls: Record<string, Record<string, unknown>> = {
-    admobctl_list_accounts: {},
-    admobctl_list_apps: {},
-    admobctl_list_ad_units: {},
-    admobctl_network_report: { from: "2026-09", by: ["app"] },
-    admobctl_mediation_report: { from: "2026-09", by: ["app"] },
-    admobctl_finance_month: { month: "2026-09", include_journal: true },
-    admobctl_finance_range: { from: "2026-07", to: "2026-09" },
-    admobctl_finance_export: { month: "2026-09" },
-    admobctl_finance_forecast: {},
-    admobctl_finance_balance: {},
-    admobctl_setup_status: {},
-    admobctl_insights: { last_days: 30, by: "ad-unit" },
-    admobctl_check: {},
-    admobctl_lint: {},
-    admobctl_analyze_versions: { by: "sdk", last_days: 30 },
-    admobctl_analyze_consent: { last_days: 30 },
-    admobctl_analyze_waterfall: { last_days: 30 },
-    admobctl_analyze_trend: { last_days: 30 },
-    admobctl_analyze_geo: { last_days: 30 },
-    admobctl_campaign_report: { from: "2026-09", by: ["campaign"] },
-    admobctl_list_ad_sources: {},
-    admobctl_list_adapters: { ad_source: "Example Bidder" },
-    admobctl_list_mediation_groups: {},
-    admobctl_list_ad_unit_mappings: { ad_unit: "Quiz banner" },
-  };
+  const client = await connect((o) =>
+    AdmobService.create(o, {
+      configDir: dir,
+      fetch: f.fetch,
+      sleep: noSleep,
+      tokenProvider: { mode: "adc", getToken: async () => "t", quotaProject: () => "q" },
+      now: () => new Date("2026-10-02T08:00:00Z"),
+    }),
+  );
+  // Start from an empty set, so a mock for a tool that no longer exists shows up as deleted.
+  for (const file of readdirSync(mocksDir).filter((f) => f.endsWith(".md"))) rmSync(new URL(file, mocksDir));
   for (const [name, args] of Object.entries(calls)) {
-    const r = (await client.callTool({ name, arguments: args })) as { content: Array<{ text: string }> };
-    writeFileSync(new URL(`../plugin/evals/mocks/admobctl/${name}.md`, import.meta.url), `${r.content[0]!.text}\n`);
+    const r = (await client.callTool({ name, arguments: args })) as { content: Array<{ text: string }>; isError?: boolean };
+    if (r.isError) throw new Error(`${name}: ${r.content[0]?.text}`);
+    writeFileSync(new URL(`${name}.md`, mocksDir), `${r.content[0]!.text}\n`);
   }
+});
+
+// After the generator, so with GEN_MOCKS=1 it checks the files just written.
+it("has a mocked call, and a committed mock, for every MCP tool", async () => {
+  const client = await connect(() => {
+    throw new Error("listing tools needs no service");
+  });
+  const tools = (await client.listTools()).tools.map((t) => t.name).sort();
+  expect(Object.keys(calls).sort()).toEqual(tools);
+  const committed = readdirSync(mocksDir).filter((f) => f.endsWith(".md")).map((f) => f.slice(0, -3)).sort();
+  expect(committed).toEqual(tools);
 });

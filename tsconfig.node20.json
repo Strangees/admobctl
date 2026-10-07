@@ -1,0 +1,9 @@
+{
+  // src/ is what the bundle runs, and the bundle supports Node.js 20 (engines: >=20), so src/ is also checked against
+  // Node 20's types: @types-node20/node is @types/node@20 under another name, and making its folder the only type root
+  // sends every reference to "node" there. The main tsconfig keeps current types for tests and tooling (vitest needs
+  // @types/node 22+).
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "typeRoots": ["./node_modules/@types-node20"], "types": ["node"] },
+  "include": ["src"]
+}

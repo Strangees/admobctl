@@ -17,7 +17,8 @@ npm run check   # typecheck + bundle + tests
 ## Code layout
 
 - `src/core/` holds all business logic. `src/cli/` (the commands) and `src/mcp/` (the MCP server) both call
-  `AdmobService` in `src/core/service.ts` and never import each other; `test/layering.test.ts` enforces this.
+  `AdmobService` in `src/core/service.ts` and never import each other, not even through another module. `src/core/`
+  and `src/output/` import neither. `test/layering.test.ts` enforces this.
 - Money is integer micros end to end. Round only in output (`formatMicros`, `microsToAmount`).
 - stdout is for command output and the MCP protocol. Log through `src/core/log.ts`, which writes to stderr.
 - Every API or auth failure becomes an `AdmobctlError` with a `fix` command the user can run (`src/core/errors.ts`).
@@ -42,7 +43,7 @@ into `test/fixtures/private/`, which is gitignored.
    plugin straight from git. `npm run check` rebuilds it, and CI fails when the committed bundle does not match the
    source.
 3. If you changed what an MCP tool returns, run `npm run eval:mocks` and commit `plugin/evals/mocks/`; CI checks these
-   too.
+   too. A new MCP tool also needs a mocked call in `test/gen-eval-mocks.test.ts` (a test fails until it has one).
 4. Update the README, `plugin/README.md` and `plugin/skills/` when a command, flag or MCP tool changes.
 
 Leave the version number alone: the maintainer bumps it when releasing (README, "CI and releases").
