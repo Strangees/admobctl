@@ -952,7 +952,7 @@
     {
       "name": "admobctl_insights",
       "title": "AdMob monetization insights",
-      "description": "Analyze monetization: earnings, eCPM, request RPM, match (fill) rate, show rate and CTR per app/ad-unit/country/format/platform, compared with the previous period. Returns highlights (top and bottom earners, low fill, low show rate, big swings) and a plain-language summary with the numbers behind each claim.",
+      "description": "Analyze monetization: earnings, eCPM, request RPM, match (fill) rate, show rate and CTR per app/ad-unit/country/format/platform, compared with the previous period. Returns highlights (top and bottom earners, low fill, low show rate, big swings, new rows, rows that started earning), a plain-language summary with the numbers behind each claim, and notices. Complete days only: a period that reaches today ends at yesterday.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1041,6 +1041,12 @@
             "items": {
               "type": "string"
             }
+          },
+          "notices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -1051,7 +1057,8 @@
           "totals",
           "rows",
           "highlights",
-          "summary"
+          "summary",
+          "notices"
         ],
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": {}
@@ -2113,7 +2120,7 @@
     {
       "name": "admobctl_analyze_trend",
       "title": "AdMob daily trend",
-      "description": "Daily earnings as a series, to answer \"when did it change?\": per series the day earnings moved to a new level (`shift`: date, before and after per day, change), the average per weekday, and the first day with traffic. One series for the whole account or one app, or split by app, format, country or platform (the ten biggest). Days without traffic before a series starts are left out of the averages. Set include_days for the day-by-day rows. Earnings are estimates.",
+      "description": "Daily earnings as a series, to answer \"when did it change?\": per series the day earnings moved to a new level (`shift`: date, before and after per day, change; no change when it started from zero), the average per weekday, and the first day with traffic. One series for the whole account or one app, or split by app, format, country or platform (the ten biggest). Days without traffic before a series starts are left out of the averages. Set include_days for the day-by-day rows. Earnings are estimates.",
       "inputSchema": {
         "type": "object",
         "properties": {

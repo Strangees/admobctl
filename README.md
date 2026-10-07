@@ -125,7 +125,8 @@ Reports, `insights` and `analyze consent|waterfall` take `--currency USD` (any I
 Google's daily average rate; the default is the account currency. Combinations the AdMob API rejects (two time
 dimensions, `ad-type` with requests, match rate or RPM) fail before any API call, and default metrics that do not
 fit the chosen dimensions are left out with a note. Reports also note when they include data that is still arriving
-(today's AdMob data; the last day of third-party mediation data).
+(today's AdMob data; the last day of third-party mediation data). `insights`, `lint` and `analyze` use complete days
+only: a `--to` of today or later ends the range at yesterday, with a note.
 
 Dates are `YYYY-MM` (whole month) or `YYYY-MM-DD`. Dimensions and metrics accept friendly names
 (`app`, `ad-unit`, `country`, `format`, `platform`, `date`, `month`; `earnings`, `requests`, `impressions`,
@@ -141,7 +142,7 @@ All earnings are **estimates**. Reconcile them against AdMob Payments, because t
 
 ### Insights
 
-`insights` compares a period with the equally long period before it, by app, ad unit, country, format or platform. It reports earnings, share, eCPM, request RPM, match rate, show rate and CTR. Highlights cover top and bottom earners, high requests with low fill, low show rate, and swings above `--swing` percent, and a plain-language summary gives the numbers behind each claim.
+`insights` compares a period with the equally long period before it, by app, ad unit, country, format or platform. It reports earnings, share, eCPM, request RPM, match rate, show rate and CTR. Highlights cover top and bottom earners, high requests with low fill, low show rate, swings above `--swing` percent, and new rows or rows that started earning; a plain-language summary gives the numbers behind each claim. A period that reaches today ends at yesterday, and the previous period is just as long, so a month in progress is compared with as many days before it.
 
 ### Check
 
@@ -165,7 +166,7 @@ An app that stops sending ad requests is a breach too. Apps with fewer than 1000
 - `analyze consent` breaks traffic and earnings down per app and serving restriction (non-personalized, limited ads, RDP…) and compares each restricted mode's eCPM with the same app's unrestricted traffic, because apps differ too much in eCPM for an account-wide comparison to mean anything. Rows with too little traffic on either side are marked as thin data. The data starts 2021-03-13.
 - `analyze waterfall` lists each mediation group's lines (ad source instances) by observed eCPM, with their share of the group's earnings, and flags idle lines (requests, no impressions) and lines that rarely fill.
 - `analyze geo` breaks earnings, fill and eCPM down per country and ad format, with each cell's eCPM relative to its format across all countries. It flags a country that brings half or more of the earnings, big cells that fill far worse than the same format elsewhere, and small cells that pay 1.5× their format's average or more. Cells with fewer than 1,000 requests (`--min-requests`) are marked as thin data.
-- `analyze trend` turns earnings into a daily series to answer "when did it change?". It reports the day daily earnings moved to a new level (when one split explains at least half of the variation with a change of 20% or more), the average per weekday, and the first day with traffic, so days before an app went live do not pull its averages down. `--by app|format|country|platform` gives one series each (the ten biggest); `--app` narrows it.
+- `analyze trend` turns earnings into a daily series to answer "when did it change?". It reports the day daily earnings moved to a new level (in a series of two weeks or more, when one split explains at least half of the variation with a change of 20% or more) or started from zero, the average per weekday, and the first day with traffic, so days before an app went live do not pull its averages down. `--by app|format|country|platform` gives one series each (the ten biggest); `--app` narrows it.
 
 `apps list` shows each app's approval state, and `auth doctor` warns about apps marked *action required* in AdMob.
 

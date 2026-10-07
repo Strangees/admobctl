@@ -12136,6 +12136,244 @@ function journalRows(m, finance) {
   return rows.map((r) => Object.fromEntries(JOURNAL_COLUMNS.map((c) => [c, r[c]])));
 }
 
+// src/core/report.ts
+var DIMENSIONS = {
+  network: [
+    "DATE",
+    "MONTH",
+    "WEEK",
+    "AD_UNIT",
+    "APP",
+    "AD_TYPE",
+    "COUNTRY",
+    "FORMAT",
+    "PLATFORM",
+    "MOBILE_OS_VERSION",
+    "GMA_SDK_VERSION",
+    "APP_VERSION_NAME",
+    "SERVING_RESTRICTION"
+  ],
+  mediation: [
+    "DATE",
+    "MONTH",
+    "WEEK",
+    "AD_SOURCE",
+    "AD_SOURCE_INSTANCE",
+    "AD_UNIT",
+    "APP",
+    "MEDIATION_GROUP",
+    "COUNTRY",
+    "FORMAT",
+    "PLATFORM",
+    "MOBILE_OS_VERSION",
+    "GMA_SDK_VERSION",
+    "APP_VERSION_NAME",
+    "SERVING_RESTRICTION"
+  ],
+  // v1beta campaignReport: AdMob app-promotion campaigns (the publisher as advertiser).
+  campaign: [
+    "DATE",
+    "CAMPAIGN_ID",
+    "CAMPAIGN_NAME",
+    "AD_ID",
+    "AD_NAME",
+    "PLACEMENT_ID",
+    "PLACEMENT_NAME",
+    "PLACEMENT_PLATFORM",
+    "COUNTRY",
+    "FORMAT"
+  ]
+};
+var METRICS = {
+  network: [
+    "AD_REQUESTS",
+    "CLICKS",
+    "ESTIMATED_EARNINGS",
+    "IMPRESSIONS",
+    "IMPRESSION_CTR",
+    "IMPRESSION_RPM",
+    "MATCHED_REQUESTS",
+    "MATCH_RATE",
+    "SHOW_RATE"
+  ],
+  mediation: [
+    "AD_REQUESTS",
+    "CLICKS",
+    "ESTIMATED_EARNINGS",
+    "IMPRESSIONS",
+    "IMPRESSION_CTR",
+    "MATCHED_REQUESTS",
+    "MATCH_RATE",
+    "OBSERVED_ECPM"
+  ],
+  campaign: ["IMPRESSIONS", "CLICKS", "CLICK_THROUGH_RATE", "INSTALLS", "ESTIMATED_COST", "AVERAGE_CPI", "INTERACTIONS"]
+};
+var MONEY_METRICS = /* @__PURE__ */ new Set(["ESTIMATED_EARNINGS", "IMPRESSION_RPM", "OBSERVED_ECPM", "ESTIMATED_COST", "AVERAGE_CPI"]);
+var METRIC_ALIASES = {
+  EARNINGS: "ESTIMATED_EARNINGS",
+  REVENUE: "ESTIMATED_EARNINGS",
+  REQUESTS: "AD_REQUESTS",
+  MATCHED: "MATCHED_REQUESTS",
+  CTR: "IMPRESSION_CTR",
+  RPM: "IMPRESSION_RPM",
+  ECPM: "OBSERVED_ECPM",
+  COST: "ESTIMATED_COST",
+  CPI: "AVERAGE_CPI"
+};
+var KIND_METRIC_ALIASES = {
+  campaign: { CTR: "CLICK_THROUGH_RATE" }
+};
+var DIMENSION_ALIASES = {
+  UNIT: "AD_UNIT",
+  SOURCE: "AD_SOURCE",
+  OS_VERSION: "MOBILE_OS_VERSION",
+  SDK_VERSION: "GMA_SDK_VERSION",
+  APP_VERSION: "APP_VERSION_NAME",
+  CAMPAIGN: "CAMPAIGN_NAME",
+  AD: "AD_NAME",
+  PLACEMENT: "PLACEMENT_NAME"
+};
+function canonical(name) {
+  return name.trim().toUpperCase().replace(/-/g, "_");
+}
+function friendlyName(apiName) {
+  return apiName.toLowerCase().replace(/_/g, "-");
+}
+function friendlyMetric(apiName) {
+  const alias = Object.keys(METRIC_ALIASES).find((k) => METRIC_ALIASES[k] === apiName);
+  return friendlyName(alias ?? apiName);
+}
+function normalizeDimension(name, kind) {
+  const c = canonical(name);
+  const resolved = DIMENSION_ALIASES[c] ?? c;
+  if (!DIMENSIONS[kind].includes(resolved)) {
+    throw usageError(
+      `Dimension "${name}" is not supported by ${kind} reports. Valid: ${DIMENSIONS[kind].map(friendlyName).join(", ")}`
+    );
+  }
+  return resolved;
+}
+function normalizeMetric(name, kind) {
+  const c = canonical(name);
+  const resolved = KIND_METRIC_ALIASES[kind]?.[c] ?? METRIC_ALIASES[c] ?? c;
+  if (!METRICS[kind].includes(resolved)) {
+    throw usageError(
+      `Metric "${name}" is not supported by ${kind} reports. Valid: ${METRICS[kind].map(friendlyName).join(", ")}`
+    );
+  }
+  return resolved;
+}
+var API_MAX_ROWS = 1e5;
+var hitRowCap = (report) => report.rows.length >= API_MAX_ROWS;
+function rowCapNotices(...reports) {
+  return reports.some(hitRowCap) ? [`The AdMob API returned its maximum of ${API_MAX_ROWS} rows, so some rows are probably missing and totals are too low. Use a shorter range.`] : [];
+}
+var TIME_DIMENSIONS = ["DATE", "WEEK", "MONTH"];
+var INCOMPATIBLE = {
+  AD_TYPE: ["AD_REQUESTS", "MATCH_RATE", "IMPRESSION_RPM"]
+};
+var DISCOURAGED = {
+  MOBILE_OS_VERSION: ["ESTIMATED_EARNINGS", "OBSERVED_ECPM", "IMPRESSION_RPM"],
+  GMA_SDK_VERSION: ["ESTIMATED_EARNINGS", "OBSERVED_ECPM", "IMPRESSION_RPM"],
+  APP_VERSION_NAME: ["ESTIMATED_EARNINGS", "OBSERVED_ECPM", "IMPRESSION_RPM"]
+};
+function compatibleMetrics(_kind, dimensions, metrics) {
+  const excluded = new Set(dimensions.flatMap((d) => [...INCOMPATIBLE[d] ?? [], ...DISCOURAGED[d] ?? []]));
+  return { kept: metrics.filter((m) => !excluded.has(m)), dropped: metrics.filter((m) => excluded.has(m)) };
+}
+function checkCombination(dimensions, metrics) {
+  const timeDims = dimensions.filter((d) => TIME_DIMENSIONS.includes(d));
+  if (timeDims.length > 1) {
+    throw usageError(`A report can use only one time dimension (date, week or month), got ${timeDims.map(friendlyName).join(", ")}.`);
+  }
+  for (const d of dimensions) {
+    const bad = metrics.filter((m) => INCOMPATIBLE[d]?.includes(m));
+    if (bad.length) {
+      throw usageError(`${friendlyName(d)} cannot be combined with ${bad.map(friendlyMetric).join(", ")} (an AdMob API restriction). Drop one of them.`);
+    }
+  }
+}
+function normalizeCurrency(code2) {
+  const c = code2.trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(c)) throw usageError(`Currency must be an ISO 4217 code like USD or EUR, got "${code2}"`);
+  return c;
+}
+function parseSort(input2, kind, dimensions, metrics) {
+  const [field = "", dir, ...rest] = input2.split(":").map((p) => p.trim());
+  const order = dir?.toLowerCase();
+  if (rest.length || order !== void 0 && order !== "asc" && order !== "desc") {
+    throw usageError(`--sort expects <field>[:asc|desc] with asc or desc, got "${input2}"`);
+  }
+  const named = (resolve) => {
+    try {
+      return resolve();
+    } catch {
+      return void 0;
+    }
+  };
+  const dimension = named(() => normalizeDimension(field, kind));
+  if (dimension && dimensions.includes(dimension)) return { dimension, order: order === "desc" ? "DESCENDING" : "ASCENDING" };
+  const metric2 = named(() => normalizeMetric(field, kind));
+  if (metric2 && metrics.includes(metric2)) return { metric: metric2, order: order === "asc" ? "ASCENDING" : "DESCENDING" };
+  throw usageError(
+    `Cannot sort by "${field}": it is not in this report. Sort by one of: ${[...dimensions.map(friendlyName), ...metrics.map(friendlyMetric)].join(", ")}`
+  );
+}
+function buildReportSpec(kind, input2) {
+  const dimensions = input2.dimensions.map((d) => normalizeDimension(d, kind));
+  const metrics = input2.metrics.map((m) => normalizeMetric(m, kind));
+  checkCombination(dimensions, metrics);
+  const spec = { dateRange: input2.dateRange, dimensions, metrics };
+  const filters = Object.entries(input2.filters ?? {});
+  if (filters.length) {
+    spec.dimensionFilters = filters.map(([dim, values]) => ({
+      dimension: normalizeDimension(dim, kind),
+      matchesAny: { values }
+    }));
+  }
+  const timeDim = dimensions.find((d) => TIME_DIMENSIONS.includes(d));
+  if (input2.sort !== void 0) spec.sortConditions = [parseSort(input2.sort, kind, dimensions, metrics)];
+  else if (timeDim) spec.sortConditions = [{ dimension: timeDim, order: "ASCENDING" }];
+  else if (metrics.includes("ESTIMATED_EARNINGS")) {
+    spec.sortConditions = [{ metric: "ESTIMATED_EARNINGS", order: "DESCENDING" }];
+  }
+  if (input2.currency !== void 0) spec.localizationSettings = { currencyCode: normalizeCurrency(input2.currency) };
+  if (input2.maxRows !== void 0) spec.maxReportRows = input2.maxRows;
+  return spec;
+}
+function metricNumber(key, v) {
+  if (v.microsValue !== void 0) return parseMicros(v.microsValue);
+  if (v.integerValue !== void 0) return Number(v.integerValue);
+  if (MONEY_METRICS.has(key) && v.doubleValue !== void 0) return Math.round(v.doubleValue * 1e6);
+  return v.doubleValue ?? 0;
+}
+function parseReport(raw) {
+  const rows = raw?.rows;
+  const chunks = Array.isArray(raw) ? raw : Array.isArray(rows) ? rows.map((row) => ({ row })) : [raw];
+  const report = { rows: [], warnings: [] };
+  for (const chunk of chunks) {
+    if (chunk.header) {
+      report.currency = chunk.header.localizationSettings?.currencyCode;
+      report.timeZone = chunk.header.reportingTimeZone;
+      report.dateRange = chunk.header.dateRange;
+    }
+    if (chunk.row) {
+      const dimensions = {};
+      for (const [k, v] of Object.entries(chunk.row.dimensionValues ?? {})) {
+        dimensions[k] = v.displayLabel === void 0 ? { value: v.value ?? "" } : { value: v.value ?? "", label: v.displayLabel };
+      }
+      const metrics = {};
+      for (const [k, v] of Object.entries(chunk.row.metricValues ?? {})) metrics[k] = metricNumber(k, v);
+      report.rows.push({ dimensions, metrics });
+    }
+    if (chunk.footer) {
+      if (chunk.footer.matchingRowCount !== void 0) report.matchingRowCount = Number(chunk.footer.matchingRowCount);
+      for (const w of chunk.footer.warnings ?? []) report.warnings.push(w.description ?? w.type ?? "unknown warning");
+    }
+  }
+  return report;
+}
+
 // src/core/insights.ts
 var INSIGHT_DIMENSIONS = ["app", "ad-unit", "country", "format", "platform"];
 var DIM_API = {
@@ -12166,17 +12404,30 @@ var perMille = (micros, n) => microsToAmount(Math.round(ratio(micros, n) * 1e3))
 var pct = (f) => `${(f * 100).toFixed(1)}%`;
 var signedPct = (f) => `${f >= 0 ? "+" : ""}${(f * 100).toFixed(1)}%`;
 function resolveInsightRange(opts, today) {
-  if (opts.from || opts.to) return dateRangeFromArgs(opts.from ?? opts.to, opts.to ?? opts.from);
+  if (opts.from || opts.to) {
+    const asked = dateRangeFromArgs(opts.from ?? opts.to, opts.to ?? opts.from);
+    const yesterday = addDays(today, -1);
+    if (compareDates(asked.endDate, yesterday) <= 0) return { range: asked, notices: [] };
+    if (compareDates(asked.startDate, yesterday) > 0) {
+      throw usageError(
+        `${formatDate(asked.startDate)} \u2192 ${formatDate(asked.endDate)} has no complete day yet: analyses end at yesterday (${formatDate(yesterday)}) because today's figures are partial. Start on ${formatDate(yesterday)} or earlier.`
+      );
+    }
+    return {
+      range: { startDate: asked.startDate, endDate: yesterday },
+      notices: [`Ends at ${formatDate(yesterday)} (yesterday) instead of ${formatDate(asked.endDate)}: today's figures are partial and later days have none.`]
+    };
+  }
   const days = opts.last ?? 30;
   if (!Number.isInteger(days) || days < 1 || days > 366) throw usageError("--last must be between 1d and 366d");
-  return lastNDays(days, today);
+  return { range: lastNDays(days, today), notices: [] };
 }
 async function insights(svc, opts) {
   if (!INSIGHT_DIMENSIONS.includes(opts.by)) {
     throw usageError(`--by must be one of ${INSIGHT_DIMENSIONS.join(", ")}`);
   }
   const acct = await svc.account();
-  const range = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
+  const { range, notices } = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
   const metrics = ["earnings", "requests", "matched-requests", "impressions", "clicks"];
   const dim = DIM_API[opts.by];
   const [{ current: cur, previous: prev }, apps, units] = await Promise.all([
@@ -12249,11 +12500,14 @@ async function insights(svc, opts) {
   const threshold = opts.swingThreshold ?? 0.3;
   const minSwing = Math.max(total * 0.01, 1e6);
   for (const r of rows) {
-    const p = prevAgg.get(r.key)?.earnings ?? 0;
+    const before = prevAgg.get(r.key);
+    const p = before?.earnings ?? 0;
     const delta = r.earnings_micros - p;
     if (Math.abs(delta) < minSwing) continue;
-    if (p === 0) add2("new", r, `${r.label} is new this period: ${money(r.earnings_micros)}.`);
-    else if (r.change !== void 0 && Math.abs(r.change) >= threshold) {
+    if (!before) add2("new", r, `${r.label} is new this period: ${money(r.earnings_micros)}.`);
+    else if (p === 0) {
+      add2("started-earning", r, `${r.label} started earning this period: ${money(r.earnings_micros)}, after earning nothing from ${before.requests} requests the period before.`);
+    } else if (r.change !== void 0 && Math.abs(r.change) >= threshold) {
       add2(r.change > 0 ? "swing-up" : "swing-down", r, `${r.label} ${r.change > 0 ? "rose" : "fell"} ${signedPct(r.change)}: ${money(p)} \u2192 ${money(r.earnings_micros)}.`);
     }
   }
@@ -12291,7 +12545,15 @@ async function insights(svc, opts) {
     previous: { from: formatDate(prevRange.startDate), to: formatDate(prevRange.endDate), earnings: microsToAmount(prevTotal), earnings_micros: prevTotal },
     rows,
     highlights,
-    summary
+    summary,
+    notices: [
+      ...notices,
+      ...cur.report.warnings.map((w) => `API warning: ${w}`),
+      // The earlier period feeds every change, new and gone row, so its own warnings matter too.
+      ...prev.report.warnings.filter((w) => !cur.report.warnings.includes(w)).map((w) => `API warning (previous period): ${w}`),
+      ...cur.notices,
+      ...rowCapNotices(cur.report, prev.report)
+    ]
   };
 }
 
@@ -12303,7 +12565,7 @@ function thinDataNotice(thin, total, what, also = "") {
 }
 async function fetchReport(svc, kind, opts) {
   const acct = await svc.account();
-  const range = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
+  const { range, notices: rangeNotices } = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
   const { report, notices } = await svc.rawReport(kind, {
     dateRange: range,
     by: opts.by,
@@ -12318,7 +12580,9 @@ async function fetchReport(svc, kind, opts) {
     to: formatDate(range.endDate),
     currency: report.currency ?? acct.currencyCode,
     timeZone: report.timeZone ?? acct.reportingTimeZone,
-    notices: [...report.warnings.map((w) => `API warning: ${w}`), ...notices]
+    /** The API stopped at its row limit: rows are missing (see the notice). */
+    capped: hitRowCap(report),
+    notices: [...rangeNotices, ...report.warnings.map((w) => `API warning: ${w}`), ...notices, ...rowCapNotices(report)]
   };
 }
 var label = (v) => v?.label ?? v?.value ?? "(unknown)";
@@ -13267,11 +13531,10 @@ async function analyzeGeo(svc, opts = {}) {
 // src/core/lint.ts
 async function lint(svc, opts = {}) {
   const acct = await svc.account();
-  const range = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
+  const { range, notices } = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
   const from = formatDate(range.startDate);
   const to = formatDate(range.endDate);
   const only = opts.app ? await svc.resolveApp(opts.app) : void 0;
-  const notices = [];
   const [allApps, units, allUnits, traffic, groups] = await Promise.all([
     svc.apps(),
     svc.adUnits({ app: opts.app }),
@@ -13891,240 +14154,6 @@ function createLimiters(now) {
   return { account: make("account"), inventory: make("inventory"), reporting: make("reporting") };
 }
 var processLimiters = createLimiters();
-
-// src/core/report.ts
-var DIMENSIONS = {
-  network: [
-    "DATE",
-    "MONTH",
-    "WEEK",
-    "AD_UNIT",
-    "APP",
-    "AD_TYPE",
-    "COUNTRY",
-    "FORMAT",
-    "PLATFORM",
-    "MOBILE_OS_VERSION",
-    "GMA_SDK_VERSION",
-    "APP_VERSION_NAME",
-    "SERVING_RESTRICTION"
-  ],
-  mediation: [
-    "DATE",
-    "MONTH",
-    "WEEK",
-    "AD_SOURCE",
-    "AD_SOURCE_INSTANCE",
-    "AD_UNIT",
-    "APP",
-    "MEDIATION_GROUP",
-    "COUNTRY",
-    "FORMAT",
-    "PLATFORM",
-    "MOBILE_OS_VERSION",
-    "GMA_SDK_VERSION",
-    "APP_VERSION_NAME",
-    "SERVING_RESTRICTION"
-  ],
-  // v1beta campaignReport: AdMob app-promotion campaigns (the publisher as advertiser).
-  campaign: [
-    "DATE",
-    "CAMPAIGN_ID",
-    "CAMPAIGN_NAME",
-    "AD_ID",
-    "AD_NAME",
-    "PLACEMENT_ID",
-    "PLACEMENT_NAME",
-    "PLACEMENT_PLATFORM",
-    "COUNTRY",
-    "FORMAT"
-  ]
-};
-var METRICS = {
-  network: [
-    "AD_REQUESTS",
-    "CLICKS",
-    "ESTIMATED_EARNINGS",
-    "IMPRESSIONS",
-    "IMPRESSION_CTR",
-    "IMPRESSION_RPM",
-    "MATCHED_REQUESTS",
-    "MATCH_RATE",
-    "SHOW_RATE"
-  ],
-  mediation: [
-    "AD_REQUESTS",
-    "CLICKS",
-    "ESTIMATED_EARNINGS",
-    "IMPRESSIONS",
-    "IMPRESSION_CTR",
-    "MATCHED_REQUESTS",
-    "MATCH_RATE",
-    "OBSERVED_ECPM"
-  ],
-  campaign: ["IMPRESSIONS", "CLICKS", "CLICK_THROUGH_RATE", "INSTALLS", "ESTIMATED_COST", "AVERAGE_CPI", "INTERACTIONS"]
-};
-var MONEY_METRICS = /* @__PURE__ */ new Set(["ESTIMATED_EARNINGS", "IMPRESSION_RPM", "OBSERVED_ECPM", "ESTIMATED_COST", "AVERAGE_CPI"]);
-var METRIC_ALIASES = {
-  EARNINGS: "ESTIMATED_EARNINGS",
-  REVENUE: "ESTIMATED_EARNINGS",
-  REQUESTS: "AD_REQUESTS",
-  MATCHED: "MATCHED_REQUESTS",
-  CTR: "IMPRESSION_CTR",
-  RPM: "IMPRESSION_RPM",
-  ECPM: "OBSERVED_ECPM",
-  COST: "ESTIMATED_COST",
-  CPI: "AVERAGE_CPI"
-};
-var KIND_METRIC_ALIASES = {
-  campaign: { CTR: "CLICK_THROUGH_RATE" }
-};
-var DIMENSION_ALIASES = {
-  UNIT: "AD_UNIT",
-  SOURCE: "AD_SOURCE",
-  OS_VERSION: "MOBILE_OS_VERSION",
-  SDK_VERSION: "GMA_SDK_VERSION",
-  APP_VERSION: "APP_VERSION_NAME",
-  CAMPAIGN: "CAMPAIGN_NAME",
-  AD: "AD_NAME",
-  PLACEMENT: "PLACEMENT_NAME"
-};
-function canonical(name) {
-  return name.trim().toUpperCase().replace(/-/g, "_");
-}
-function friendlyName(apiName) {
-  return apiName.toLowerCase().replace(/_/g, "-");
-}
-function friendlyMetric(apiName) {
-  const alias = Object.keys(METRIC_ALIASES).find((k) => METRIC_ALIASES[k] === apiName);
-  return friendlyName(alias ?? apiName);
-}
-function normalizeDimension(name, kind) {
-  const c = canonical(name);
-  const resolved = DIMENSION_ALIASES[c] ?? c;
-  if (!DIMENSIONS[kind].includes(resolved)) {
-    throw usageError(
-      `Dimension "${name}" is not supported by ${kind} reports. Valid: ${DIMENSIONS[kind].map(friendlyName).join(", ")}`
-    );
-  }
-  return resolved;
-}
-function normalizeMetric(name, kind) {
-  const c = canonical(name);
-  const resolved = KIND_METRIC_ALIASES[kind]?.[c] ?? METRIC_ALIASES[c] ?? c;
-  if (!METRICS[kind].includes(resolved)) {
-    throw usageError(
-      `Metric "${name}" is not supported by ${kind} reports. Valid: ${METRICS[kind].map(friendlyName).join(", ")}`
-    );
-  }
-  return resolved;
-}
-var API_MAX_ROWS = 1e5;
-var TIME_DIMENSIONS = ["DATE", "WEEK", "MONTH"];
-var INCOMPATIBLE = {
-  AD_TYPE: ["AD_REQUESTS", "MATCH_RATE", "IMPRESSION_RPM"]
-};
-var DISCOURAGED = {
-  MOBILE_OS_VERSION: ["ESTIMATED_EARNINGS", "OBSERVED_ECPM", "IMPRESSION_RPM"],
-  GMA_SDK_VERSION: ["ESTIMATED_EARNINGS", "OBSERVED_ECPM", "IMPRESSION_RPM"],
-  APP_VERSION_NAME: ["ESTIMATED_EARNINGS", "OBSERVED_ECPM", "IMPRESSION_RPM"]
-};
-function compatibleMetrics(_kind, dimensions, metrics) {
-  const excluded = new Set(dimensions.flatMap((d) => [...INCOMPATIBLE[d] ?? [], ...DISCOURAGED[d] ?? []]));
-  return { kept: metrics.filter((m) => !excluded.has(m)), dropped: metrics.filter((m) => excluded.has(m)) };
-}
-function checkCombination(dimensions, metrics) {
-  const timeDims = dimensions.filter((d) => TIME_DIMENSIONS.includes(d));
-  if (timeDims.length > 1) {
-    throw usageError(`A report can use only one time dimension (date, week or month), got ${timeDims.map(friendlyName).join(", ")}.`);
-  }
-  for (const d of dimensions) {
-    const bad = metrics.filter((m) => INCOMPATIBLE[d]?.includes(m));
-    if (bad.length) {
-      throw usageError(`${friendlyName(d)} cannot be combined with ${bad.map(friendlyMetric).join(", ")} (an AdMob API restriction). Drop one of them.`);
-    }
-  }
-}
-function normalizeCurrency(code2) {
-  const c = code2.trim().toUpperCase();
-  if (!/^[A-Z]{3}$/.test(c)) throw usageError(`Currency must be an ISO 4217 code like USD or EUR, got "${code2}"`);
-  return c;
-}
-function parseSort(input2, kind, dimensions, metrics) {
-  const [field = "", dir, ...rest] = input2.split(":").map((p) => p.trim());
-  const order = dir?.toLowerCase();
-  if (rest.length || order !== void 0 && order !== "asc" && order !== "desc") {
-    throw usageError(`--sort expects <field>[:asc|desc] with asc or desc, got "${input2}"`);
-  }
-  const named = (resolve) => {
-    try {
-      return resolve();
-    } catch {
-      return void 0;
-    }
-  };
-  const dimension = named(() => normalizeDimension(field, kind));
-  if (dimension && dimensions.includes(dimension)) return { dimension, order: order === "desc" ? "DESCENDING" : "ASCENDING" };
-  const metric2 = named(() => normalizeMetric(field, kind));
-  if (metric2 && metrics.includes(metric2)) return { metric: metric2, order: order === "asc" ? "ASCENDING" : "DESCENDING" };
-  throw usageError(
-    `Cannot sort by "${field}": it is not in this report. Sort by one of: ${[...dimensions.map(friendlyName), ...metrics.map(friendlyMetric)].join(", ")}`
-  );
-}
-function buildReportSpec(kind, input2) {
-  const dimensions = input2.dimensions.map((d) => normalizeDimension(d, kind));
-  const metrics = input2.metrics.map((m) => normalizeMetric(m, kind));
-  checkCombination(dimensions, metrics);
-  const spec = { dateRange: input2.dateRange, dimensions, metrics };
-  const filters = Object.entries(input2.filters ?? {});
-  if (filters.length) {
-    spec.dimensionFilters = filters.map(([dim, values]) => ({
-      dimension: normalizeDimension(dim, kind),
-      matchesAny: { values }
-    }));
-  }
-  const timeDim = dimensions.find((d) => TIME_DIMENSIONS.includes(d));
-  if (input2.sort !== void 0) spec.sortConditions = [parseSort(input2.sort, kind, dimensions, metrics)];
-  else if (timeDim) spec.sortConditions = [{ dimension: timeDim, order: "ASCENDING" }];
-  else if (metrics.includes("ESTIMATED_EARNINGS")) {
-    spec.sortConditions = [{ metric: "ESTIMATED_EARNINGS", order: "DESCENDING" }];
-  }
-  if (input2.currency !== void 0) spec.localizationSettings = { currencyCode: normalizeCurrency(input2.currency) };
-  if (input2.maxRows !== void 0) spec.maxReportRows = input2.maxRows;
-  return spec;
-}
-function metricNumber(key, v) {
-  if (v.microsValue !== void 0) return parseMicros(v.microsValue);
-  if (v.integerValue !== void 0) return Number(v.integerValue);
-  if (MONEY_METRICS.has(key) && v.doubleValue !== void 0) return Math.round(v.doubleValue * 1e6);
-  return v.doubleValue ?? 0;
-}
-function parseReport(raw) {
-  const rows = raw?.rows;
-  const chunks = Array.isArray(raw) ? raw : Array.isArray(rows) ? rows.map((row) => ({ row })) : [raw];
-  const report = { rows: [], warnings: [] };
-  for (const chunk of chunks) {
-    if (chunk.header) {
-      report.currency = chunk.header.localizationSettings?.currencyCode;
-      report.timeZone = chunk.header.reportingTimeZone;
-      report.dateRange = chunk.header.dateRange;
-    }
-    if (chunk.row) {
-      const dimensions = {};
-      for (const [k, v] of Object.entries(chunk.row.dimensionValues ?? {})) {
-        dimensions[k] = v.displayLabel === void 0 ? { value: v.value ?? "" } : { value: v.value ?? "", label: v.displayLabel };
-      }
-      const metrics = {};
-      for (const [k, v] of Object.entries(chunk.row.metricValues ?? {})) metrics[k] = metricNumber(k, v);
-      report.rows.push({ dimensions, metrics });
-    }
-    if (chunk.footer) {
-      if (chunk.footer.matchingRowCount !== void 0) report.matchingRowCount = Number(chunk.footer.matchingRowCount);
-      for (const w of chunk.footer.warnings ?? []) report.warnings.push(w.description ?? w.type ?? "unknown warning");
-    }
-  }
-  return report;
-}
 
 // src/core/client.ts
 var API_BASE = "https://admob.googleapis.com/v1";
@@ -14920,7 +14949,8 @@ var mean = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
 var squares = (xs, m) => xs.reduce((a, x) => a + (x - m) ** 2, 0);
 function levelShift(values) {
   const MIN_SIDE = 3;
-  if (values.length < 2 * MIN_SIDE + 1) return void 0;
+  const MIN_DAYS = 14;
+  if (values.length < MIN_DAYS) return void 0;
   const total = squares(values, mean(values));
   if (total === 0) return void 0;
   let best;
@@ -14930,8 +14960,8 @@ function levelShift(values) {
     const left = squares(values.slice(0, i), before) + squares(values.slice(i), after);
     if (!best || left < best.left) best = { index: i, before, after, left };
   }
-  if (!best || best.before <= 0) return void 0;
-  if ((total - best.left) / total < 0.5 || Math.abs(best.after - best.before) / best.before < 0.2) return void 0;
+  if (!best || (total - best.left) / total < 0.5) return void 0;
+  if (best.before > 0 ? Math.abs(best.after - best.before) / best.before < 0.2 : best.after <= 0) return void 0;
   return { index: best.index, before: best.before, after: best.after };
 }
 var weekdayOf = (d) => WEEKDAYS[(new Date(Date.UTC(d.year, d.month - 1, d.day)).getUTCDay() + 6) % 7];
@@ -14948,6 +14978,11 @@ async function analyzeTrend(svc, opts = {}) {
     }),
     by === "app" ? svc.apps() : Promise.resolve([])
   ]);
+  if (r.capped) {
+    throw usageError(
+      `The AdMob API returned its maximum of ${API_MAX_ROWS} rows for this series, so the latest days are missing and would look like a drop. Use a shorter range${by === "total" ? "" : ", --app, or a split with fewer values"}.`
+    );
+  }
   const alias = new Map(apps.map((a) => [a.appId, a.alias]));
   const totalLabel = opts.app ? (await svc.resolveApp(opts.app)).alias : "All apps";
   const bySeries = /* @__PURE__ */ new Map();
@@ -15002,13 +15037,12 @@ async function analyzeTrend(svc, opts = {}) {
     if (days.length) series.first_active = days[0].date;
     const shift = levelShift(days.map((d) => d.earnings_micros));
     if (shift) {
-      const change2 = (shift.after - shift.before) / shift.before;
       series.shift = {
         date: days[shift.index].date,
         before_per_day: microsToAmount(Math.round(shift.before)),
-        after_per_day: microsToAmount(Math.round(shift.after)),
-        change: change2
+        after_per_day: microsToAmount(Math.round(shift.after))
       };
+      if (shift.before > 0) series.shift.change = (shift.after - shift.before) / shift.before;
     }
     if (opts.days !== false) series.days = days;
     return series;
@@ -15016,13 +15050,20 @@ async function analyzeTrend(svc, opts = {}) {
   all.sort((a, b) => b.earnings_micros - a.earnings_micros || a.label.localeCompare(b.label));
   const rows = all.slice(0, MAX_SERIES);
   for (const s of rows) {
-    if (s.shift) {
+    if (s.shift?.change !== void 0) {
       const up = s.shift.change > 0;
       highlights.push({
         kind: up ? "shift-up" : "shift-down",
         key: s.key,
         label: s.label,
         message: `${s.label} ${up ? "rose" : "fell"} from ${s.shift.before_per_day.toFixed(2)} to ${s.shift.after_per_day.toFixed(2)} ${r.currency} per day around ${s.shift.date} (${signedPct(s.shift.change)}).`
+      });
+    } else if (s.shift) {
+      highlights.push({
+        kind: "started-earning",
+        key: s.key,
+        label: s.label,
+        message: `${s.label} started earning around ${s.shift.date}: nothing before, then ${s.shift.after_per_day.toFixed(2)} ${r.currency} per day.`
       });
     }
     if (s.first_active && s.first_active !== r.from) {
@@ -15339,7 +15380,7 @@ function insightsView(r) {
       })),
       footer: [{ label: "Total", earnings: r.totals.earnings.toFixed(2), ecpm: r.totals.ecpm.toFixed(2), requests: r.totals.requests }]
     },
-    notes: r.summary
+    notes: [...r.summary, ...r.notices]
   };
 }
 var VERSION_LABELS = { sdk: "SDK version", app: "App version", os: "OS version" };
@@ -15630,7 +15671,7 @@ function trendView(r) {
         earnings: formatMicros(s.earnings_micros),
         average_per_day: s.average_per_day.toFixed(2),
         first_active: s.first_active ?? "",
-        shift: s.shift ? `${signedPercent(s.shift.change)} around ${s.shift.date}` : ""
+        shift: !s.shift ? "" : s.shift.change === void 0 ? `started earning around ${s.shift.date}` : `${signedPercent(s.shift.change)} around ${s.shift.date}`
       }))
     },
     notes
@@ -45753,7 +45794,7 @@ function createMcpServer(deps) {
     "admobctl_insights",
     {
       title: "AdMob monetization insights",
-      description: "Analyze monetization: earnings, eCPM, request RPM, match (fill) rate, show rate and CTR per app/ad-unit/country/format/platform, compared with the previous period. Returns highlights (top and bottom earners, low fill, low show rate, big swings) and a plain-language summary with the numbers behind each claim.",
+      description: "Analyze monetization: earnings, eCPM, request RPM, match (fill) rate, show rate and CTR per app/ad-unit/country/format/platform, compared with the previous period. Returns highlights (top and bottom earners, low fill, low show rate, big swings, new rows, rows that started earning), a plain-language summary with the numbers behind each claim, and notices. Complete days only: a period that reaches today ends at yesterday.",
       inputSchema: {
         last_days: external_exports.number().int().min(1).max(366).optional().describe("The last N complete days (default 30)"),
         from: external_exports.string().optional().describe("Start, YYYY-MM or YYYY-MM-DD (instead of last_days)"),
@@ -45770,7 +45811,8 @@ function createMcpServer(deps) {
         totals: anyRecord,
         rows: external_exports.array(anyRecord),
         highlights: external_exports.array(anyRecord),
-        summary: external_exports.array(external_exports.string())
+        summary: external_exports.array(external_exports.string()),
+        notices: external_exports.array(external_exports.string())
       }),
       annotations
     },
@@ -45979,7 +46021,7 @@ function createMcpServer(deps) {
     "admobctl_analyze_trend",
     {
       title: "AdMob daily trend",
-      description: 'Daily earnings as a series, to answer "when did it change?": per series the day earnings moved to a new level (`shift`: date, before and after per day, change), the average per weekday, and the first day with traffic. One series for the whole account or one app, or split by app, format, country or platform (the ten biggest). Days without traffic before a series starts are left out of the averages. Set include_days for the day-by-day rows. Earnings are estimates.',
+      description: 'Daily earnings as a series, to answer "when did it change?": per series the day earnings moved to a new level (`shift`: date, before and after per day, change; no change when it started from zero), the average per weekday, and the first day with traffic. One series for the whole account or one app, or split by app, format, country or platform (the ten biggest). Days without traffic before a series starts are left out of the averages. Set include_days for the day-by-day rows. Earnings are estimates.',
       inputSchema: {
         by: external_exports.enum(TREND_SPLITS).optional().describe("One series per app, format, country or platform. Default: total (one series)."),
         ...appArg,

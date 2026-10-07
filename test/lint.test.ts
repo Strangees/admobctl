@@ -47,6 +47,12 @@ describe("lint", () => {
     expect(r.findings.every((f) => f.severity === "note")).toBe(true);
   });
 
+  it("checks traffic up to yesterday when the range reaches today", async () => {
+    const r = await lint(setup().svc, { from: "2026-09-15", to: "2026-10-02" });
+    expect(r).toMatchObject({ from: "2026-09-15", to: "2026-10-01" });
+    expect(r.notices).toContain("Ends at 2026-10-01 (yesterday) instead of 2026-10-02: today's figures are partial and later days have none.");
+  });
+
   it("notes ad units without requests", async () => {
     const r = await lint(setup({ units: [1, 3, 4] }).svc);
     const f = r.findings.find((x) => x.kind === "unused-ad-unit")!;

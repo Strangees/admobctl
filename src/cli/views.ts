@@ -331,7 +331,7 @@ export function insightsView(r: InsightsResult): Output {
       })),
       footer: [{ label: "Total", earnings: r.totals.earnings.toFixed(2), ecpm: r.totals.ecpm.toFixed(2), requests: r.totals.requests }],
     },
-    notes: r.summary,
+    notes: [...r.summary, ...r.notices],
   };
 }
 
@@ -640,7 +640,7 @@ export function trendView(r: TrendResult): Output {
         earnings: formatMicros(s.earnings_micros),
         average_per_day: s.average_per_day.toFixed(2),
         first_active: s.first_active ?? "",
-        shift: s.shift ? `${signedPercent(s.shift.change)} around ${s.shift.date}` : "",
+        shift: !s.shift ? "" : s.shift.change === undefined ? `started earning around ${s.shift.date}` : `${signedPercent(s.shift.change)} around ${s.shift.date}`,
       })),
     },
     notes,

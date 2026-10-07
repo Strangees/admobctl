@@ -130,6 +130,16 @@ export interface ReportSpec {
 /** The API's own maximum for maxReportRows. */
 export const API_MAX_ROWS = 100_000;
 
+/** True when a report fetched without a row cap filled the API's maximum, so rows were probably left out. */
+export const hitRowCap = (report: Report) => report.rows.length >= API_MAX_ROWS;
+
+/** The note for analyses, which fetch without a row cap and add rows up. */
+export function rowCapNotices(...reports: Report[]): string[] {
+  return reports.some(hitRowCap)
+    ? [`The AdMob API returned its maximum of ${API_MAX_ROWS} rows, so some rows are probably missing and totals are too low. Use a shorter range.`]
+    : [];
+}
+
 export const TIME_DIMENSIONS = ["DATE", "WEEK", "MONTH"];
 
 /** Combinations the API rejects (both the reference and the metrics guide agree). */
