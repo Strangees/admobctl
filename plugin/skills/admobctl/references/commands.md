@@ -241,5 +241,7 @@ With `--yes` it applies them in order (JSON: `{applied: true, plans, results}`) 
 ## Errors
 
 Every error has a message and a `fix:` line with the exact command. Exit codes: 0 ok, 1 error, 2 usage.
-When the API rejects a request (`API_ERROR` 400), re-run the command with `-v`: it logs Google's full error response to
-stderr, including which field was invalid.
+When the API rejects a request with no more specific remedy (`API_ERROR`), the fix is the same command with `-v`, which
+logs Google's full error response to stderr (for a 400, which field was invalid). `AMOUNT_TOO_LARGE` (exit 1) means a
+sum passed what integer micros keep exact (about 9 billion in the report currency, e.g. a year in VND): narrow the
+date range or add `--currency USD`.

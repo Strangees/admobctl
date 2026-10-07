@@ -22,6 +22,7 @@ export type ErrorCode =
   | "PAYMENTS_UNAVAILABLE"
   | "NOT_FOUND"
   | "RATE_LIMITED"
+  | "AMOUNT_TOO_LARGE"
   | "API_ERROR";
 
 export class AdmobctlError extends Error {
@@ -147,10 +148,7 @@ export function diagnoseApiError(status: number, body: unknown, hints: DiagnoseH
     });
   }
   if (status === 404) {
-    return new AdmobctlError("NOT_FOUND", `Not found: ${message}`, {
-      ...opts,
-      fix: "admobctl accounts list, apps list, ad-units list and mediation-groups list show the IDs you can use; check the one in the command.",
-    });
+    return new AdmobctlError("NOT_FOUND", `Not found: ${message}`, { ...opts, fix: "admobctl accounts list" });
   }
   if (status === 429) {
     return new AdmobctlError("RATE_LIMITED", `Rate limited by the ${api}: ${message}`, {
@@ -161,12 +159,6 @@ export function diagnoseApiError(status: number, body: unknown, hints: DiagnoseH
           : `The API asked to wait: retry in about ${formatDuration(hints.retryAfterMs)}, or narrow the report.`,
     });
   }
-  return new AdmobctlError("API_ERROR", `${api} error ${status}: ${message}`, {
-    ...opts,
-    // -v logs the response body, where Google puts the details (e.g. which field of the request was invalid).
-    fix:
-      status >= 500
-        ? "Retry in a few minutes; if it keeps failing, re-run the command with -v to see the API's full response."
-        : "Re-run the command with -v to see the API's full error response.",
-  });
+  // No fix here: the CLI suggests the same command with -v, which logs the full response body (src/cli/program.ts).
+  return new AdmobctlError("API_ERROR", `${api} error ${status}: ${message}`, opts);
 }

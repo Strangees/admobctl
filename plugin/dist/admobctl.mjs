@@ -10663,10 +10663,7 @@ function diagnoseApiError(status, body, hints = {}) {
     });
   }
   if (status === 404) {
-    return new AdmobctlError("NOT_FOUND", `Not found: ${message}`, {
-      ...opts,
-      fix: "admobctl accounts list, apps list, ad-units list and mediation-groups list show the IDs you can use; check the one in the command."
-    });
+    return new AdmobctlError("NOT_FOUND", `Not found: ${message}`, { ...opts, fix: "admobctl accounts list" });
   }
   if (status === 429) {
     return new AdmobctlError("RATE_LIMITED", `Rate limited by the ${api}: ${message}`, {
@@ -10674,11 +10671,7 @@ function diagnoseApiError(status, body, hints = {}) {
       fix: hints.retryAfterMs === void 0 ? "Wait a minute and retry, or narrow the report." : `The API asked to wait: retry in about ${formatDuration(hints.retryAfterMs)}, or narrow the report.`
     });
   }
-  return new AdmobctlError("API_ERROR", `${api} error ${status}: ${message}`, {
-    ...opts,
-    // -v logs the response body, where Google puts the details (e.g. which field of the request was invalid).
-    fix: status >= 500 ? "Retry in a few minutes; if it keeps failing, re-run the command with -v to see the API's full response." : "Re-run the command with -v to see the API's full error response."
-  });
+  return new AdmobctlError("API_ERROR", `${api} error ${status}: ${message}`, opts);
 }
 
 // src/core/aliases.ts
@@ -11302,11 +11295,13 @@ function setProfileValue(config2, profile, key, value) {
 }
 
 // src/core/setup/commands.ts
+function shellQuote(arg) {
+  return /^[A-Za-z0-9._\/=,:@%+-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, "'\\''")}'`;
+}
 function profileCommand(command, profile, configuredDefault = "default") {
   if (profile === "default" && configuredDefault === "default") return command;
   if (/--profile(?:[=\s]|$)/.test(command)) return command;
-  const quoted = /^[A-Za-z0-9._-]+$/.test(profile) ? profile : `'${profile.replace(/'/g, "'\\''")}'`;
-  return command.replace(/\badmobctl /, () => `admobctl --profile ${quoted} `);
+  return command.replace(/\badmobctl /, () => `admobctl --profile ${shellQuote(profile)} `);
 }
 
 // src/core/setup/status.ts
@@ -11905,9 +11900,10 @@ function splitRange(r, maxDays) {
 
 // src/core/money.ts
 function tooLarge(what) {
-  return new AdmobctlError("USAGE", `${what} is too large to keep exact (integer precision ends near 9 billion in the report's currency).`, {
-    fix: "Narrow the date range (e.g. a month at a time), or report in a larger currency with --currency USD where the command takes it."
-  });
+  return new AdmobctlError(
+    "AMOUNT_TOO_LARGE",
+    `${what} is too large to keep exact (integer precision ends near 9 billion in the report's currency). Narrow the date range (e.g. a month at a time), or report in a larger currency with --currency USD where the command takes it.`
+  );
 }
 function parseMicros(value) {
   if (value === void 0 || value === null || value === "") return 0;
@@ -14158,7 +14154,10 @@ function metricNumber(key, v) {
 function parseReport(raw) {
   if (!isObject(raw)) throw invalidReport(raw);
   const rows = raw.rows;
-  const chunks = Array.isArray(raw) ? raw : Array.isArray(rows) ? rows.map((row) => ({ row })) : [raw];
+  const chunks = Array.isArray(raw) ? raw : Array.isArray(rows) ? rows.map((row) => {
+    if (!isObject(row)) throw invalidReport(row);
+    return { row };
+  }) : [raw];
   const report = { rows: [], warnings: [] };
   for (const item of chunks) {
     if (!isObject(item)) throw invalidReport(item);
@@ -16212,6 +16211,10 @@ async function run(argv, io) {
       return err.exitCode === 0 ? 0 : 2;
     }
     const opts = program2.opts();
+    if (err instanceof AdmobctlError && err.code === "API_ERROR" && !err.fix && !opts.verbose) {
+      const fix = `admobctl -v ${argv.slice(2).map(shellQuote).join(" ")}`;
+      err = new AdmobctlError(err.code, err.message, { status: err.status, cause: err, fix });
+    }
     if (err instanceof AdmobctlError && err.fix) {
       let configuredDefault;
       try {

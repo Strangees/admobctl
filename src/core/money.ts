@@ -7,12 +7,13 @@ import { AdmobctlError } from "./errors.js";
 
 /**
  * Integer micros stay exact up to about 9 billion currency units: reachable for a year of earnings in a currency
- * with small units (VND, IDR). Past that, refuse rather than round.
+ * with small units (VND, IDR). Past that, refuse rather than round. No fix: which command to narrow is the caller's.
  */
 function tooLarge(what: string): AdmobctlError {
-  return new AdmobctlError("USAGE", `${what} is too large to keep exact (integer precision ends near 9 billion in the report's currency).`, {
-    fix: "Narrow the date range (e.g. a month at a time), or report in a larger currency with --currency USD where the command takes it.",
-  });
+  return new AdmobctlError(
+    "AMOUNT_TOO_LARGE",
+    `${what} is too large to keep exact (integer precision ends near 9 billion in the report's currency). Narrow the date range (e.g. a month at a time), or report in a larger currency with --currency USD where the command takes it.`,
+  );
 }
 
 export function parseMicros(value: string | number | undefined | null): number {

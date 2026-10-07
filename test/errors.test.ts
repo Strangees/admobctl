@@ -134,22 +134,17 @@ describe("diagnoseApiError", () => {
     expect(e.message).toContain("Account not found");
   });
 
-  it("gives NOT_FOUND a fix that lists the IDs the login can see", () => {
+  it("gives NOT_FOUND a runnable fix", () => {
     const e = diagnoseApiError(404, { error: { code: 404, message: "Requested entity was not found.", status: "NOT_FOUND" } });
-    expect(e.fix).toMatch(/^admobctl accounts list\b/);
-    expect(e.fix).toContain("apps list");
+    expect(e.fix).toBe("admobctl accounts list");
   });
 
-  it("gives a rejected request (400) a fix that shows the API's full error body", () => {
-    const e = diagnoseApiError(400, { error: { code: 400, message: "Request contains an invalid argument.", status: "INVALID_ARGUMENT" } });
-    expect(e.code).toBe("API_ERROR");
-    expect(e.fix).toMatch(/-v\b/);
-  });
-
-  it("gives a server error a fix to retry later", () => {
-    const e = diagnoseApiError(500, { error: { code: 500, message: "Internal error encountered.", status: "INTERNAL" } });
-    expect(e.code).toBe("API_ERROR");
-    expect(e.fix).toMatch(/retry/i);
+  it("leaves the fix of a generic API error to the caller, which knows the command line", () => {
+    for (const status of [400, 500]) {
+      const e = diagnoseApiError(status, { error: { code: status, message: "Request contains an invalid argument." } });
+      expect(e.code).toBe("API_ERROR");
+      expect(e.fix).toBeUndefined();
+    }
   });
 
   it("names the API that failed when the caller knows it", () => {

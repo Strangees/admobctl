@@ -65,6 +65,8 @@ describe("parseReport", () => {
     ["null", null],
     ["a null chunk", [{ header: {} }, null, { footer: {} }]],
     ["a number chunk", [{ header: {} }, 7]],
+    ["a null campaign row", { rows: [null] }],
+    ["a number campaign row", { rows: [{ dimensionValues: {}, metricValues: {} }, 7] }],
   ])("rejects %s with a readable error, not a TypeError", (_name, raw) => {
     expect(() => parseReport(raw)).toThrow(expect.objectContaining({ code: "API_ERROR", message: expect.stringMatching(/report/i) }));
   });

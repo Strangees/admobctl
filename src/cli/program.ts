@@ -5,7 +5,7 @@ import { exec as defaultExec } from "../core/exec.js";
 import { CloudClient } from "../core/setup/cloud.js";
 import { parseFeatures } from "../core/setup/features.js";
 import { setupStatus } from "../core/setup/status.js";
-import { profileCommand } from "../core/setup/commands.js";
+import { profileCommand, shellQuote } from "../core/setup/commands.js";
 import {
   applyApis,
   applyLogin,
@@ -881,6 +881,12 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       return err.exitCode === 0 ? 0 : 2;
     }
     const opts = program.opts<GlobalOpts>();
+    // An API error without a better remedy: the same command with -v logs the API's full response body (such as the
+    // field it rejected). Built here because only the CLI knows the command line; MCP clients get no such advice.
+    if (err instanceof AdmobctlError && err.code === "API_ERROR" && !err.fix && !opts.verbose) {
+      const fix = `admobctl -v ${argv.slice(2).map(shellQuote).join(" ")}`;
+      err = new AdmobctlError(err.code, err.message, { status: err.status, cause: err, fix });
+    }
     if (err instanceof AdmobctlError && err.fix) {
       let configuredDefault: string | undefined;
       try { configuredDefault = loadConfig(io.service?.configDir ?? configDir()).defaultProfile; } catch { /* Preserve the original config error. */ }

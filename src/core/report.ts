@@ -293,8 +293,15 @@ function metricNumber(key: string, v: RawMetricValue): number {
  */
 export function parseReport(raw: unknown): Report {
   if (!isObject(raw)) throw invalidReport(raw);
-  const rows = (raw as { rows?: RawChunk["row"][] }).rows;
-  const chunks: unknown[] = Array.isArray(raw) ? raw : Array.isArray(rows) ? rows.map((row) => ({ row })) : [raw];
+  const rows = (raw as { rows?: unknown[] }).rows;
+  const chunks: unknown[] = Array.isArray(raw)
+    ? raw
+    : Array.isArray(rows)
+      ? rows.map((row) => {
+          if (!isObject(row)) throw invalidReport(row);
+          return { row };
+        })
+      : [raw];
   const report: Report = { rows: [], warnings: [] };
   for (const item of chunks) {
     if (!isObject(item)) throw invalidReport(item);
