@@ -311,7 +311,10 @@ the version and merge to `main`:
 npm version <patch|minor|major> --no-git-tag-version   # package.json + lockfile
 # set the same version in plugin/.claude-plugin/plugin.json and plugin/.codex-plugin/plugin.json
 npm run check                                          # rebuilds the bundle with the new version
+npm run eval:mocks                                     # the admobctl_finance_export mock embeds the version
 ```
+
+Commit the bundle and `plugin/evals/mocks/` with the version bump; CI fails when either is stale.
 
 When CI passes on `main`, it tags `v<version>` and publishes a GitHub release with the bundle and its checksum.
 A push that does not change the version releases nothing.
