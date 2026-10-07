@@ -16083,8 +16083,15 @@ function buildProgram(io) {
   program2.command("mcp").description("Run the MCP server over stdio (for Claude Code, Codex and other MCP clients)").action(async (_o, cmd) => {
     if (!io.runMcp) throw new AdmobctlError("USAGE", "The mcp command is not available in this build (no MCP server wired in).");
     const { profile, account } = g(cmd);
+    let defaultProfile;
+    try {
+      defaultProfile = loadConfig(dir()).defaultProfile;
+    } catch {
+    }
     await io.runMcp({
-      service: (opts) => AdmobService.create({ profile, account: opts.account ?? account }, io.service)
+      service: (opts) => AdmobService.create({ profile, account: opts.account ?? account }, io.service),
+      profile,
+      defaultProfile
     });
     await new Promise((resolve) => process.stdin.on("close", resolve));
   });
@@ -45472,9 +45479,9 @@ function textOf(data) {
 function ok(data) {
   return { content: [{ type: "text", text: textOf(data) }], structuredContent: data };
 }
-function fail(err) {
+function fail(err, pinProfile) {
   const text = err instanceof AdmobctlError ? `${err.message}${err.fix ? `
-Fix: ${err.fix}` : ""}` : `Unexpected error: ${err?.message ?? String(err)}`;
+Fix: ${pinProfile(err.fix)}` : ""}` : `Unexpected error: ${err?.message ?? String(err)}`;
   if (!(err instanceof AdmobctlError)) log.warn(err?.stack ?? String(err));
   return { content: [{ type: "text", text }], isError: true };
 }
@@ -45543,11 +45550,12 @@ function createMcpServer(deps) {
     if (hit && now() - hit.createdAt < ttl) return hit.svc;
     return freshSvc(a);
   };
+  const pinProfile = (command) => profileCommand(command, deps.profile ?? deps.defaultProfile ?? "default", deps.defaultProfile);
   const wrap = (fn) => async (args) => {
     try {
       return ok(await fn(args));
     } catch (err) {
-      return fail(err);
+      return fail(err, pinProfile);
     }
   };
   server.registerTool(

@@ -27,7 +27,10 @@ function bigReport(n: number) {
   ];
 }
 
-async function connect(routes: Parameters<typeof fakeFetch>[0] = {}, opts: { serviceTtlMs?: number; now?: () => number } = {}) {
+async function connect(
+  routes: Parameters<typeof fakeFetch>[0] = {},
+  opts: { serviceTtlMs?: number; now?: () => number; profile?: string; defaultProfile?: string } = {},
+) {
   const f = fakeFetch({
     "GET /v1/accounts?": () => jsonResponse(fixture("accounts.json")),
     "GET /apps": (c) => jsonResponse(fixture(c.url.includes("pageToken=page2") ? "apps-page2.json" : "apps-page1.json")),
@@ -49,7 +52,10 @@ async function connect(routes: Parameters<typeof fakeFetch>[0] = {}, opts: { ser
   const server = createMcpServer({
     service: (o) => {
       created.push(o.account);
-      return AdmobService.create(o, { configDir: dir, tokenProvider: token, fetch: f.fetch, sleep: noSleep, now: () => new Date("2026-10-02T08:00:00Z") });
+      return AdmobService.create(
+        { ...o, profile: opts.profile },
+        { configDir: dir, tokenProvider: token, fetch: f.fetch, sleep: noSleep, now: () => new Date("2026-10-02T08:00:00Z") },
+      );
     },
     ...opts,
   });
@@ -266,6 +272,33 @@ describe("mcp server", () => {
     expect(r.isError).toBe(true);
     expect(r.content[0]!.text).toMatch(/AdMob scope/);
     expect(r.content[0]!.text).toMatch(/Fix: admobctl setup login --yes/);
+  });
+
+  const scopeDenied = {
+    "GET /v1/accounts?": () =>
+      jsonResponse({ error: { code: 403, message: "Request had insufficient authentication scopes.", status: "PERMISSION_DENIED" } }, 403),
+  };
+
+  it("pins Fix lines to the profile the server runs with (admobctl --profile work mcp)", async () => {
+    const { client, dir } = await connect(scopeDenied, { profile: "work" });
+    saveConfig(dir, { profiles: { work: {} } });
+    const r = (await client.callTool({ name: "admobctl_list_apps", arguments: {} })) as ToolResult;
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toMatch(/\nFix: admobctl --profile work setup login --yes$/);
+  });
+
+  it("pins Fix lines to the configured default profile, like the CLI", async () => {
+    const { client, dir } = await connect(scopeDenied, { defaultProfile: "work" });
+    saveConfig(dir, { defaultProfile: "work", profiles: { work: {} } });
+    const r = (await client.callTool({ name: "admobctl_list_apps", arguments: {} })) as ToolResult;
+    expect(r.content[0]!.text).toMatch(/\nFix: admobctl --profile work setup login --yes$/);
+  });
+
+  it("admobctl_setup_status names a non-default profile once", async () => {
+    const { client, dir } = await connect(setupRoutes, { profile: "work" });
+    saveConfig(dir, { profiles: { work: {} } });
+    const r = (await client.callTool({ name: "admobctl_setup_status", arguments: {} })) as ToolResult;
+    expect(r.structuredContent).toMatchObject({ next_command: "admobctl --profile work setup apis --yes" });
   });
 
   it("reuses one service across tool calls, so the account and apps are fetched once", async () => {

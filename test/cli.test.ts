@@ -2,8 +2,10 @@ import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { run } from "../src/cli/program.js";
+import { run, type McpStartDeps } from "../src/cli/program.js";
 import { reportView } from "../src/cli/views.js";
+import { saveConfig } from "../src/core/config.js";
+import { AdmobctlError } from "../src/core/errors.js";
 import type { ReportResult } from "../src/core/service.js";
 import type { TokenProvider } from "../src/core/auth/types.js";
 import { fakeFetch, fixture, jsonResponse, noSleep } from "./helpers.js";
@@ -124,6 +126,34 @@ describe("cli", () => {
     expect(r.code).toBe(2);
     expect(r.stderr).toContain("mcp command is not available");
     expect(r.stdout).toBe("");
+  });
+
+  it("hands the MCP server its profile and the configured default, for the Fix lines", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "admobctl-cli-"));
+    saveConfig(dir, { defaultProfile: "home", profiles: { home: {}, work: {} } });
+    const started = async (argv: string[]) => {
+      let deps: McpStartDeps | undefined;
+      const code = await run(["node", "admobctl", ...argv], {
+        stdout: () => {},
+        stderr: () => {},
+        isTTY: false,
+        service: { configDir: dir, tokenProvider: token },
+        runMcp: async (d) => {
+          deps = d;
+          // Stop here: the real action then waits for stdin to close.
+          throw new AdmobctlError("USAGE", "stop");
+        },
+      });
+      expect(code).toBe(2);
+      return deps!;
+    };
+    const work = await started(["--profile", "work", "mcp"]);
+    expect(work).toMatchObject({ profile: "work", defaultProfile: "home" });
+    expect(work.service({}).profile.name).toBe("work");
+    const home = await started(["mcp"]);
+    expect(home.profile).toBeUndefined();
+    expect(home.defaultProfile).toBe("home");
+    expect(home.service({}).profile.name).toBe("home");
   });
 
   it("runs auth doctor and reports each check", async () => {

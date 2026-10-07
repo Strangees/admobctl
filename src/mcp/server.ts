@@ -7,6 +7,7 @@ import { check } from "../core/check.js";
 import { AdmobctlError } from "../core/errors.js";
 import { financeForecast, financeMonth, financeRange, JOURNAL_COLUMNS, journalRows } from "../core/finance.js";
 import { financeBalance } from "../core/payments.js";
+import { profileCommand } from "../core/setup/commands.js";
 import { setupStatus } from "../core/setup/status.js";
 import { exportJournal } from "../core/journal.js";
 import { analyzeGeo } from "../core/geo.js";
@@ -29,6 +30,10 @@ export const SERVICE_TTL_MS = 5 * 60_000;
 
 export interface McpDeps {
   service: (opts: ServiceOptions) => AdmobService;
+  /** --profile the server runs with, if any. With defaultProfile, pins the Fix commands in errors to it, as the CLI does. */
+  profile?: string;
+  /** defaultProfile in config.json when the server started. */
+  defaultProfile?: string;
   /** Reuse window per account. Default SERVICE_TTL_MS. */
   serviceTtlMs?: number;
   /** Clock in ms, for tests. Default Date.now. */
@@ -85,10 +90,10 @@ function ok(data: Record<string, unknown>): ToolResult {
   return { content: [{ type: "text", text: textOf(data) }], structuredContent: data };
 }
 
-function fail(err: unknown): ToolResult {
+function fail(err: unknown, pinProfile: (command: string) => string): ToolResult {
   const text =
     err instanceof AdmobctlError
-      ? `${err.message}${err.fix ? `\nFix: ${err.fix}` : ""}`
+      ? `${err.message}${err.fix ? `\nFix: ${pinProfile(err.fix)}` : ""}`
       : `Unexpected error: ${(err as Error)?.message ?? String(err)}`;
   if (!(err instanceof AdmobctlError)) log.warn((err as Error)?.stack ?? String(err));
   return { content: [{ type: "text", text }], isError: true };
@@ -179,13 +184,15 @@ export function createMcpServer(deps: McpDeps): McpServer {
     if (hit && now() - hit.createdAt < ttl) return hit.svc;
     return freshSvc(a);
   };
+  // Fix commands name the profile the server runs with, so the user fixes that one.
+  const pinProfile = (command: string) => profileCommand(command, deps.profile ?? deps.defaultProfile ?? "default", deps.defaultProfile);
   const wrap =
     <A>(fn: (args: A) => Promise<Record<string, unknown>>) =>
     async (args: A): Promise<ToolResult> => {
       try {
         return ok(await fn(args));
       } catch (err) {
-        return fail(err);
+        return fail(err, pinProfile);
       }
     };
 
