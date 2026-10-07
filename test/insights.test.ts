@@ -217,6 +217,18 @@ describe("insights periods", () => {
     expect(stdout).toContain("API warning: Data for 2026-10-01 is delayed.");
   });
 
+  it("passes on the previous period's API warnings too, saying which period they are about", async () => {
+    const shared = "Earnings were converted to EUR and may not match the payment.";
+    const { svc } = setup(
+      "2026-09-02",
+      () => report(current, [shared]),
+      () => report(previous, [shared, "Data before 2026-08-10 uses the account's old time zone."]),
+      "2026-10-02T08:00:00Z",
+    );
+    const r = await insights(svc, { last: 30, by: "ad-unit" });
+    expect(r.notices).toEqual([`API warning: ${shared}`, "API warning (previous period): Data before 2026-08-10 uses the account's old time zone."]);
+  });
+
   it("says when a period hit the API's row limit", { timeout: 20_000 }, async () => {
     const many = Array.from({ length: API_MAX_ROWS }, (_, i): Unit => ({ id: `u/${i}`, label: `Unit ${i}`, earn: 1, req: 1, matched: 1, imp: 1, clicks: 0 }));
     const { svc } = setup("2026-09-02", () => report(many), () => report(previous), "2026-10-02T08:00:00Z");

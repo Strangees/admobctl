@@ -12546,7 +12546,14 @@ async function insights(svc, opts) {
     rows,
     highlights,
     summary,
-    notices: [...notices, ...cur.report.warnings.map((w) => `API warning: ${w}`), ...cur.notices, ...rowCapNotices(cur.report, prev.report)]
+    notices: [
+      ...notices,
+      ...cur.report.warnings.map((w) => `API warning: ${w}`),
+      // The earlier period feeds every change, new and gone row, so its own warnings matter too.
+      ...prev.report.warnings.filter((w) => !cur.report.warnings.includes(w)).map((w) => `API warning (previous period): ${w}`),
+      ...cur.notices,
+      ...rowCapNotices(cur.report, prev.report)
+    ]
   };
 }
 

@@ -64,7 +64,7 @@ export interface InsightsResult {
   rows: InsightRow[];
   highlights: Highlight[];
   summary: string[];
-  /** A range cut at yesterday, API warnings, a report cut off at the API's row limit. */
+  /** A range cut at yesterday, API warnings (for either period), a report cut off at the API's row limit. */
   notices: string[];
 }
 
@@ -277,6 +277,13 @@ export async function insights(svc: AdmobService, opts: InsightsOptions): Promis
     rows,
     highlights,
     summary,
-    notices: [...notices, ...cur.report.warnings.map((w) => `API warning: ${w}`), ...cur.notices, ...rowCapNotices(cur.report, prev.report)],
+    notices: [
+      ...notices,
+      ...cur.report.warnings.map((w) => `API warning: ${w}`),
+      // The earlier period feeds every change, new and gone row, so its own warnings matter too.
+      ...prev.report.warnings.filter((w) => !cur.report.warnings.includes(w)).map((w) => `API warning (previous period): ${w}`),
+      ...cur.notices,
+      ...rowCapNotices(cur.report, prev.report),
+    ],
   };
 }
