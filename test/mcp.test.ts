@@ -324,6 +324,21 @@ describe("mcp server", () => {
     expect(created).toHaveLength(2);
   });
 
+  it("creates a fresh service once config.json changed, e.g. a new alias", async () => {
+    const { client, dir, created } = await connect();
+    const before = (await client.callTool({ name: "admobctl_list_ad_units", arguments: { app: "mygame" } })) as ToolResult;
+    expect(before.content[0]!.text).toMatch(/Unknown app "mygame"/);
+    // The user runs `admobctl config set aliases.mygame <app ID>` in a terminal.
+    saveConfig(dir, { profiles: { default: { aliases: { mygame: "ca-app-pub-0000000000000001~1111111111" } } } });
+    const after = (await client.callTool({ name: "admobctl_list_ad_units", arguments: { app: "mygame" } })) as ToolResult;
+    expect(after.isError, after.content[0]!.text).toBeFalsy();
+    expect((after.structuredContent!.adUnits as Array<{ app: string }>).map((u) => u.app)).toEqual(["mygame", "mygame"]);
+    expect(created).toHaveLength(2);
+    // An unchanged config keeps the cached service.
+    await client.callTool({ name: "admobctl_list_apps", arguments: {} });
+    expect(created).toHaveLength(2);
+  });
+
   it("keeps a separate service per account argument", async () => {
     const { client, created } = await connect();
     await client.callTool({ name: "admobctl_list_apps", arguments: { account: "pub-0000000000000001" } });

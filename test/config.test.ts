@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { configDir, loadConfig, resolveProfile, saveConfig, setProfileValue } from "../src/core/config.js";
+import { configDir, configStamp, loadConfig, resolveProfile, saveConfig, setProfileValue } from "../src/core/config.js";
 import { log } from "../src/core/log.js";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "admobctl-test-"));
@@ -15,6 +15,17 @@ describe("config", () => {
 
   it("returns an empty config when the file does not exist", () => {
     expect(loadConfig(tmp())).toEqual({ profiles: {} });
+  });
+
+  it("stamps config.json so a long-lived reader can tell it changed", () => {
+    const dir = tmp();
+    expect(configStamp(dir)).toBe("");
+    saveConfig(dir, { profiles: { default: { account: "pub-1" } } });
+    const first = configStamp(dir);
+    expect(first).not.toBe("");
+    expect(configStamp(dir)).toBe(first);
+    saveConfig(dir, { profiles: { default: { account: "pub-2", aliases: { a: "b" } } } });
+    expect(configStamp(dir)).not.toBe(first);
   });
 
   it("applies defaults when resolving a profile", () => {

@@ -11145,7 +11145,7 @@ var CloudClient = class {
 };
 
 // src/core/config.ts
-import { chmodSync as chmodSync2, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync as chmodSync2, existsSync, readFileSync, renameSync, statSync as statSync2, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -11197,6 +11197,14 @@ function loadConfig(dir) {
     throw new AdmobctlError("CONFIG", `Could not parse ${file2}: ${err.message}`, {
       fix: `Fix or delete ${file2}`
     });
+  }
+}
+function configStamp(dir) {
+  try {
+    const s = statSync2(configPath(dir));
+    return `${s.ino}:${s.size}:${s.mtimeMs}`;
+  } catch {
+    return "";
   }
 }
 function saveConfig(dir, config2) {
@@ -14445,7 +14453,7 @@ var CAMPAIGN_MAX_DAYS = 30;
 var filterValue = (v) => `"${v.replace(/["\\]/g, (c) => `\\${c}`)}"`;
 var COMPARISONS = ["previous"];
 var AdmobService = class _AdmobService {
-  constructor(profile, client, tokenProvider, accountOverride, now, configDir2, fetch2) {
+  constructor(profile, client, tokenProvider, accountOverride, now, configDir2, fetch2, configStamp2) {
     this.profile = profile;
     this.client = client;
     this.tokenProvider = tokenProvider;
@@ -14453,6 +14461,7 @@ var AdmobService = class _AdmobService {
     this.now = now;
     this.configDir = configDir2;
     this.fetch = fetch2;
+    this.configStamp = configStamp2;
   }
   profile;
   client;
@@ -14461,10 +14470,12 @@ var AdmobService = class _AdmobService {
   now;
   configDir;
   fetch;
+  configStamp;
   /** In-flight or settled lookups (account, apps, ad units, ad sources), shared by every caller. */
   cache = /* @__PURE__ */ new Map();
   static create(opts = {}, deps = {}) {
     const dir = deps.configDir ?? configDir();
+    const stamp = configStamp(dir);
     const profile = resolveProfile(loadConfig(dir), opts.profile);
     const tokenProvider = deps.tokenProvider ?? resolveTokenProvider(profile, { configDir: dir, exec: deps.exec, fetch: deps.fetch });
     const client = new AdmobClient({
@@ -14480,7 +14491,8 @@ var AdmobService = class _AdmobService {
       opts.account ?? profile.account,
       deps.now ?? (() => /* @__PURE__ */ new Date()),
       dir,
-      deps.fetch ?? fetch
+      deps.fetch ?? fetch,
+      stamp
     );
   }
   /** The account that will be used (--account, then profile), without calling the API. Undefined means auto-detect. */
@@ -45547,7 +45559,7 @@ function createMcpServer(deps) {
   };
   const svc = (a) => {
     const hit = services.get(a.account ?? "");
-    if (hit && now() - hit.createdAt < ttl) return hit.svc;
+    if (hit && now() - hit.createdAt < ttl && configStamp(hit.svc.configDir) === hit.svc.configStamp) return hit.svc;
     return freshSvc(a);
   };
   const pinProfile = (command) => profileCommand(command, deps.profile ?? deps.defaultProfile ?? "default", deps.defaultProfile);

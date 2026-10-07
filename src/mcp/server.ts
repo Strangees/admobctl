@@ -4,6 +4,7 @@ import { z } from "zod";
 import { analyzeConsent, analyzeVersions, analyzeWaterfall, VERSION_KINDS } from "../core/analyze.js";
 import { checkAppAds } from "../core/app-ads.js";
 import { check } from "../core/check.js";
+import { configStamp } from "../core/config.js";
 import { AdmobctlError } from "../core/errors.js";
 import { financeForecast, financeMonth, financeRange, JOURNAL_COLUMNS, journalRows } from "../core/finance.js";
 import { financeBalance } from "../core/payments.js";
@@ -181,7 +182,8 @@ export function createMcpServer(deps: McpDeps): McpServer {
   };
   const svc = (a: { account?: string }): AdmobService => {
     const hit = services.get(a.account ?? "");
-    if (hit && now() - hit.createdAt < ttl) return hit.svc;
+    // A service keeps the config it was created with: replace it once config.json changed (`config set` in a terminal).
+    if (hit && now() - hit.createdAt < ttl && configStamp(hit.svc.configDir) === hit.svc.configStamp) return hit.svc;
     return freshSvc(a);
   };
   // Fix commands name the profile the server runs with, so the user fixes that one.

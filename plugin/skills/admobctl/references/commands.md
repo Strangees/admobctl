@@ -213,7 +213,7 @@ They take the same arguments as the CLI, in snake_case: `max_rows`, `sort`, `com
 `admobctl_finance_export` takes `month` or `from`+`to`, `as` (`json` or `csv`), `integer_amounts`, `scale`, and returns
 the file as `content`.
 Reports default to 200 rows.
-Error `Fix:` lines carry `--profile` when the server runs with one.
+Error `Fix:` lines carry `--profile` when the server runs with one; config changes apply from the next tool call.
 
 ## Write commands (v1beta; CLI only)
 
