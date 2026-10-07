@@ -116,6 +116,39 @@ describe("AdmobService", () => {
     expect(r.truncated).toBe(false);
   });
 
+  it("merges filters that name the same dimension (an alias, other casing) instead of keeping only the last", async () => {
+    const { svc, calls } = service();
+    const unit = (n: number) => `ca-app-pub-0000000000000001/900000000${n}`;
+    await svc.networkReport({
+      from: "2026-09",
+      by: ["app"],
+      filters: {
+        unit: [unit(1)],
+        "ad-unit": [unit(2), unit(1)],
+        country: ["NO"],
+        Country: ["SE", "NO"],
+        app: ["example-quiz-ios"],
+        APP: ["ca-app-pub-0000000000000001~1111111111"],
+      },
+    });
+    const sent = calls.find((c) => c.url.includes("networkReport"))!.body as { reportSpec: { dimensionFilters: unknown } };
+    expect(sent.reportSpec.dimensionFilters).toEqual([
+      { dimension: "AD_UNIT", matchesAny: { values: [unit(1), unit(2)] } },
+      { dimension: "COUNTRY", matchesAny: { values: ["NO", "SE"] } },
+      { dimension: "APP", matchesAny: { values: ["ca-app-pub-0000000000000001~1111111111"] } },
+    ]);
+  });
+
+  it("rejects a row cap above the API's 100000 before sending anything", async () => {
+    const { svc, calls } = service();
+    const err = await svc.networkReport({ from: "2026-09", by: ["app"], maxRows: 150_000 }).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: "USAGE" });
+    expect((err as Error).message).toContain("100000");
+    expect(calls.filter((c) => c.url.includes("networkReport"))).toHaveLength(0);
+    const r = await svc.networkReport({ from: "2026-09", by: ["app"], maxRows: 100_000 });
+    expect(r.truncated).toBe(false);
+  });
+
   it("lists dimensions and metrics by the keys used in rows and totals", async () => {
     const { svc } = service();
     const r = await svc.networkReport({ from: "2026-09", to: "2026-09", by: ["app"] });

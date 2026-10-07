@@ -14020,6 +14020,12 @@ function normalizeMetric(name, kind) {
   return resolved;
 }
 var API_MAX_ROWS = 1e5;
+function checkMaxRows(n) {
+  if (!Number.isInteger(n) || n < 1 || n > API_MAX_ROWS) {
+    throw usageError(`--max-rows must be a whole number from 1 to ${API_MAX_ROWS} (the AdMob API's limit), got ${n}.`);
+  }
+  return n;
+}
 var TIME_DIMENSIONS = ["DATE", "WEEK", "MONTH"];
 var INCOMPATIBLE = {
   AD_TYPE: ["AD_REQUESTS", "MATCH_RATE", "IMPRESSION_RPM"]
@@ -14090,7 +14096,7 @@ function buildReportSpec(kind, input2) {
     spec.sortConditions = [{ metric: "ESTIMATED_EARNINGS", order: "DESCENDING" }];
   }
   if (input2.currency !== void 0) spec.localizationSettings = { currencyCode: normalizeCurrency(input2.currency) };
-  if (input2.maxRows !== void 0) spec.maxReportRows = input2.maxRows;
+  if (input2.maxRows !== void 0) spec.maxReportRows = checkMaxRows(input2.maxRows);
   return spec;
 }
 function metricNumber(key, v) {
@@ -14750,16 +14756,18 @@ var AdmobService = class _AdmobService {
     ]);
     return { current, previous };
   }
+  /** Keys that name the same dimension (unit and ad-unit, country and Country) are merged, not overwritten. */
   async resolveFilters(kind, filters) {
     const out = {};
     for (const [dim, values] of Object.entries(filters)) {
       const api = normalizeDimension(dim, kind);
-      out[api] = api === "APP" ? await Promise.all(values.map(async (v) => (await this.resolveApp(v)).appId)) : values;
+      const resolved = api === "APP" ? await Promise.all(values.map(async (v) => (await this.resolveApp(v)).appId)) : values;
+      out[api] = [.../* @__PURE__ */ new Set([...out[api] ?? [], ...resolved])];
     }
     return out;
   }
   async report(kind, q) {
-    const cap = q.maxRows ?? API_MAX_ROWS;
+    const cap = q.maxRows === void 0 ? API_MAX_ROWS : checkMaxRows(q.maxRows);
     const probe2 = cap < API_MAX_ROWS;
     if (q.compare !== void 0 && !COMPARISONS.includes(q.compare)) {
       throw usageError(`Unknown comparison "${q.compare}". Supported: ${COMPARISONS.join(", ")}`);
@@ -15955,7 +15963,7 @@ function buildProgram(io) {
   });
   const report = program2.command("report").description("Network and mediation reports");
   for (const kind of ["network", "mediation"]) {
-    report.command(kind).description(`Generate a ${kind} report`).requiredOption("--from <date>", "start, YYYY-MM or YYYY-MM-DD").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD (default: same as --from)").option("--by <dims>", `dimensions, comma-separated (e.g. app,country${kind === "mediation" ? ",ad-source" : ""})`, list).option("--metrics <metrics>", "metrics, comma-separated (default: all common ones)", list).option("--filter <k=v,\u2026>", "filter, repeatable (e.g. country=NO,SE or app=<alias>)", (v, p = []) => [...p, v]).option("--max-rows <n>", "cap the number of rows", positiveInt).option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)").option("--sort <field[:asc|desc]>", "sort by a dimension or metric of the report (default: by time, else by earnings)").addOption(new Option("--compare <period>", "add each row's change against the equal-length period just before").choices([...COMPARISONS])).action(async (o, cmd) => {
+    report.command(kind).description(`Generate a ${kind} report`).requiredOption("--from <date>", "start, YYYY-MM or YYYY-MM-DD").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD (default: same as --from)").option("--by <dims>", `dimensions, comma-separated (e.g. app,country${kind === "mediation" ? ",ad-source" : ""})`, list).option("--metrics <metrics>", "metrics, comma-separated (default: all common ones)", list).option("--filter <k=v,\u2026>", "filter, repeatable; values for one dimension add up (e.g. country=NO,SE or app=<alias>)", (v, p = []) => [...p, v]).option("--max-rows <n>", "cap the number of rows (at most 100000, the API's limit)", positiveInt).option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)").option("--sort <field[:asc|desc]>", "sort by a dimension or metric of the report (default: by time, else by earnings)").addOption(new Option("--compare <period>", "add each row's change against the equal-length period just before").choices([...COMPARISONS])).action(async (o, cmd) => {
       const s = svc(cmd);
       const q = {
         from: o.from,

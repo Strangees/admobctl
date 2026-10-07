@@ -82,6 +82,15 @@ describe("buildReportSpec", () => {
     });
   });
 
+  it("rejects a row cap outside the API's 1–100000", () => {
+    const range = { startDate: { year: 2026, month: 9, day: 1 }, endDate: { year: 2026, month: 9, day: 30 } };
+    const spec = (maxRows: number) => buildReportSpec("network", { dateRange: range, dimensions: ["app"], metrics: ["earnings"], maxRows });
+    expect(spec(100_000).maxReportRows).toBe(100_000);
+    for (const bad of [100_001, 150_000, 0, -1, 2.5]) {
+      expect(() => spec(bad)).toThrow(expect.objectContaining({ code: "USAGE", message: expect.stringContaining("100000") }));
+    }
+  });
+
   it("sorts by date when the report is a time series", () => {
     const spec = buildReportSpec("network", {
       dateRange: { startDate: { year: 2026, month: 9, day: 1 }, endDate: { year: 2026, month: 9, day: 2 } },

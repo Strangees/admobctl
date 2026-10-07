@@ -112,6 +112,27 @@ describe("cli", () => {
     expect(body.reportSpec.dimensionFilters).toEqual([{ dimension: "COUNTRY", matchesAny: { values: ["NO", "SE"] } }]);
   });
 
+  it("keeps every --filter for a dimension, also when named by an alias or in other casing", async () => {
+    const r = await cli([
+      "report", "network", "--from", "2026-09", "--by", "country",
+      "--filter", "country=NO", "--filter", "Country=SE", "--filter", "unit=ca-app-pub-0000000000000001/9000000001",
+      "--filter", "ad-unit=ca-app-pub-0000000000000001/9000000002",
+    ]);
+    expect(r.code).toBe(0);
+    const body = r.calls.find((c) => c.url.includes("networkReport"))!.body as { reportSpec: { dimensionFilters: unknown } };
+    expect(body.reportSpec.dimensionFilters).toEqual([
+      { dimension: "COUNTRY", matchesAny: { values: ["NO", "SE"] } },
+      { dimension: "AD_UNIT", matchesAny: { values: ["ca-app-pub-0000000000000001/9000000001", "ca-app-pub-0000000000000001/9000000002"] } },
+    ]);
+  });
+
+  it("rejects --max-rows above the API's limit with a usage error", async () => {
+    const r = await cli(["report", "network", "--from", "2026-09", "--by", "app", "--max-rows", "150000"]);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("100000");
+    expect(r.calls.some((c) => c.url.includes("networkReport"))).toBe(false);
+  });
+
   it("returns exit code 2 and a readable message for usage errors", async () => {
     const r = await cli(["report", "network", "--from", "2026/09", "--to", "2026-09", "--by", "app"]);
     expect(r.code).toBe(2);

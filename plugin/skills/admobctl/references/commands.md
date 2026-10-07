@@ -67,7 +67,9 @@ admobctl report mediation --from … [--to …] --by ad-source,app
 - Mediation adds: ad-source, ad-source-instance, mediation-group.
 - Metrics: earnings, requests, matched-requests, impressions, clicks, match-rate, show-rate, ctr,
   rpm (network), ecpm (mediation).
-- `--filter app=<alias>` resolves aliases; `--filter country=NO,SE` (ISO codes); repeatable.
+- `--filter app=<alias>` resolves aliases; `--filter country=NO,SE` (ISO codes); repeatable. Filters on one dimension
+  add up, also under another name: `--filter unit=A --filter ad-unit=B` keeps both ad units.
+- `--max-rows` takes 1–100000 (the AdMob API's limit); more is a usage error (exit 2).
 - JSON `dimensions` and `metrics` list the row keys (e.g. `["app"]`, `["earnings","requests",…,"rpm"]`).
 - JSON rows carry money as a rounded amount (`earnings`) plus exact `earnings_micros`. Rates are fractions (0.75 = 75%).
 - `totals` is omitted when the report is truncated (`truncated: true`).

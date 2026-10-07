@@ -130,6 +130,17 @@ export interface ReportSpec {
 /** The API's own maximum for maxReportRows. */
 export const API_MAX_ROWS = 100_000;
 
+/**
+ * A row cap the API accepts. Above its limit the API either rejects the spec or quietly returns 100000 rows, which
+ * would not look truncated, so totals would cover part of the data.
+ */
+export function checkMaxRows(n: number): number {
+  if (!Number.isInteger(n) || n < 1 || n > API_MAX_ROWS) {
+    throw usageError(`--max-rows must be a whole number from 1 to ${API_MAX_ROWS} (the AdMob API's limit), got ${n}.`);
+  }
+  return n;
+}
+
 export const TIME_DIMENSIONS = ["DATE", "WEEK", "MONTH"];
 
 /** Combinations the API rejects (both the reference and the metrics guide agree). */
@@ -220,7 +231,7 @@ export function buildReportSpec(kind: ReportKind, input: ReportSpecInput): Repor
   }
 
   if (input.currency !== undefined) spec.localizationSettings = { currencyCode: normalizeCurrency(input.currency) };
-  if (input.maxRows !== undefined) spec.maxReportRows = input.maxRows;
+  if (input.maxRows !== undefined) spec.maxReportRows = checkMaxRows(input.maxRows);
   return spec;
 }
 
