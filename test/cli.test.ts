@@ -148,12 +148,16 @@ describe("cli", () => {
       return deps!;
     };
     const work = await started(["--profile", "work", "mcp"]);
-    expect(work).toMatchObject({ profile: "work", defaultProfile: "home" });
+    expect(work.profile).toBe("work");
+    expect(work.defaultProfile?.()).toBe("home");
     expect(work.service({}).profile.name).toBe("work");
     const home = await started(["mcp"]);
     expect(home.profile).toBeUndefined();
-    expect(home.defaultProfile).toBe("home");
+    expect(home.defaultProfile?.()).toBe("home");
     expect(home.service({}).profile.name).toBe("home");
+    // Read when asked, not when the server started: a later edit of config.json shows.
+    saveConfig(dir, { defaultProfile: "work", profiles: { home: {}, work: {} } });
+    expect(home.defaultProfile?.()).toBe("work");
   });
 
   it("runs auth doctor and reports each check", async () => {

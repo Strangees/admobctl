@@ -105,8 +105,8 @@ export interface McpStartDeps {
   service: (opts: ServiceOptions) => AdmobService;
   /** --profile, if given. With defaultProfile, pins the Fix commands in tool errors to it, as run() does. */
   profile?: string;
-  /** defaultProfile in config.json when the server started. */
-  defaultProfile?: string;
+  /** defaultProfile in config.json now (read on each call: the server outlives edits to it). */
+  defaultProfile?: () => string | undefined;
 }
 
 interface GlobalOpts {
@@ -812,12 +812,12 @@ export function buildProgram(io: CliIO): Command {
     .action(async (_o, cmd: Command) => {
       if (!io.runMcp) throw new AdmobctlError("USAGE", "The mcp command is not available in this build (no MCP server wired in).");
       const { profile, account } = g(cmd);
-      let defaultProfile: string | undefined;
-      try { defaultProfile = loadConfig(dir()).defaultProfile; } catch { /* A tool call reports the config error. */ }
       await io.runMcp({
         service: (opts) => AdmobService.create({ profile, account: opts.account ?? account }, io.service),
         profile,
-        defaultProfile,
+        defaultProfile: () => {
+          try { return loadConfig(dir()).defaultProfile; } catch { return undefined; /* A tool call reports the config error. */ }
+        },
       });
       // Keep running until the client closes stdin.
       await new Promise<void>((resolve) => process.stdin.on("close", resolve));

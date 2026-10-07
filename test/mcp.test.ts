@@ -56,7 +56,7 @@ function manyMediationGroups(n: number) {
 
 async function connect(
   routes: Parameters<typeof fakeFetch>[0] = {},
-  opts: { serviceTtlMs?: number; now?: () => number; profile?: string; defaultProfile?: string } = {},
+  opts: { serviceTtlMs?: number; now?: () => number; profile?: string; defaultProfile?: () => string | undefined } = {},
 ) {
   const f = fakeFetch({
     "GET /v1/accounts?": () => jsonResponse(fixture("accounts.json")),
@@ -353,10 +353,16 @@ describe("mcp server", () => {
   });
 
   it("pins Fix lines to the configured default profile, like the CLI", async () => {
-    const { client, dir } = await connect(scopeDenied, { defaultProfile: "work" });
-    saveConfig(dir, { defaultProfile: "work", profiles: { work: {} } });
+    let configured: string | undefined = "work";
+    const { client, dir } = await connect(scopeDenied, { defaultProfile: () => configured });
+    saveConfig(dir, { defaultProfile: "work", profiles: { work: {}, home: {} } });
     const r = (await client.callTool({ name: "admobctl_list_apps", arguments: {} })) as ToolResult;
     expect(r.content[0]!.text).toMatch(/\nFix: admobctl --profile work setup login --yes$/);
+    // The default changed while the server runs: services follow config.json, and so do the Fix lines.
+    configured = "home";
+    saveConfig(dir, { defaultProfile: "home", profiles: { work: {}, home: {} } });
+    const after = (await client.callTool({ name: "admobctl_list_apps", arguments: {} })) as ToolResult;
+    expect(after.content[0]!.text).toMatch(/\nFix: admobctl --profile home setup login --yes$/);
   });
 
   it("admobctl_setup_status names a non-default profile once", async () => {

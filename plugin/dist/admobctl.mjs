@@ -16095,15 +16095,16 @@ function buildProgram(io) {
   program2.command("mcp").description("Run the MCP server over stdio (for Claude Code, Codex and other MCP clients)").action(async (_o, cmd) => {
     if (!io.runMcp) throw new AdmobctlError("USAGE", "The mcp command is not available in this build (no MCP server wired in).");
     const { profile, account } = g(cmd);
-    let defaultProfile;
-    try {
-      defaultProfile = loadConfig(dir()).defaultProfile;
-    } catch {
-    }
     await io.runMcp({
       service: (opts) => AdmobService.create({ profile, account: opts.account ?? account }, io.service),
       profile,
-      defaultProfile
+      defaultProfile: () => {
+        try {
+          return loadConfig(dir()).defaultProfile;
+        } catch {
+          return void 0;
+        }
+      }
     });
     await new Promise((resolve) => process.stdin.on("close", resolve));
   });
@@ -45561,7 +45562,10 @@ function createMcpServer(deps) {
     if (hit && now() - hit.createdAt < ttl && configStamp(hit.svc.configDir) === hit.svc.configStamp) return hit.svc;
     return freshSvc(a);
   };
-  const pinProfile = (command) => profileCommand(command, deps.profile ?? deps.defaultProfile ?? "default", deps.defaultProfile);
+  const pinProfile = (command) => {
+    const configured = deps.defaultProfile?.();
+    return profileCommand(command, deps.profile ?? configured ?? "default", configured);
+  };
   const wrap = (fn) => async (args) => {
     try {
       return ok(await fn(args));

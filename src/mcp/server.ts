@@ -33,8 +33,8 @@ export interface McpDeps {
   service: (opts: ServiceOptions) => AdmobService;
   /** --profile the server runs with, if any. With defaultProfile, pins the Fix commands in errors to it, as the CLI does. */
   profile?: string;
-  /** defaultProfile in config.json when the server started. */
-  defaultProfile?: string;
+  /** defaultProfile in config.json now: services follow edits to it, so the Fix lines must too. */
+  defaultProfile?: () => string | undefined;
   /** Reuse window per account. Default SERVICE_TTL_MS. */
   serviceTtlMs?: number;
   /** Clock in ms, for tests. Default Date.now. */
@@ -196,7 +196,10 @@ export function createMcpServer(deps: McpDeps): McpServer {
     return freshSvc(a);
   };
   // Fix commands name the profile the server runs with, so the user fixes that one.
-  const pinProfile = (command: string) => profileCommand(command, deps.profile ?? deps.defaultProfile ?? "default", deps.defaultProfile);
+  const pinProfile = (command: string) => {
+    const configured = deps.defaultProfile?.();
+    return profileCommand(command, deps.profile ?? configured ?? "default", configured);
+  };
   const wrap =
     <A>(fn: (args: A) => Promise<Record<string, unknown>>) =>
     async (args: A): Promise<ToolResult> => {
