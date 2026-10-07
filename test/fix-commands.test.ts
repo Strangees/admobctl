@@ -35,6 +35,13 @@ describe("setup fix commands", () => {
     expect(diagnoseApiError(status, body).fix).toBe(fix);
   });
 
+  it("an unusable quota project is not reported as a missing AdSense account", async () => {
+    const body = { error: { code: 403, message: "Caller does not have required permission to use project q.", details: info("USER_PROJECT_DENIED", { consumer: "projects/q" }) } };
+    const err = await rejection(client(403, body).listPayments("pub-1"));
+    expect(err.code).toBe("AUTH_QUOTA_PROJECT_INVALID");
+    expect(err.fix).toBe("admobctl setup project list");
+  });
+
   it("write and payments scope errors ask for that feature", async () => {
     expect((await rejection(client(403, scopeBody).write("POST", "accounts/pub-1/apps", {}))).fix).toBe("admobctl setup login --features write --yes");
     expect((await rejection(client(403, scopeBody).listPayments("pub-1"))).fix).toBe("admobctl setup login --features payments --yes");

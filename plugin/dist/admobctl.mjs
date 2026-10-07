@@ -10615,6 +10615,13 @@ function diagnoseApiError(status, body, hints = {}) {
   const info = errorInfo(parsed);
   const reason = info?.reason;
   const opts = { status };
+  if (reason === "USER_PROJECT_DENIED" || reason === "CONSUMER_INVALID") {
+    const project = info?.metadata?.consumer?.replace(/^projects\//, "");
+    return new AdmobctlError("AUTH_QUOTA_PROJECT_INVALID", `The quota project${project ? ` ${project}` : ""} cannot be used: ${message}`, {
+      ...opts,
+      fix: "admobctl setup project list"
+    });
+  }
   if (/quota project/i.test(message)) {
     return new AdmobctlError("AUTH_QUOTA_PROJECT_MISSING", "No quota project is set for your Application Default Credentials.", {
       ...opts,
@@ -11427,8 +11434,26 @@ var CloudClient = class {
       url2,
       { method, headers, body: body === void 0 ? void 0 : JSON.stringify(body) },
       // Enabling is not idempotent-safe to blind-retry mid-operation; reads may retry.
-      { fetch: this.o.fetch, sleep: this.o.sleep, retries: method === "GET" ? 2 : 0 }
+      { fetch: this.o.fetch, sleep: this.o.sleep, retries: method === "GET" ? 2 : 0, diagnose: (status, b, hints) => this.error(status, b, hints) }
     );
+  }
+  /** diagnoseApiError speaks of AdMob; these calls need cloud-platform and rights on a Google Cloud project instead. */
+  error(status, body, hints) {
+    const err = diagnoseApiError(status, body, hints);
+    if (err.code === "AUTH_SCOPE_MISSING") {
+      return new AdmobctlError("AUTH_SCOPE_MISSING", "Your sign-in lacks the cloud-platform scope that Google Cloud project and API setup needs.", {
+        status,
+        fix: this.o.scopeFix ?? "admobctl setup login --yes"
+      });
+    }
+    if (err.code === "PERMISSION_DENIED") {
+      const detail = body?.error?.message ?? err.message;
+      return new AdmobctlError("PERMISSION_DENIED", `Google Cloud denied the request: ${detail}`, {
+        status,
+        fix: "admobctl setup project list  (then use a project where your Google account may enable APIs)"
+      });
+    }
+    return err;
   }
   async listProjects() {
     const out = [];
