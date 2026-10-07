@@ -49,6 +49,20 @@ describe("parseAppAds", () => {
   it("ignores lines with too few fields", () => {
     expect(parseAppAds("google.com, pub-1\njust text")).toEqual([]);
   });
+
+  it("drops IAB extension fields after a semicolon", () => {
+    expect(parseAppAds(`google.com, ${PUB}, DIRECT;ext\ngoogle.com, ${PUB}, DIRECT, ${GOOGLE_CERT_ID};ext=1`)).toEqual([
+      { domain: "google.com", publisherId: PUB, relationship: "DIRECT", line: 1 },
+      { domain: "google.com", publisherId: PUB, relationship: "DIRECT", certId: GOOGLE_CERT_ID, line: 2 },
+    ]);
+  });
+
+  it("splits lines on a bare CR too", () => {
+    expect(parseAppAds(`# old Mac line endings\r${LINE}\rothernetwork.com, 123, RESELLER`).map((r) => [r.domain, r.line])).toEqual([
+      ["google.com", 2],
+      ["othernetwork.com", 3],
+    ]);
+  });
 });
 
 describe("appAdsHost", () => {
@@ -171,6 +185,33 @@ describe("checkAppAds", () => {
     expect(appAdsCalls(calls)).toEqual(["https://example.com/app-ads.txt", "http://example.com/app-ads.txt"]);
   });
 
+  it("treats 410 Gone as a missing file", async () => {
+    const { svc } = service({
+      "GET https://example.com/app-ads.txt": () => text("Gone", 410),
+      "GET http://example.com/app-ads.txt": () => text("Gone", 410),
+    });
+    const res = await checkAppAds(svc, { app: "example-quiz-ios" });
+    expect(res.apps[0]).toMatchObject({ status: "missing-file" });
+  });
+
+  it.each([401, 403, 429, 500, 503])("reports HTTP %i as blocked or a server error, not a missing file", async (status) => {
+    const { svc } = service({
+      "GET https://example.com/app-ads.txt": () => text("Nope", status),
+      "GET http://example.com/app-ads.txt": () => text("Nope", status),
+    });
+    const res = await checkAppAds(svc, { app: "example-quiz-ios" });
+    expect(res.apps[0]).toMatchObject({ status: "unreachable" });
+    expect(res.apps[0]!.detail).toContain(`HTTP ${status}`);
+    expect(res.apps[0]!.detail).toMatch(status >= 500 ? /server error/ : /blocked/);
+  });
+
+  it("identifies itself with a descriptive User-Agent", async () => {
+    const { svc, calls } = service({ "GET https://example.com/app-ads.txt": () => text(LINE) });
+    await checkAppAds(svc, { app: "example-quiz-ios" });
+    const call = calls.find((c) => c.url.endsWith("/app-ads.txt"))!;
+    expect(call.headers["user-agent"]).toMatch(/^admobctl\/\S+ \(\+https:\/\/github\.com\/Strangees\/admobctl\)$/);
+  });
+
   it("accepts a file served only over http", async () => {
     const { svc } = service({
       "GET https://example.com/app-ads.txt": () => { throw new TypeError("fetch failed"); },
@@ -195,6 +236,20 @@ describe("checkAppAds", () => {
     const res = await checkAppAds(svc, { app: "example-quiz-ios" });
     expect(res.apps[0]).toMatchObject({ status: "no-line" });
     expect(res.apps[0]!.detail).toContain("pub-0000000000000009");
+  });
+
+  it("says to drop the ca-app- prefix when the line uses the app ID form of this publisher ID", async () => {
+    const { svc } = service({ "GET https://example.com/app-ads.txt": () => text(`google.com, ca-app-${PUB}, DIRECT, ${GOOGLE_CERT_ID}`) });
+    const res = await checkAppAds(svc, { app: "example-quiz-ios" });
+    expect(res.apps[0]).toMatchObject({ status: "no-line" });
+    expect(res.apps[0]!.detail).toContain(`ca-app-${PUB} (line 1)`);
+    expect(res.apps[0]!.detail).toContain(`use ${PUB}, not ca-app-${PUB}`);
+  });
+
+  it("accepts a DIRECT line that carries an extension field", async () => {
+    const { svc } = service({ "GET https://example.com/app-ads.txt": () => text(`google.com, ${PUB}, DIRECT;ext`) });
+    const res = await checkAppAds(svc, { app: "example-quiz-ios" });
+    expect(res.apps[0]).toMatchObject({ status: "ok", notes: [] });
   });
 
   it("names at most three other publisher IDs", async () => {

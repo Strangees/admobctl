@@ -12631,14 +12631,18 @@ async function analyzeWaterfall(svc, opts) {
   };
 }
 
+// src/version.ts
+var VERSION = true ? "0.5.2" : "0.0.0-dev";
+
 // src/core/app-ads.ts
 var GOOGLE_CERT_ID = "f08c47fec0942fa0";
 var ITUNES_LOOKUP = "https://itunes.apple.com/lookup";
 var TIMEOUT_MS = 1e4;
+var USER_AGENT = `admobctl/${VERSION} (+https://github.com/Strangees/admobctl)`;
 function parseAppAds(body) {
   const records = [];
-  body.split(/\r?\n/).forEach((raw, i) => {
-    const text = raw.replace(/#.*/, "").trim();
+  body.split(/\r\n|\r|\n/).forEach((raw, i) => {
+    const text = raw.replace(/#.*/, "").replace(/;.*/, "").trim();
     if (!text || /^[a-z_-]+\s*=/i.test(text)) return;
     const [domain2, publisherId, relationship, certId] = text.split(",").map((f) => f.trim());
     if (!domain2 || !publisherId || !relationship) return;
@@ -12670,7 +12674,7 @@ var PROBLEMS = /* @__PURE__ */ new Set(["missing-file", "html", "no-line", "rese
 async function probe(doFetch, url2) {
   log.debug(`GET ${url2}`);
   try {
-    const res = await doFetch(url2, { redirect: "follow", signal: AbortSignal.timeout(TIMEOUT_MS) });
+    const res = await doFetch(url2, { redirect: "follow", headers: { "user-agent": USER_AGENT }, signal: AbortSignal.timeout(TIMEOUT_MS) });
     const body = await res.text();
     const finalUrl = res.url || url2;
     if (!res.ok) return { kind: "status", url: finalUrl, status: res.status };
@@ -12736,14 +12740,20 @@ function siteFor(app, ios, opts, configured) {
     `Google Play listings cannot be read without Play Console access. AdMob uses the website in the listing's contact details; ${SET_WEBSITE}`
   );
 }
+function statusVerdict(url2, status) {
+  if (status === 404 || status === 410) return { status: "missing-file", detail: `${url2} returned HTTP ${status}.`, notes: [] };
+  const why = status === 401 || status === 403 || status === 429 ? "the request was blocked, perhaps by a firewall, bot filter or rate limit" : status >= 500 ? "the site had a server error" : "the site did not return it";
+  return { status: "unreachable", detail: `Could not read ${url2}: ${why} (HTTP ${status}). Check that it opens in a browser.`, notes: [] };
+}
 function verdict(result, host, publisherId) {
   if (result.kind === "error") return { status: "unreachable", detail: `Could not reach ${host}: ${result.message}`, notes: [] };
-  if (result.kind === "status") return { status: "missing-file", detail: `${result.url} returned HTTP ${result.status}.`, notes: [] };
+  if (result.kind === "status") return statusVerdict(result.url, result.status);
   if (result.kind === "html") {
     return { status: "html", detail: `${result.url} returned a web page, not a plain-text app-ads.txt.`, fileUrl: result.url, notes: [] };
   }
+  const pub = publisherId.toLowerCase();
   const google = parseAppAds(result.body).filter((r) => r.domain === "google.com");
-  const mine = google.filter((r) => r.publisherId === publisherId.toLowerCase());
+  const mine = google.filter((r) => r.publisherId === pub);
   const direct = mine.find((r) => r.relationship === "DIRECT");
   if (direct) {
     const notes = direct.certId && direct.certId !== GOOGLE_CERT_ID ? [`Line ${direct.line} has certification ID ${direct.certId}; Google's is ${GOOGLE_CERT_ID}.`] : [];
@@ -12753,6 +12763,15 @@ function verdict(result, host, publisherId) {
     return {
       status: "reseller-only",
       detail: `${result.url} lists ${publisherId} as ${mine[0].relationship} (line ${mine[0].line}); AdMob needs DIRECT.`,
+      fileUrl: result.url,
+      notes: []
+    };
+  }
+  const prefixed = google.find((r) => r.publisherId.startsWith("ca-app-") && r.publisherId.slice(7).split(/[~/]/)[0] === pub);
+  if (prefixed) {
+    return {
+      status: "no-line",
+      detail: `${result.url} lists ${prefixed.publisherId} (line ${prefixed.line}); app-ads.txt takes the publisher ID: use ${publisherId}, not ca-app-${publisherId}.`,
       fileUrl: result.url,
       notes: []
     };
@@ -12967,9 +12986,6 @@ async function financeBalance(svc) {
     notes: unpaid ? [BALANCE_NOTE] : ["No unpaid balance reported.", BALANCE_NOTE]
   };
 }
-
-// src/version.ts
-var VERSION = true ? "0.5.2" : "0.0.0-dev";
 
 // src/core/journal.ts
 var JOURNAL_FORMAT = "revenue-journal/1";
@@ -45576,7 +45592,7 @@ function createMcpServer(deps) {
     "admobctl_check_app_ads",
     {
       title: "Check app-ads.txt",
-      description: "Check each app's app-ads.txt the way AdMob's crawler does: the developer website from the App Store listing (Google Play listings cannot be read, so Android apps need `website` from the user or one saved with `admobctl config set websites.<alias> <url>`; do not guess it), https then http, and a google.com line with the publisher ID marked DIRECT. Per app: ok, missing-file, html (a web page instead of the file), no-line, reseller-only, unreachable, no-website, unknown-website or not-linked, plus the exact line to add. Fetches the store lookup and the developer websites, not just the AdMob API.",
+      description: "Check each app's app-ads.txt the way AdMob's crawler does: the developer website from the App Store listing (Google Play listings cannot be read, so Android apps need `website` from the user or one saved with `admobctl config set websites.<alias> <url>`; do not guess it), https then http, and a google.com line with the publisher ID marked DIRECT. Per app: ok, missing-file (HTTP 404/410), html (a web page instead of the file), no-line, reseller-only, unreachable (network error, blocked request or server error: the file may exist), no-website, unknown-website or not-linked, plus the exact line to add. Fetches the store lookup and the developer websites, not just the AdMob API.",
       inputSchema: {
         ...appArg,
         website: external_exports.string().optional().describe("Developer website for apps whose store listing cannot be read (Android), e.g. example.com"),

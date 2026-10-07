@@ -219,7 +219,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
     {
       title: "Check app-ads.txt",
       description:
-        "Check each app's app-ads.txt the way AdMob's crawler does: the developer website from the App Store listing (Google Play listings cannot be read, so Android apps need `website` from the user or one saved with `admobctl config set websites.<alias> <url>`; do not guess it), https then http, and a google.com line with the publisher ID marked DIRECT. Per app: ok, missing-file, html (a web page instead of the file), no-line, reseller-only, unreachable, no-website, unknown-website or not-linked, plus the exact line to add. Fetches the store lookup and the developer websites, not just the AdMob API.",
+        "Check each app's app-ads.txt the way AdMob's crawler does: the developer website from the App Store listing (Google Play listings cannot be read, so Android apps need `website` from the user or one saved with `admobctl config set websites.<alias> <url>`; do not guess it), https then http, and a google.com line with the publisher ID marked DIRECT. Per app: ok, missing-file (HTTP 404/410), html (a web page instead of the file), no-line, reseller-only, unreachable (network error, blocked request or server error: the file may exist), no-website, unknown-website or not-linked, plus the exact line to add. Fetches the store lookup and the developer websites, not just the AdMob API.",
       inputSchema: {
         ...appArg,
         website: z.string().optional().describe("Developer website for apps whose store listing cannot be read (Android), e.g. example.com"),

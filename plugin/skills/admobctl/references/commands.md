@@ -46,6 +46,9 @@ Custom alias: `admobctl config set aliases.<alias> <appId>`.
 app-ads.txt: iOS websites come from the App Store listing's marketing URL. Google Play listings cannot be read, so Android
 apps use `--website` (this run), then `admobctl config set websites.<alias> <url>` (per app), then `admobctl config set website <url>`
 (all apps); without one they show `unknown-website`. Ask the user for the website instead of guessing it.
+`missing-file` means HTTP 404 or 410; a blocked request (401, 403, 429), a server error (5xx) or a network error is
+`unreachable`, because the file may well be there. A line with `ca-app-pub-…` instead of `pub-…` is `no-line`, and the
+detail says which ID to use.
 
 `mediation-groups export` drops IDs and output-only fields, keys the lines "-1", "-2"…, and leaves out the AdMob Network
 line (a new group gets its own; `--with-admob-line` keeps it, and the `create` dry run then warns that AdMob may reject
