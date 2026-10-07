@@ -198,7 +198,7 @@ export class AdmobService {
   static create(opts: ServiceOptions = {}, deps: ServiceDeps = {}): AdmobService {
     const dir = deps.configDir ?? configDir();
     const profile = resolveProfile(loadConfig(dir), opts.profile);
-    const tokenProvider = deps.tokenProvider ?? resolveTokenProvider(profile, { configDir: dir, exec: deps.exec, fetch: deps.fetch });
+    const tokenProvider = deps.tokenProvider ?? resolveTokenProvider(profile, { configDir: dir, exec: deps.exec, fetch: deps.fetch, sleep: deps.sleep });
     const client = new AdmobClient({
       getToken: () => tokenProvider.getToken(),
       quotaProject: profile.quotaProject ?? tokenProvider.quotaProject(),

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { runDoctor, type DoctorDeps } from "../src/core/auth/doctor.js";
+import { fetchTokenInfo, runDoctor, type DoctorDeps } from "../src/core/auth/doctor.js";
 import { AdmobctlError, CLOUD_PLATFORM_SCOPE } from "../src/core/errors.js";
-import { fixture } from "./helpers.js";
+import { fakeFetch, fixture, jsonResponse, noSleep } from "./helpers.js";
 
 const okDeps = (): DoctorDeps => ({
   mode: "adc",
@@ -188,5 +188,36 @@ describe("runDoctor setup checks", () => {
     expect(byIdx["quota-project"]!.fix_command).toBe("admobctl setup project list");
     expect(byIdx.apps!.fix).toBeTruthy();
     expect(byIdx.apps!.fix_command).toBeUndefined();
+  });
+});
+
+describe("fetchTokenInfo", () => {
+  const READ = "https://www.googleapis.com/auth/admob.readonly";
+
+  it("retries a transient 5xx", async () => {
+    const f = fakeFetch({ "POST /tokeninfo": () => (f.calls.length === 1 ? jsonResponse({}, 503) : jsonResponse({ scope: READ, expires_in: "3000" })) });
+    expect(await fetchTokenInfo("t", f.fetch, noSleep)).toEqual({ scopes: [READ], expiresIn: 3000 });
+    expect(f.calls).toHaveLength(2);
+  });
+
+  it("reports a tokeninfo outage as such, not as a rejected token", async () => {
+    const f = fakeFetch({ "POST /tokeninfo": () => jsonResponse({}, 500) });
+    const err = await fetchTokenInfo("t", f.fetch, noSleep).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: "API_ERROR", status: 500 });
+    expect((err as Error).message).not.toMatch(/rejected/);
+  });
+
+  it("is a rejected token only on 400/401", async () => {
+    for (const status of [400, 401]) {
+      const f = fakeFetch({ "POST /tokeninfo": () => jsonResponse({ error_description: "Invalid Value" }, status) });
+      await expect(fetchTokenInfo("t", f.fetch, noSleep)).rejects.toMatchObject({ code: "AUTH_TOKEN_EXPIRED", fix: "admobctl setup login --yes" });
+    }
+  });
+
+  it("turns a network failure into an AdmobctlError", async () => {
+    const down = (async () => {
+      throw new TypeError("fetch failed");
+    }) as unknown as typeof fetch;
+    await expect(fetchTokenInfo("t", down, noSleep)).rejects.toBeInstanceOf(AdmobctlError);
   });
 });

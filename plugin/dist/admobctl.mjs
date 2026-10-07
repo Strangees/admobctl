@@ -10716,6 +10716,126 @@ function resolveApp(input2, index) {
   throw usageError(`Unknown app "${input2}". Known apps: ${index.map((a) => a.alias).join(", ") || "(none)"}`);
 }
 
+// src/core/log.ts
+var verbose = Boolean(process.env.ADMOBCTL_DEBUG);
+var log = {
+  setVerbose(v) {
+    verbose = v;
+  },
+  debug(msg) {
+    if (verbose) process.stderr.write(`[admobctl] ${msg}
+`);
+  },
+  warn(msg) {
+    process.stderr.write(`warning: ${msg}
+`);
+  }
+};
+
+// src/core/http.ts
+var DEFAULT_TIMEOUT_MS = 3e4;
+var DEFAULT_MAX_RETRY_AFTER_MS = 6e4;
+function combineSignals(timeout, caller) {
+  if (!caller) return timeout;
+  if (typeof AbortSignal.any === "function") return AbortSignal.any([caller, timeout]);
+  const ctl = new AbortController();
+  const forward = (s) => {
+    if (s.aborted) ctl.abort(s.reason);
+    else s.addEventListener("abort", () => ctl.abort(s.reason), { once: true });
+  };
+  forward(caller);
+  forward(timeout);
+  return ctl.signal;
+}
+var defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function isRetryableStatus(status) {
+  return status === 429 || status >= 500;
+}
+function retryAfterMs(res) {
+  const h = res.headers.get("retry-after");
+  if (!h) return void 0;
+  const secs = Number(h);
+  if (Number.isFinite(secs)) return secs * 1e3;
+  const at = Date.parse(h);
+  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : void 0;
+}
+async function readBody(res) {
+  const text = await res.text();
+  if (!text) return void 0;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+async function attemptOnce(doFetch, url2, init, canRetry, backoff, maxRetryAfterMs) {
+  const res = await doFetch(url2, init);
+  if (res.ok) return { kind: "ok", status: res.status, body: await readBody(res) };
+  if (!isRetryableStatus(res.status)) return { kind: "fail", status: res.status, body: await readBody(res) };
+  const retryAfter = retryAfterMs(res);
+  if (!canRetry) return { kind: "fail", status: res.status, body: await readBody(res), retryAfterMs: retryAfter };
+  if (retryAfter !== void 0 && retryAfter > maxRetryAfterMs) {
+    log.debug(`HTTP ${res.status}; Retry-After ${retryAfter}ms exceeds cap ${maxRetryAfterMs}ms; not retrying`);
+    return { kind: "fail", status: res.status, body: await readBody(res), retryAfterMs: retryAfter };
+  }
+  await res.body?.cancel().catch(() => {
+  });
+  return { kind: "retry", status: res.status, wait: retryAfter ?? backoff };
+}
+async function requestJson(url2, init, opts = {}) {
+  const doFetch = opts.fetch ?? fetch;
+  const sleep = opts.sleep ?? defaultSleep;
+  const retries = opts.retries ?? 4;
+  const base = opts.baseDelayMs ?? 500;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const maxRetryAfterMs = opts.maxRetryAfterMs ?? DEFAULT_MAX_RETRY_AFTER_MS;
+  for (let attempt = 0; ; attempt++) {
+    await opts.beforeAttempt?.();
+    const backoff = base * 2 ** attempt + Math.floor(Math.random() * base * 0.25);
+    const timer = new AbortController();
+    const timeoutId = setTimeout(
+      () => timer.abort(new Error(`Request timed out after ${timeoutMs}ms`)),
+      timeoutMs
+    );
+    let outcome;
+    const started = Date.now();
+    try {
+      const signal = combineSignals(timer.signal, init.signal);
+      outcome = await attemptOnce(doFetch, url2, { ...init, signal }, attempt < retries, backoff, maxRetryAfterMs);
+    } catch (err) {
+      if (init.signal?.aborted) throw err;
+      const timedOut = timer.signal.aborted;
+      const host = new URL(url2).host;
+      if (attempt >= retries) {
+        if (timedOut) {
+          throw new AdmobctlError(
+            "API_ERROR",
+            `Request to ${host} timed out after ${timeoutMs}ms (${attempt + 1} attempts).`,
+            { cause: err, fix: "Check your connection and retry." }
+          );
+        }
+        throw new AdmobctlError("API_ERROR", `Network error calling ${host}: ${err.message}`, {
+          cause: err,
+          fix: "Check your internet connection and retry."
+        });
+      }
+      log.debug(`${timedOut ? `timeout after ${timeoutMs}ms` : `network error (${err.message})`}; retrying in ${backoff}ms`);
+      await sleep(backoff);
+      continue;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    log.debug(`${init.method ?? "GET"} ${url2} \u2192 ${outcome.status} (${Date.now() - started}ms)`);
+    if (outcome.kind === "ok") return outcome.body;
+    if (outcome.kind === "fail") {
+      log.debug(`response: ${(typeof outcome.body === "string" ? outcome.body : JSON.stringify(outcome.body) ?? "").slice(0, 2e3)}`);
+      throw (opts.diagnose ?? diagnoseApiError)(outcome.status, outcome.body, { retryAfterMs: outcome.retryAfterMs });
+    }
+    log.debug(`HTTP ${outcome.status}; retrying in ${outcome.wait}ms`);
+    await sleep(outcome.wait);
+  }
+}
+
 // src/core/setup/features.ts
 var FEATURE_ORDER = ["read", "write", "payments"];
 var FEATURES = {
@@ -10751,20 +10871,360 @@ function featuresFlag(features) {
   return extra.length ? ` --features ${extra.join(",")}` : "";
 }
 
+// src/core/auth/oauth.ts
+import { createHash, randomBytes } from "node:crypto";
+import { chmodSync as chmodSync2, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { join } from "node:path";
+
+// src/core/exec.ts
+import { spawn } from "node:child_process";
+import { statSync } from "node:fs";
+import { win32 } from "node:path";
+var exec = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
+  const env = opts.env ?? process.env;
+  const { file: file2, args: argv, windowsVerbatimArguments } = spawnTarget(cmd, args, { env });
+  if (opts.background) {
+    const child2 = spawn(file2, argv, { stdio: "ignore", detached: true, shell: false, env, windowsVerbatimArguments });
+    child2.once("error", reject);
+    child2.once("spawn", () => {
+      child2.unref();
+      resolve({ code: 0, stdout: "", stderr: "" });
+    });
+    return;
+  }
+  const stdin = opts.input === void 0 ? "ignore" : "pipe";
+  const child = spawn(file2, argv, {
+    stdio: opts.interactive ? ["inherit", 2, "inherit"] : [stdin, "pipe", "pipe"],
+    shell: false,
+    env,
+    windowsVerbatimArguments
+  });
+  let stdout = "";
+  let stderr = "";
+  const timer = opts.timeoutMs ? setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs) : void 0;
+  child.stdout?.on("data", (d) => stdout += d);
+  child.stderr?.on("data", (d) => stderr += d);
+  child.on("error", (err) => {
+    if (timer) clearTimeout(timer);
+    reject(err);
+  });
+  child.on("close", (code2) => {
+    if (timer) clearTimeout(timer);
+    resolve({ code: code2 ?? 1, stdout, stderr });
+  });
+  child.stdin?.on("error", () => {
+  });
+  child.stdin?.end(opts.input);
+});
+var isFile = (p) => {
+  try {
+    return statSync(p).isFile();
+  } catch {
+    return false;
+  }
+};
+var envValue = (env, name) => Object.entries(env).find(([k]) => k.toUpperCase() === name.toUpperCase())?.[1];
+function findBatchFile(cmd, env, exists) {
+  const batch = (p) => /\.(cmd|bat)$/i.test(p) ? p : void 0;
+  if (/[\\/]/.test(cmd)) return batch(cmd);
+  const exts = (envValue(env, "PATHEXT") ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+  const names = win32.extname(cmd) ? [cmd] : exts.map((e) => cmd + e);
+  for (const dir of (envValue(env, "PATH") ?? "").split(";")) {
+    const d = dir.replace(/"/g, "").trim();
+    if (!d) continue;
+    for (const name of names) {
+      const p = win32.join(d, name);
+      if (exists(p)) return batch(p);
+    }
+  }
+  return void 0;
+}
+var CMD_META = /([()[\]%!^"`<>&|;, *?])/g;
+function batchArg(arg) {
+  if (/[%!\r\n\0]/.test(arg)) throw new Error(`Argument ${JSON.stringify(arg)} cannot be passed safely to a Windows batch file.`);
+  const quoted = `"${arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, "$1$1")}"`;
+  return quoted.replace(CMD_META, "^$1").replace(CMD_META, "^$1");
+}
+function spawnTarget(cmd, args, o = {}) {
+  const env = o.env ?? process.env;
+  if ((o.platform ?? process.platform) !== "win32") return { file: cmd, args };
+  const batch = findBatchFile(cmd, env, o.isFile ?? isFile);
+  if (!batch) return { file: cmd, args };
+  if (/[%!"\r\n\0]/.test(batch)) throw new Error(`The path ${batch} cannot be passed safely to cmd.exe.`);
+  const line = [`"${batch}"`, ...args.map(batchArg)].join(" ");
+  return { file: envValue(env, "ComSpec") ?? "cmd.exe", args: ["/d", "/s", "/c", `"${line}"`], windowsVerbatimArguments: true };
+}
+
+// src/core/fs.ts
+import { chmodSync, mkdirSync, statSync as statSync2 } from "node:fs";
+import { basename } from "node:path";
+function ensurePrivateDir(dir) {
+  if (mkdirSync(dir, { recursive: true, mode: 448 }) !== void 0) {
+    chmodSync(dir, 448);
+    return;
+  }
+  if (process.platform === "win32" || typeof process.getuid !== "function") return;
+  const st = statSync2(dir);
+  if ((st.mode & 63) === 0) return;
+  const warning = `${dir} is accessible to other users (mode ${(st.mode & 511).toString(8)}). Fix: chmod 700 ${dir}`;
+  if (basename(dir) === ".admobctl" && st.uid === process.getuid()) {
+    try {
+      chmodSync(dir, 448);
+      return;
+    } catch {
+    }
+  }
+  log.warn(warning);
+}
+
+// src/core/auth/oauth.ts
+var AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
+var TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
+var REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke";
+var KEYCHAIN_SERVICE = "admobctl";
+var KeychainSecretStore = class {
+  constructor(exec2 = exec) {
+    this.exec = exec2;
+  }
+  exec;
+  async get(profile) {
+    const r = await this.exec("security", ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", profile, "-w"]);
+    if (r.code !== 0) return void 0;
+    return r.stdout.replace(/\n$/, "") || void 0;
+  }
+  async set(profile, value) {
+    if (!/^[A-Za-z0-9._-]+$/.test(profile)) throw new AdmobctlError("USAGE", `Invalid profile name "${profile}"`);
+    const hex3 = Buffer.from(value, "utf8").toString("hex");
+    const r = await this.exec("security", ["-i"], {
+      input: `add-generic-password -U -s ${KEYCHAIN_SERVICE} -a ${profile} -X ${hex3}
+`
+    });
+    if (r.code !== 0) throw new AdmobctlError("CONFIG", `Could not write to the macOS Keychain: ${r.stderr.trim()}`);
+  }
+  async delete(profile) {
+    await this.exec("security", ["delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", profile]);
+  }
+};
+var FileSecretStore = class {
+  constructor(dir) {
+    this.dir = dir;
+  }
+  dir;
+  file(profile) {
+    if (!/^[A-Za-z0-9._-]+$/.test(profile)) throw new AdmobctlError("USAGE", `Invalid profile name "${profile}"`);
+    return join(this.dir, `credentials-${profile}.json`);
+  }
+  async get(profile) {
+    const f = this.file(profile);
+    return existsSync(f) ? readFileSync(f, "utf8") : void 0;
+  }
+  async set(profile, value) {
+    ensurePrivateDir(this.dir);
+    const file2 = this.file(profile);
+    const tmp = `${file2}.${process.pid}.tmp`;
+    rmSync(tmp, { force: true });
+    writeFileSync(tmp, value, { mode: 384, flag: "wx" });
+    renameSync(tmp, file2);
+    chmodSync2(file2, 384);
+  }
+  async delete(profile) {
+    rmSync(this.file(profile), { force: true });
+  }
+};
+function defaultSecretStore(configDir2, exec2) {
+  return process.platform === "darwin" ? new KeychainSecretStore(exec2) : new FileSecretStore(configDir2);
+}
+function createPkce() {
+  const verifier = randomBytes(48).toString("base64url");
+  const challenge = createHash("sha256").update(verifier).digest("base64url");
+  return { verifier, challenge };
+}
+function buildAuthUrl(o) {
+  const url2 = new URL(AUTH_ENDPOINT);
+  url2.search = new URLSearchParams({
+    client_id: o.clientId,
+    redirect_uri: o.redirectUri,
+    response_type: "code",
+    scope: [ADMOB_SCOPE, ...o.write ? [MONETIZATION_SCOPE] : [], ...o.payments ? [ADSENSE_SCOPE] : [], ...o.cloudPlatform ? [CLOUD_PLATFORM_SCOPE] : []].join(" "),
+    code_challenge: o.pkce.challenge,
+    code_challenge_method: "S256",
+    access_type: "offline",
+    prompt: "consent",
+    state: o.state
+  }).toString();
+  return url2.toString();
+}
+var DONE_PAGE = `<!doctype html><meta charset="utf-8"><title>admobctl</title>
+<body style="font:16px system-ui;margin:3em">Signed in. You can close this tab and return to the terminal.</body>`;
+function waitForLoopbackCode(o) {
+  let resolveReady;
+  let rejectReady;
+  const ready = new Promise((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
+  const code2 = new Promise((resolve, reject) => {
+    const server = createServer((req, res) => {
+      const url2 = new URL(req.url ?? "/", "http://127.0.0.1");
+      const err = url2.searchParams.get("error");
+      const got = url2.searchParams.get("code");
+      const finish = (status, body, outcome) => {
+        res.writeHead(status, { "content-type": "text/html; charset=utf-8" }).end(body);
+        clearTimeout(timer);
+        server.close();
+        outcome();
+      };
+      if (!got && !err) return void res.writeHead(404).end();
+      if (url2.searchParams.get("state") !== o.state) {
+        return finish(400, "State mismatch.", () => reject(new AdmobctlError("AUTH_NO_CREDENTIALS", "OAuth state mismatch; login aborted.")));
+      }
+      if (err) return finish(400, `Login failed: ${err}`, () => reject(new AdmobctlError("AUTH_NO_CREDENTIALS", `Google returned an error: ${err}`)));
+      finish(200, DONE_PAGE, () => resolve(got));
+    });
+    const timer = setTimeout(() => {
+      server.close();
+      reject(new AdmobctlError("AUTH_NO_CREDENTIALS", "Timed out waiting for the browser login.", { fix: "admobctl auth login" }));
+    }, o.timeoutMs ?? 3e5);
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      resolveReady({ redirectUri: `http://127.0.0.1:${port}` });
+    });
+    server.on("error", (err) => {
+      clearTimeout(timer);
+      const e = new AdmobctlError("AUTH_NO_CREDENTIALS", `Could not listen on 127.0.0.1 for Google's sign-in redirect: ${err.message}`, {
+        cause: err,
+        fix: "admobctl auth login"
+      });
+      rejectReady(e);
+      reject(e);
+    });
+  });
+  ready.catch(() => {
+  });
+  code2.catch(() => {
+  });
+  return { ready, code: code2 };
+}
+function googleUnavailable(what, status, hints) {
+  return new AdmobctlError(status === 429 ? "RATE_LIMITED" : "API_ERROR", `${what} is unavailable right now (HTTP ${status}).`, {
+    status,
+    fix: hints.retryAfterMs === void 0 ? "Wait a minute and retry." : `Retry in about ${formatDuration(hints.retryAfterMs)}.`
+  });
+}
+function tokenError(json2, status, grantType, loginFix) {
+  const msg = `${json2.error ?? status}${json2.error_description ? `: ${json2.error_description}` : ""}`;
+  if (json2.error === "invalid_grant") {
+    const what = grantType === "refresh_token" ? "Your saved login is no longer valid" : "Google did not accept the sign-in";
+    return new AdmobctlError("AUTH_TOKEN_EXPIRED", `${what} (${msg}).`, { status, fix: loginFix });
+  }
+  if (status === 400 || status === 401 || json2.error) {
+    return new AdmobctlError("AUTH_NO_CREDENTIALS", `Google token endpoint error: ${msg}`, {
+      status,
+      fix: "Check the OAuth client ID/secret (a Desktop app client in Google Cloud Console), then: admobctl auth login"
+    });
+  }
+  return new AdmobctlError("API_ERROR", `Google token endpoint error: HTTP ${status}`, { status, fix: "Wait a minute and retry." });
+}
+async function postToken(params, http, loginFix) {
+  const json2 = await requestJson(
+    TOKEN_ENDPOINT,
+    { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(params).toString() },
+    {
+      fetch: http.fetch,
+      sleep: http.sleep,
+      retries: 2,
+      diagnose: (status, body, hints) => status === 429 || status >= 500 ? googleUnavailable("Google's sign-in service (oauth2.googleapis.com)", status, hints) : tokenError(typeof body === "object" && body ? body : {}, status, params.grant_type, loginFix)
+    }
+  ) ?? {};
+  if (json2.error) throw tokenError(json2, 200, params.grant_type, loginFix);
+  return json2;
+}
+async function exchangeCode(o, doFetch = fetch, sleep) {
+  const params = {
+    grant_type: "authorization_code",
+    code: o.code,
+    code_verifier: o.verifier,
+    client_id: o.clientId,
+    redirect_uri: o.redirectUri
+  };
+  if (o.clientSecret) params.client_secret = o.clientSecret;
+  const t = await postToken(params, { fetch: doFetch, sleep }, "admobctl auth login");
+  if (!t.refresh_token) {
+    throw new AdmobctlError("AUTH_NO_CREDENTIALS", "Google did not return a refresh token.", {
+      fix: "Remove admobctl's access at https://myaccount.google.com/permissions and run admobctl auth login again."
+    });
+  }
+  return { refreshToken: t.refresh_token, accessToken: t.access_token, scope: t.scope };
+}
+async function revokeToken(token, doFetch = fetch) {
+  await doFetch(REVOKE_ENDPOINT, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ token }).toString()
+  }).catch(() => void 0);
+}
+var OAuthTokenProvider = class {
+  constructor(deps) {
+    this.deps = deps;
+  }
+  deps;
+  mode = "oauth";
+  cached;
+  loginFix() {
+    return `admobctl auth login --client-id <id>${this.deps.profile === "default" ? "" : ` --profile ${this.deps.profile}`}`;
+  }
+  async stored() {
+    const raw = await this.deps.store.get(this.deps.profile);
+    if (!raw) {
+      throw new AdmobctlError("AUTH_NO_CREDENTIALS", `No saved admobctl login for profile "${this.deps.profile}".`, { fix: this.loginFix() });
+    }
+    try {
+      return JSON.parse(raw);
+    } catch {
+      throw new AdmobctlError("AUTH_NO_CREDENTIALS", "The saved login is corrupt.", { fix: this.loginFix() });
+    }
+  }
+  async checkCredentials() {
+    return this.stored();
+  }
+  resetCache() {
+    this.cached = void 0;
+  }
+  async getToken() {
+    const now = (this.deps.now ?? Date.now)();
+    if (this.cached && now < this.cached.expiresAt) return this.cached.token;
+    const s = await this.stored();
+    const params = { grant_type: "refresh_token", refresh_token: s.refreshToken, client_id: s.clientId };
+    if (s.clientSecret) params.client_secret = s.clientSecret;
+    const t = await postToken(params, { fetch: this.deps.fetch, sleep: this.deps.sleep }, "admobctl auth login");
+    if (!t.access_token) throw new AdmobctlError("AUTH_NO_CREDENTIALS", "Google returned no access token.", { fix: this.loginFix() });
+    this.cached = { token: t.access_token, expiresAt: now + ((t.expires_in ?? 3600) - 60) * 1e3 };
+    return t.access_token;
+  }
+  quotaProject() {
+    return void 0;
+  }
+};
+
 // src/core/auth/doctor.ts
 var ADMOB_SCOPES = ["https://www.googleapis.com/auth/admob.readonly", "https://www.googleapis.com/auth/admob.report"];
 function failed(id, err) {
   if (err instanceof AdmobctlError) return { id, status: "fail", summary: err.message, fix: err.fix };
   return { id, status: "fail", summary: err.message ?? String(err) };
 }
-async function fetchTokenInfo(token, doFetch = fetch) {
-  const res = await doFetch("https://oauth2.googleapis.com/tokeninfo", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ access_token: token }).toString()
-  });
-  if (!res.ok) throw new AdmobctlError("AUTH_TOKEN_EXPIRED", "Google rejected the access token.", { fix: "admobctl setup login --yes" });
-  const j = await res.json();
+async function fetchTokenInfo(token, doFetch = fetch, sleep) {
+  const j = await requestJson(
+    "https://oauth2.googleapis.com/tokeninfo",
+    { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ access_token: token }).toString() },
+    {
+      fetch: doFetch,
+      sleep,
+      retries: 2,
+      diagnose: (status, _body, hints) => status === 400 || status === 401 ? new AdmobctlError("AUTH_TOKEN_EXPIRED", "Google rejected the access token.", { status, fix: "admobctl setup login --yes" }) : googleUnavailable("Google's token information service (oauth2.googleapis.com)", status, hints)
+    }
+  ) ?? {};
   const info = { scopes: (j.scope ?? "").split(/\s+/).filter(Boolean) };
   if (j.email) info.email = j.email;
   if (j.expires_in) info.expiresIn = Number(j.expires_in);
@@ -10921,205 +11381,6 @@ async function runChecks(d) {
   return checks;
 }
 
-// src/core/exec.ts
-import { spawn } from "node:child_process";
-import { statSync } from "node:fs";
-import { win32 } from "node:path";
-var exec = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
-  const env = opts.env ?? process.env;
-  const { file: file2, args: argv, windowsVerbatimArguments } = spawnTarget(cmd, args, { env });
-  if (opts.background) {
-    const child2 = spawn(file2, argv, { stdio: "ignore", detached: true, shell: false, env, windowsVerbatimArguments });
-    child2.once("error", reject);
-    child2.once("spawn", () => {
-      child2.unref();
-      resolve({ code: 0, stdout: "", stderr: "" });
-    });
-    return;
-  }
-  const stdin = opts.input === void 0 ? "ignore" : "pipe";
-  const child = spawn(file2, argv, {
-    stdio: opts.interactive ? ["inherit", 2, "inherit"] : [stdin, "pipe", "pipe"],
-    shell: false,
-    env,
-    windowsVerbatimArguments
-  });
-  let stdout = "";
-  let stderr = "";
-  const timer = opts.timeoutMs ? setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs) : void 0;
-  child.stdout?.on("data", (d) => stdout += d);
-  child.stderr?.on("data", (d) => stderr += d);
-  child.on("error", (err) => {
-    if (timer) clearTimeout(timer);
-    reject(err);
-  });
-  child.on("close", (code2) => {
-    if (timer) clearTimeout(timer);
-    resolve({ code: code2 ?? 1, stdout, stderr });
-  });
-  child.stdin?.on("error", () => {
-  });
-  child.stdin?.end(opts.input);
-});
-var isFile = (p) => {
-  try {
-    return statSync(p).isFile();
-  } catch {
-    return false;
-  }
-};
-var envValue = (env, name) => Object.entries(env).find(([k]) => k.toUpperCase() === name.toUpperCase())?.[1];
-function findBatchFile(cmd, env, exists) {
-  const batch = (p) => /\.(cmd|bat)$/i.test(p) ? p : void 0;
-  if (/[\\/]/.test(cmd)) return batch(cmd);
-  const exts = (envValue(env, "PATHEXT") ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
-  const names = win32.extname(cmd) ? [cmd] : exts.map((e) => cmd + e);
-  for (const dir of (envValue(env, "PATH") ?? "").split(";")) {
-    const d = dir.replace(/"/g, "").trim();
-    if (!d) continue;
-    for (const name of names) {
-      const p = win32.join(d, name);
-      if (exists(p)) return batch(p);
-    }
-  }
-  return void 0;
-}
-var CMD_META = /([()[\]%!^"`<>&|;, *?])/g;
-function batchArg(arg) {
-  if (/[%!\r\n\0]/.test(arg)) throw new Error(`Argument ${JSON.stringify(arg)} cannot be passed safely to a Windows batch file.`);
-  const quoted = `"${arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, "$1$1")}"`;
-  return quoted.replace(CMD_META, "^$1").replace(CMD_META, "^$1");
-}
-function spawnTarget(cmd, args, o = {}) {
-  const env = o.env ?? process.env;
-  if ((o.platform ?? process.platform) !== "win32") return { file: cmd, args };
-  const batch = findBatchFile(cmd, env, o.isFile ?? isFile);
-  if (!batch) return { file: cmd, args };
-  if (/[%!"\r\n\0]/.test(batch)) throw new Error(`The path ${batch} cannot be passed safely to cmd.exe.`);
-  const line = [`"${batch}"`, ...args.map(batchArg)].join(" ");
-  return { file: envValue(env, "ComSpec") ?? "cmd.exe", args: ["/d", "/s", "/c", `"${line}"`], windowsVerbatimArguments: true };
-}
-
-// src/core/log.ts
-var verbose = Boolean(process.env.ADMOBCTL_DEBUG);
-var log = {
-  setVerbose(v) {
-    verbose = v;
-  },
-  debug(msg) {
-    if (verbose) process.stderr.write(`[admobctl] ${msg}
-`);
-  },
-  warn(msg) {
-    process.stderr.write(`warning: ${msg}
-`);
-  }
-};
-
-// src/core/http.ts
-var DEFAULT_TIMEOUT_MS = 3e4;
-var DEFAULT_MAX_RETRY_AFTER_MS = 6e4;
-function combineSignals(timeout, caller) {
-  if (!caller) return timeout;
-  if (typeof AbortSignal.any === "function") return AbortSignal.any([caller, timeout]);
-  const ctl = new AbortController();
-  const forward = (s) => {
-    if (s.aborted) ctl.abort(s.reason);
-    else s.addEventListener("abort", () => ctl.abort(s.reason), { once: true });
-  };
-  forward(caller);
-  forward(timeout);
-  return ctl.signal;
-}
-var defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
-function isRetryableStatus(status) {
-  return status === 429 || status >= 500;
-}
-function retryAfterMs(res) {
-  const h = res.headers.get("retry-after");
-  if (!h) return void 0;
-  const secs = Number(h);
-  if (Number.isFinite(secs)) return secs * 1e3;
-  const at = Date.parse(h);
-  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : void 0;
-}
-async function readBody(res) {
-  const text = await res.text();
-  if (!text) return void 0;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
-}
-async function attemptOnce(doFetch, url2, init, canRetry, backoff, maxRetryAfterMs) {
-  const res = await doFetch(url2, init);
-  if (res.ok) return { kind: "ok", status: res.status, body: await readBody(res) };
-  if (!isRetryableStatus(res.status)) return { kind: "fail", status: res.status, body: await readBody(res) };
-  const retryAfter = retryAfterMs(res);
-  if (!canRetry) return { kind: "fail", status: res.status, body: await readBody(res), retryAfterMs: retryAfter };
-  if (retryAfter !== void 0 && retryAfter > maxRetryAfterMs) {
-    log.debug(`HTTP ${res.status}; Retry-After ${retryAfter}ms exceeds cap ${maxRetryAfterMs}ms; not retrying`);
-    return { kind: "fail", status: res.status, body: await readBody(res), retryAfterMs: retryAfter };
-  }
-  await res.body?.cancel().catch(() => {
-  });
-  return { kind: "retry", status: res.status, wait: retryAfter ?? backoff };
-}
-async function requestJson(url2, init, opts = {}) {
-  const doFetch = opts.fetch ?? fetch;
-  const sleep = opts.sleep ?? defaultSleep;
-  const retries = opts.retries ?? 4;
-  const base = opts.baseDelayMs ?? 500;
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const maxRetryAfterMs = opts.maxRetryAfterMs ?? DEFAULT_MAX_RETRY_AFTER_MS;
-  for (let attempt = 0; ; attempt++) {
-    await opts.beforeAttempt?.();
-    const backoff = base * 2 ** attempt + Math.floor(Math.random() * base * 0.25);
-    const timer = new AbortController();
-    const timeoutId = setTimeout(
-      () => timer.abort(new Error(`Request timed out after ${timeoutMs}ms`)),
-      timeoutMs
-    );
-    let outcome;
-    const started = Date.now();
-    try {
-      const signal = combineSignals(timer.signal, init.signal);
-      outcome = await attemptOnce(doFetch, url2, { ...init, signal }, attempt < retries, backoff, maxRetryAfterMs);
-    } catch (err) {
-      if (init.signal?.aborted) throw err;
-      const timedOut = timer.signal.aborted;
-      const host = new URL(url2).host;
-      if (attempt >= retries) {
-        if (timedOut) {
-          throw new AdmobctlError(
-            "API_ERROR",
-            `Request to ${host} timed out after ${timeoutMs}ms (${attempt + 1} attempts).`,
-            { cause: err, fix: "Check your connection and retry." }
-          );
-        }
-        throw new AdmobctlError("API_ERROR", `Network error calling ${host}: ${err.message}`, {
-          cause: err,
-          fix: "Check your internet connection and retry."
-        });
-      }
-      log.debug(`${timedOut ? `timeout after ${timeoutMs}ms` : `network error (${err.message})`}; retrying in ${backoff}ms`);
-      await sleep(backoff);
-      continue;
-    } finally {
-      clearTimeout(timeoutId);
-    }
-    log.debug(`${init.method ?? "GET"} ${url2} \u2192 ${outcome.status} (${Date.now() - started}ms)`);
-    if (outcome.kind === "ok") return outcome.body;
-    if (outcome.kind === "fail") {
-      log.debug(`response: ${(typeof outcome.body === "string" ? outcome.body : JSON.stringify(outcome.body) ?? "").slice(0, 2e3)}`);
-      throw diagnoseApiError(outcome.status, outcome.body, { retryAfterMs: outcome.retryAfterMs });
-    }
-    log.debug(`HTTP ${outcome.status}; retrying in ${outcome.wait}ms`);
-    await sleep(outcome.wait);
-  }
-}
-
 // src/core/setup/cloud.ts
 var CRM = "https://cloudresourcemanager.googleapis.com/v3";
 var SU = "https://serviceusage.googleapis.com/v1";
@@ -11204,33 +11465,9 @@ var CloudClient = class {
 };
 
 // src/core/config.ts
-import { chmodSync as chmodSync2, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync as chmodSync3, existsSync as existsSync2, readFileSync as readFileSync2, renameSync as renameSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
-
-// src/core/fs.ts
-import { chmodSync, mkdirSync, statSync as statSync2 } from "node:fs";
-import { basename } from "node:path";
-function ensurePrivateDir(dir) {
-  if (mkdirSync(dir, { recursive: true, mode: 448 }) !== void 0) {
-    chmodSync(dir, 448);
-    return;
-  }
-  if (process.platform === "win32" || typeof process.getuid !== "function") return;
-  const st = statSync2(dir);
-  if ((st.mode & 63) === 0) return;
-  const warning = `${dir} is accessible to other users (mode ${(st.mode & 511).toString(8)}). Fix: chmod 700 ${dir}`;
-  if (basename(dir) === ".admobctl" && st.uid === process.getuid()) {
-    try {
-      chmodSync(dir, 448);
-      return;
-    } catch {
-    }
-  }
-  log.warn(warning);
-}
-
-// src/core/config.ts
+import { join as join2 } from "node:path";
 var DEFAULT_FINANCE = {
   receivableAccount: "1509",
   revenueAccount: "3120",
@@ -11241,16 +11478,16 @@ var DEFAULT_FINANCE = {
   decimalSeparator: "."
 };
 function configDir(env = process.env, home = homedir()) {
-  return env.ADMOBCTL_HOME || join(home, ".admobctl");
+  return env.ADMOBCTL_HOME || join2(home, ".admobctl");
 }
 function configPath(dir) {
-  return join(dir, "config.json");
+  return join2(dir, "config.json");
 }
 function loadConfig(dir) {
   const file2 = configPath(dir);
-  if (!existsSync(file2)) return { profiles: {} };
+  if (!existsSync2(file2)) return { profiles: {} };
   try {
-    const parsed = JSON.parse(readFileSync(file2, "utf8"));
+    const parsed = JSON.parse(readFileSync2(file2, "utf8"));
     return { ...parsed, profiles: parsed.profiles ?? {} };
   } catch (err) {
     throw new AdmobctlError("CONFIG", `Could not parse ${file2}: ${err.message}`, {
@@ -11262,10 +11499,10 @@ function saveConfig(dir, config2) {
   ensurePrivateDir(dir);
   const file2 = configPath(dir);
   const tmp = `${file2}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(config2, null, 2)}
+  writeFileSync2(tmp, `${JSON.stringify(config2, null, 2)}
 `, { mode: 384 });
-  renameSync(tmp, file2);
-  chmodSync2(file2, 384);
+  renameSync2(tmp, file2);
+  chmodSync3(file2, 384);
 }
 function resolveProfile(config2, name) {
   const profileName = name ?? config2.defaultProfile ?? "default";
@@ -11356,20 +11593,20 @@ async function setupStatus(svc, deps = {}) {
 }
 
 // src/core/audit.ts
-import { appendFileSync, chmodSync as chmodSync3, readFileSync as readFileSync2 } from "node:fs";
-import { join as join2 } from "node:path";
+import { appendFileSync, chmodSync as chmodSync4, readFileSync as readFileSync3 } from "node:fs";
+import { join as join3 } from "node:path";
 function appendAudit(dir, entry) {
   ensurePrivateDir(dir);
-  const file2 = join2(dir, "audit.log");
+  const file2 = join3(dir, "audit.log");
   appendFileSync(file2, `${JSON.stringify(entry)}
 `, { mode: 384 });
-  chmodSync3(file2, 384);
+  chmodSync4(file2, 384);
 }
 function readAudit(dir, opts = {}) {
-  const file2 = join2(dir, "audit.log");
+  const file2 = join3(dir, "audit.log");
   let text = "";
   try {
-    text = readFileSync2(file2, "utf8");
+    text = readFileSync3(file2, "utf8");
   } catch (err) {
     if (err.code !== "ENOENT") {
       throw new AdmobctlError("CONFIG", `Could not read ${file2}: ${err.message}`, {
@@ -11574,226 +11811,6 @@ async function runSetup(ctx, o) {
 
 // src/core/auth/login.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
-
-// src/core/auth/oauth.ts
-import { createHash, randomBytes } from "node:crypto";
-import { chmodSync as chmodSync4, existsSync as existsSync2, readFileSync as readFileSync3, renameSync as renameSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
-import { createServer } from "node:http";
-import { join as join3 } from "node:path";
-var AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
-var TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
-var REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke";
-var KEYCHAIN_SERVICE = "admobctl";
-var KeychainSecretStore = class {
-  constructor(exec2 = exec) {
-    this.exec = exec2;
-  }
-  exec;
-  async get(profile) {
-    const r = await this.exec("security", ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", profile, "-w"]);
-    if (r.code !== 0) return void 0;
-    return r.stdout.replace(/\n$/, "") || void 0;
-  }
-  async set(profile, value) {
-    if (!/^[A-Za-z0-9._-]+$/.test(profile)) throw new AdmobctlError("USAGE", `Invalid profile name "${profile}"`);
-    const hex3 = Buffer.from(value, "utf8").toString("hex");
-    const r = await this.exec("security", ["-i"], {
-      input: `add-generic-password -U -s ${KEYCHAIN_SERVICE} -a ${profile} -X ${hex3}
-`
-    });
-    if (r.code !== 0) throw new AdmobctlError("CONFIG", `Could not write to the macOS Keychain: ${r.stderr.trim()}`);
-  }
-  async delete(profile) {
-    await this.exec("security", ["delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", profile]);
-  }
-};
-var FileSecretStore = class {
-  constructor(dir) {
-    this.dir = dir;
-  }
-  dir;
-  file(profile) {
-    if (!/^[A-Za-z0-9._-]+$/.test(profile)) throw new AdmobctlError("USAGE", `Invalid profile name "${profile}"`);
-    return join3(this.dir, `credentials-${profile}.json`);
-  }
-  async get(profile) {
-    const f = this.file(profile);
-    return existsSync2(f) ? readFileSync3(f, "utf8") : void 0;
-  }
-  async set(profile, value) {
-    ensurePrivateDir(this.dir);
-    const file2 = this.file(profile);
-    const tmp = `${file2}.${process.pid}.tmp`;
-    rmSync(tmp, { force: true });
-    writeFileSync2(tmp, value, { mode: 384, flag: "wx" });
-    renameSync2(tmp, file2);
-    chmodSync4(file2, 384);
-  }
-  async delete(profile) {
-    rmSync(this.file(profile), { force: true });
-  }
-};
-function defaultSecretStore(configDir2, exec2) {
-  return process.platform === "darwin" ? new KeychainSecretStore(exec2) : new FileSecretStore(configDir2);
-}
-function createPkce() {
-  const verifier = randomBytes(48).toString("base64url");
-  const challenge = createHash("sha256").update(verifier).digest("base64url");
-  return { verifier, challenge };
-}
-function buildAuthUrl(o) {
-  const url2 = new URL(AUTH_ENDPOINT);
-  url2.search = new URLSearchParams({
-    client_id: o.clientId,
-    redirect_uri: o.redirectUri,
-    response_type: "code",
-    scope: [ADMOB_SCOPE, ...o.write ? [MONETIZATION_SCOPE] : [], ...o.payments ? [ADSENSE_SCOPE] : [], ...o.cloudPlatform ? [CLOUD_PLATFORM_SCOPE] : []].join(" "),
-    code_challenge: o.pkce.challenge,
-    code_challenge_method: "S256",
-    access_type: "offline",
-    prompt: "consent",
-    state: o.state
-  }).toString();
-  return url2.toString();
-}
-var DONE_PAGE = `<!doctype html><meta charset="utf-8"><title>admobctl</title>
-<body style="font:16px system-ui;margin:3em">Signed in. You can close this tab and return to the terminal.</body>`;
-function waitForLoopbackCode(o) {
-  let resolveReady;
-  let rejectReady;
-  const ready = new Promise((resolve, reject) => {
-    resolveReady = resolve;
-    rejectReady = reject;
-  });
-  const code2 = new Promise((resolve, reject) => {
-    const server = createServer((req, res) => {
-      const url2 = new URL(req.url ?? "/", "http://127.0.0.1");
-      const err = url2.searchParams.get("error");
-      const got = url2.searchParams.get("code");
-      const finish = (status, body, outcome) => {
-        res.writeHead(status, { "content-type": "text/html; charset=utf-8" }).end(body);
-        clearTimeout(timer);
-        server.close();
-        outcome();
-      };
-      if (!got && !err) return void res.writeHead(404).end();
-      if (url2.searchParams.get("state") !== o.state) {
-        return finish(400, "State mismatch.", () => reject(new AdmobctlError("AUTH_NO_CREDENTIALS", "OAuth state mismatch; login aborted.")));
-      }
-      if (err) return finish(400, `Login failed: ${err}`, () => reject(new AdmobctlError("AUTH_NO_CREDENTIALS", `Google returned an error: ${err}`)));
-      finish(200, DONE_PAGE, () => resolve(got));
-    });
-    const timer = setTimeout(() => {
-      server.close();
-      reject(new AdmobctlError("AUTH_NO_CREDENTIALS", "Timed out waiting for the browser login.", { fix: "admobctl auth login" }));
-    }, o.timeoutMs ?? 3e5);
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address();
-      const port = typeof addr === "object" && addr ? addr.port : 0;
-      resolveReady({ redirectUri: `http://127.0.0.1:${port}` });
-    });
-    server.on("error", (err) => {
-      clearTimeout(timer);
-      const e = new AdmobctlError("AUTH_NO_CREDENTIALS", `Could not listen on 127.0.0.1 for Google's sign-in redirect: ${err.message}`, {
-        cause: err,
-        fix: "admobctl auth login"
-      });
-      rejectReady(e);
-      reject(e);
-    });
-  });
-  ready.catch(() => {
-  });
-  code2.catch(() => {
-  });
-  return { ready, code: code2 };
-}
-async function postToken(params, doFetch) {
-  const res = await doFetch(TOKEN_ENDPOINT, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams(params).toString()
-  });
-  const json2 = await res.json().catch(() => ({}));
-  if (!res.ok || json2.error) {
-    const msg = `${json2.error ?? res.status}${json2.error_description ? `: ${json2.error_description}` : ""}`;
-    if (json2.error === "invalid_grant") {
-      throw new AdmobctlError("AUTH_TOKEN_EXPIRED", `Your saved login is no longer valid (${msg}).`, { fix: "admobctl auth login" });
-    }
-    throw new AdmobctlError("AUTH_NO_CREDENTIALS", `Google token endpoint error: ${msg}`, {
-      fix: "Check the OAuth client ID/secret (a Desktop app client in Google Cloud Console), then: admobctl auth login"
-    });
-  }
-  return json2;
-}
-async function exchangeCode(o, doFetch = fetch) {
-  const params = {
-    grant_type: "authorization_code",
-    code: o.code,
-    code_verifier: o.verifier,
-    client_id: o.clientId,
-    redirect_uri: o.redirectUri
-  };
-  if (o.clientSecret) params.client_secret = o.clientSecret;
-  const t = await postToken(params, doFetch);
-  if (!t.refresh_token) {
-    throw new AdmobctlError("AUTH_NO_CREDENTIALS", "Google did not return a refresh token.", {
-      fix: "Remove admobctl's access at https://myaccount.google.com/permissions and run admobctl auth login again."
-    });
-  }
-  return { refreshToken: t.refresh_token, accessToken: t.access_token, scope: t.scope };
-}
-async function revokeToken(token, doFetch = fetch) {
-  await doFetch(REVOKE_ENDPOINT, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ token }).toString()
-  }).catch(() => void 0);
-}
-var OAuthTokenProvider = class {
-  constructor(deps) {
-    this.deps = deps;
-  }
-  deps;
-  mode = "oauth";
-  cached;
-  loginFix() {
-    return `admobctl auth login --client-id <id>${this.deps.profile === "default" ? "" : ` --profile ${this.deps.profile}`}`;
-  }
-  async stored() {
-    const raw = await this.deps.store.get(this.deps.profile);
-    if (!raw) {
-      throw new AdmobctlError("AUTH_NO_CREDENTIALS", `No saved admobctl login for profile "${this.deps.profile}".`, { fix: this.loginFix() });
-    }
-    try {
-      return JSON.parse(raw);
-    } catch {
-      throw new AdmobctlError("AUTH_NO_CREDENTIALS", "The saved login is corrupt.", { fix: this.loginFix() });
-    }
-  }
-  async checkCredentials() {
-    return this.stored();
-  }
-  resetCache() {
-    this.cached = void 0;
-  }
-  async getToken() {
-    const now = (this.deps.now ?? Date.now)();
-    if (this.cached && now < this.cached.expiresAt) return this.cached.token;
-    const s = await this.stored();
-    const params = { grant_type: "refresh_token", refresh_token: s.refreshToken, client_id: s.clientId };
-    if (s.clientSecret) params.client_secret = s.clientSecret;
-    const t = await postToken(params, this.deps.fetch ?? fetch);
-    if (!t.access_token) throw new AdmobctlError("AUTH_NO_CREDENTIALS", "Google returned no access token.", { fix: this.loginFix() });
-    this.cached = { token: t.access_token, expiresAt: now + ((t.expires_in ?? 3600) - 60) * 1e3 };
-    return t.access_token;
-  }
-  quotaProject() {
-    return void 0;
-  }
-};
-
-// src/core/auth/login.ts
 function systemBrowser(exec2 = exec) {
   return async (url2) => {
     const [cmd, args] = process.platform === "darwin" ? ["open", [url2]] : process.platform === "win32" ? ["rundll32", ["url.dll,FileProtocolHandler", url2]] : ["xdg-open", [url2]];
@@ -13900,7 +13917,8 @@ function resolveTokenProvider(profile, deps) {
     return new OAuthTokenProvider({
       profile: profile.name,
       store: deps.store ?? defaultSecretStore(deps.configDir, deps.exec),
-      fetch: deps.fetch
+      fetch: deps.fetch,
+      sleep: deps.sleep
     });
   }
   return new AdcTokenProvider({ exec: deps.exec });
@@ -14542,7 +14560,7 @@ var AdmobService = class _AdmobService {
   static create(opts = {}, deps = {}) {
     const dir = deps.configDir ?? configDir();
     const profile = resolveProfile(loadConfig(dir), opts.profile);
-    const tokenProvider = deps.tokenProvider ?? resolveTokenProvider(profile, { configDir: dir, exec: deps.exec, fetch: deps.fetch });
+    const tokenProvider = deps.tokenProvider ?? resolveTokenProvider(profile, { configDir: dir, exec: deps.exec, fetch: deps.fetch, sleep: deps.sleep });
     const client = new AdmobClient({
       getToken: () => tokenProvider.getToken(),
       quotaProject: profile.quotaProject ?? tokenProvider.quotaProject(),
@@ -15874,7 +15892,7 @@ function buildProgram(io) {
       cloud: new CloudClient({ getToken: () => tp.getToken(), fetch: io.service?.fetch, sleep: io.service?.sleep }),
       exec: io.service?.exec ?? exec,
       interactive: io.stdinIsTTY ?? false,
-      tokenInfo: async () => fetchTokenInfo(await tp.getToken(), io.service?.fetch),
+      tokenInfo: async () => fetchTokenInfo(await tp.getToken(), io.service?.fetch, io.service?.sleep),
       oauthLogin: (o) => oauthSignIn(cmd, o)
     };
   };
@@ -15915,7 +15933,7 @@ function buildProgram(io) {
       account: s.configuredAccount ?? "(auto)"
     };
     try {
-      const ti = await fetchTokenInfo(await s.tokenProvider.getToken(), io.service?.fetch);
+      const ti = await fetchTokenInfo(await s.tokenProvider.getToken(), io.service?.fetch, io.service?.sleep);
       info.scopes = ti.scopes;
       if (ti.email) info.email = ti.email;
       info.tokenExpiresInSeconds = ti.expiresIn;

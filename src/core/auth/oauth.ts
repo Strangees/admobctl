@@ -2,9 +2,10 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
-import { AdmobctlError, ADMOB_SCOPE, ADSENSE_SCOPE, CLOUD_PLATFORM_SCOPE, MONETIZATION_SCOPE } from "../errors.js";
+import { AdmobctlError, ADMOB_SCOPE, ADSENSE_SCOPE, CLOUD_PLATFORM_SCOPE, formatDuration, MONETIZATION_SCOPE, type DiagnoseHints } from "../errors.js";
 import { exec as defaultExec, type Exec } from "../exec.js";
 import { ensurePrivateDir } from "../fs.js";
+import { requestJson } from "../http.js";
 import type { TokenProvider } from "./types.js";
 
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -188,28 +189,60 @@ interface TokenResponse {
   error_description?: string;
 }
 
-async function postToken(params: Record<string, string>, doFetch: typeof fetch): Promise<TokenResponse> {
-  const res = await doFetch(TOKEN_ENDPOINT, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams(params).toString(),
+/** Transport for Google's OAuth endpoints (tests inject both). */
+export interface TokenHttp {
+  fetch?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/** A Google endpoint that failed with 429/5xx after the retries: Google's problem, not the credentials'. */
+export function googleUnavailable(what: string, status: number, hints: DiagnoseHints): AdmobctlError {
+  return new AdmobctlError(status === 429 ? "RATE_LIMITED" : "API_ERROR", `${what} is unavailable right now (HTTP ${status}).`, {
+    status,
+    fix: hints.retryAfterMs === undefined ? "Wait a minute and retry." : `Retry in about ${formatDuration(hints.retryAfterMs)}.`,
   });
-  const json = (await res.json().catch(() => ({}))) as TokenResponse;
-  if (!res.ok || json.error) {
-    const msg = `${json.error ?? res.status}${json.error_description ? `: ${json.error_description}` : ""}`;
-    if (json.error === "invalid_grant") {
-      throw new AdmobctlError("AUTH_TOKEN_EXPIRED", `Your saved login is no longer valid (${msg}).`, { fix: "admobctl auth login" });
-    }
-    throw new AdmobctlError("AUTH_NO_CREDENTIALS", `Google token endpoint error: ${msg}`, {
+}
+
+/** Only 400/401 or an OAuth `error` code says the credentials are wrong; invalid_grant means the grant itself is gone. */
+function tokenError(json: TokenResponse, status: number, grantType: string | undefined, loginFix: string): AdmobctlError {
+  const msg = `${json.error ?? status}${json.error_description ? `: ${json.error_description}` : ""}`;
+  if (json.error === "invalid_grant") {
+    const what = grantType === "refresh_token" ? "Your saved login is no longer valid" : "Google did not accept the sign-in";
+    return new AdmobctlError("AUTH_TOKEN_EXPIRED", `${what} (${msg}).`, { status, fix: loginFix });
+  }
+  if (status === 400 || status === 401 || json.error) {
+    return new AdmobctlError("AUTH_NO_CREDENTIALS", `Google token endpoint error: ${msg}`, {
+      status,
       fix: "Check the OAuth client ID/secret (a Desktop app client in Google Cloud Console), then: admobctl auth login",
     });
   }
+  return new AdmobctlError("API_ERROR", `Google token endpoint error: HTTP ${status}`, { status, fix: "Wait a minute and retry." });
+}
+
+/** POST to the token endpoint with a timeout, retrying network errors and 429/5xx. Nothing of the request is logged but its URL. */
+async function postToken(params: Record<string, string>, http: TokenHttp, loginFix: string): Promise<TokenResponse> {
+  const json =
+    (await requestJson<TokenResponse | undefined>(
+      TOKEN_ENDPOINT,
+      { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(params).toString() },
+      {
+        fetch: http.fetch,
+        sleep: http.sleep,
+        retries: 2,
+        diagnose: (status, body, hints) =>
+          status === 429 || status >= 500
+            ? googleUnavailable("Google's sign-in service (oauth2.googleapis.com)", status, hints)
+            : tokenError(typeof body === "object" && body ? (body as TokenResponse) : {}, status, params.grant_type, loginFix),
+      },
+    )) ?? {};
+  if (json.error) throw tokenError(json, 200, params.grant_type, loginFix);
   return json;
 }
 
 export async function exchangeCode(
   o: { clientId: string; clientSecret?: string; code: string; verifier: string; redirectUri: string },
   doFetch: typeof fetch = fetch,
+  sleep?: (ms: number) => Promise<void>,
 ): Promise<{ refreshToken: string; accessToken?: string; scope?: string }> {
   const params: Record<string, string> = {
     grant_type: "authorization_code",
@@ -219,7 +252,7 @@ export async function exchangeCode(
     redirect_uri: o.redirectUri,
   };
   if (o.clientSecret) params.client_secret = o.clientSecret;
-  const t = await postToken(params, doFetch);
+  const t = await postToken(params, { fetch: doFetch, sleep }, "admobctl auth login");
   if (!t.refresh_token) {
     throw new AdmobctlError("AUTH_NO_CREDENTIALS", "Google did not return a refresh token.", {
       fix: "Remove admobctl's access at https://myaccount.google.com/permissions and run admobctl auth login again.",
@@ -242,6 +275,7 @@ export interface OAuthProviderDeps {
   profile: string;
   store: SecretStore;
   fetch?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
   now?: () => number;
 }
 
@@ -281,7 +315,7 @@ export class OAuthTokenProvider implements TokenProvider {
     const s = await this.stored();
     const params: Record<string, string> = { grant_type: "refresh_token", refresh_token: s.refreshToken, client_id: s.clientId };
     if (s.clientSecret) params.client_secret = s.clientSecret;
-    const t = await postToken(params, this.deps.fetch ?? fetch);
+    const t = await postToken(params, { fetch: this.deps.fetch, sleep: this.deps.sleep }, "admobctl auth login");
     if (!t.access_token) throw new AdmobctlError("AUTH_NO_CREDENTIALS", "Google returned no access token.", { fix: this.loginFix() });
     // Refresh a minute early.
     this.cached = { token: t.access_token, expiresAt: now + ((t.expires_in ?? 3600) - 60) * 1000 };

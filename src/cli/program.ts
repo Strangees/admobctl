@@ -239,7 +239,7 @@ export function buildProgram(io: CliIO): Command {
       cloud: new CloudClient({ getToken: () => tp.getToken(), fetch: io.service?.fetch, sleep: io.service?.sleep }),
       exec: io.service?.exec ?? defaultExec,
       interactive: io.stdinIsTTY ?? false,
-      tokenInfo: async () => fetchTokenInfo(await tp.getToken(), io.service?.fetch),
+      tokenInfo: async () => fetchTokenInfo(await tp.getToken(), io.service?.fetch, io.service?.sleep),
       oauthLogin: (o) => oauthSignIn(cmd, o),
     };
   };
@@ -296,7 +296,7 @@ export function buildProgram(io: CliIO): Command {
         account: s.configuredAccount ?? "(auto)",
       };
       try {
-        const ti = await fetchTokenInfo(await s.tokenProvider.getToken(), io.service?.fetch);
+        const ti = await fetchTokenInfo(await s.tokenProvider.getToken(), io.service?.fetch, io.service?.sleep);
         info.scopes = ti.scopes;
         if (ti.email) info.email = ti.email;
         info.tokenExpiresInSeconds = ti.expiresIn;

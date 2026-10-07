@@ -12,9 +12,10 @@ import {
   waitForLoopbackCode,
   type StoredOAuth,
 } from "../src/core/auth/oauth.js";
+import { AdmobctlError } from "../src/core/errors.js";
 import type { Exec } from "../src/core/exec.js";
 import { log } from "../src/core/log.js";
-import { fakeFetch, jsonResponse } from "./helpers.js";
+import { fakeFetch, jsonResponse, noSleep } from "./helpers.js";
 
 const stored: StoredOAuth = { clientId: "cid.apps.googleusercontent.com", clientSecret: "csecret", refreshToken: "rtoken" };
 
@@ -225,6 +226,73 @@ describe("OAuthTokenProvider", () => {
     const f = fakeFetch({ "POST /token": () => jsonResponse({ error: "invalid_grant", error_description: "Token has been expired or revoked." }, 400) });
     const p = new OAuthTokenProvider({ profile: "default", store: store(JSON.stringify(stored)), fetch: f.fetch });
     await expect(p.getToken()).rejects.toMatchObject({ code: "AUTH_TOKEN_EXPIRED", fix: expect.stringContaining("admobctl auth login") });
+  });
+
+  it("retries a transient 5xx from the token endpoint", async () => {
+    const f = fakeFetch({
+      "POST /token": () => (f.calls.length === 1 ? jsonResponse({ error: "internal_failure" }, 503) : jsonResponse({ access_token: "tok", expires_in: 3600 })),
+    });
+    const p = new OAuthTokenProvider({ profile: "default", store: store(JSON.stringify(stored)), fetch: f.fetch, sleep: noSleep });
+    expect(await p.getToken()).toBe("tok");
+    expect(f.calls).toHaveLength(2);
+  });
+
+  it("reports a token endpoint that stays down as an outage, not as a client ID/secret problem", async () => {
+    const f = fakeFetch({ "POST /token": () => jsonResponse({}, 503) });
+    const p = new OAuthTokenProvider({ profile: "default", store: store(JSON.stringify(stored)), fetch: f.fetch, sleep: noSleep });
+    const err = (await p.getToken().catch((e: unknown) => e)) as AdmobctlError;
+    expect(err).toMatchObject({ name: "AdmobctlError", code: "API_ERROR", status: 503 });
+    expect(`${err.message} ${err.fix}`).not.toMatch(/client ID|secret/i);
+    expect(f.calls).toHaveLength(3);
+  });
+
+  it("turns a network failure into an AdmobctlError with a fix", async () => {
+    let calls = 0;
+    const down = (async () => {
+      calls++;
+      throw new TypeError("fetch failed");
+    }) as unknown as typeof fetch;
+    const p = new OAuthTokenProvider({ profile: "default", store: store(JSON.stringify(stored)), fetch: down, sleep: noSleep });
+    const err = (await p.getToken().catch((e: unknown) => e)) as AdmobctlError;
+    expect(err).toBeInstanceOf(AdmobctlError);
+    expect(err.message).toMatch(/oauth2\.googleapis\.com/);
+    expect(err.fix).toBeTruthy();
+    expect(calls).toBe(3);
+  });
+
+  it("gives every token request a timeout", async () => {
+    const signals: Array<AbortSignal | null | undefined> = [];
+    const f = (async (_u: string, init: RequestInit = {}) => (signals.push(init.signal), jsonResponse({ access_token: "tok" }))) as unknown as typeof fetch;
+    await new OAuthTokenProvider({ profile: "default", store: store(JSON.stringify(stored)), fetch: f }).getToken();
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
+  });
+
+  it("treats invalid_client as a problem with the OAuth client, without placeholders in the fix", async () => {
+    const f = fakeFetch({ "POST /token": () => jsonResponse({ error: "invalid_client", error_description: "The OAuth client was not found." }, 401) });
+    const p = new OAuthTokenProvider({ profile: "default", store: store(JSON.stringify(stored)), fetch: f.fetch, sleep: noSleep });
+    const err = (await p.getToken().catch((e: unknown) => e)) as AdmobctlError;
+    expect(err).toMatchObject({ code: "AUTH_NO_CREDENTIALS", message: expect.stringContaining("invalid_client") });
+    expect(err.fix).toMatch(/OAuth client/);
+    expect(err.fix).not.toMatch(/</);
+    expect(f.calls).toHaveLength(1);
+  });
+
+  it("never logs the refresh token, client secret or access token", async () => {
+    const lines: string[] = [];
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: string) => (lines.push(String(chunk)), true)) as typeof process.stderr.write);
+    log.setVerbose(true);
+    try {
+      const f = fakeFetch({ "POST /token": () => jsonResponse({ access_token: "ya29.secret-access", expires_in: 3600 }) });
+      await new OAuthTokenProvider({ profile: "default", store: store(JSON.stringify(stored)), fetch: f.fetch }).getToken();
+      const bad = fakeFetch({ "POST /token": () => jsonResponse({ error: "invalid_grant" }, 400) });
+      await new OAuthTokenProvider({ profile: "default", store: store(JSON.stringify(stored)), fetch: bad.fetch }).getToken().catch(() => {});
+    } finally {
+      log.setVerbose(false);
+      spy.mockRestore();
+    }
+    const out = lines.join("");
+    expect(out).toContain("oauth2.googleapis.com/token");
+    for (const secret of ["rtoken", "csecret", "ya29.secret-access"]) expect(out).not.toContain(secret);
   });
 
   it("explains how to log in when nothing is stored", async () => {
