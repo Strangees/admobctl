@@ -1069,7 +1069,7 @@
     {
       "name": "admobctl_check",
       "title": "AdMob health check",
-      "description": "Did anything break? Compares the last complete day(s) with the days just before, per app and in total, and reports `findings` where daily earnings, match rate or show rate dropped by the threshold or more, or an app stopped sending ad requests (`breaches` is their count; 0 means nothing dropped). Rows with status `thin` had too little baseline traffic to judge: do not report them as problems. Use for \"is everything OK\", \"did revenue drop\" or a daily check; use admobctl_insights for a fuller analysis. Earnings are estimates.",
+      "description": "Did anything break? Compares the last complete day(s) with the same weekdays in the 4 weeks before (or, with baseline_days, the days just before), per app and in total, and reports `findings` where daily earnings, match rate or show rate dropped by the threshold or more, or an app stopped sending ad requests (`breaches` is their count; 0 means nothing dropped). Rows with status `thin` had too little baseline traffic to judge: do not report them as problems. Use for \"is everything OK\", \"did revenue drop\" or a daily check; use admobctl_insights for a fuller analysis. Earnings are estimates.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1079,8 +1079,14 @@
             "minimum": 1,
             "maximum": 90
           },
+          "baseline_weeks": {
+            "description": "Compare with the window's weekdays in this many weeks before it (default 4; window_days up to 7)",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 52
+          },
           "baseline_days": {
-            "description": "Days just before the window to compare with (default 7)",
+            "description": "Compare with this many days just before the window instead (default 7 when window_days is over 7)",
             "type": "integer",
             "minimum": 1,
             "maximum": 366

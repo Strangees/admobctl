@@ -145,15 +145,16 @@ All earnings are **estimates**. Reconcile them against AdMob Payments, because t
 
 ### Check
 
-`admobctl check` is a health check for cron or a scheduled agent. It compares the last complete day with the seven days before it, per app and for all apps together, and exits 1 when daily earnings, match rate or show rate dropped by 30% or more:
+`admobctl check` is a health check for cron or a scheduled agent. It compares the last complete day with the same weekday in the four weeks before it, per app and for all apps together, and exits 1 when daily earnings, match rate or show rate dropped by 30% or more. Comparing like weekdays keeps an app that earns less on, say, Mondays from breaching every Monday:
 
 ```bash
-admobctl check                                   # yesterday against the week before
-admobctl check --window 3d --baseline 14d --drop 40
+admobctl check                                   # yesterday against the same weekday in the 4 weeks before
+admobctl check --baseline 7d                     # yesterday against the average of the 7 days before
+admobctl check --window 3d --baseline 8w --drop 40
 admobctl check || echo "AdMob dropped" | mail -s "AdMob check" you@example.com
 ```
 
-An app that stops sending ad requests is a breach too. Apps with fewer than 1000 baseline requests are listed as `too little data` and not judged (`--min-requests`). Network data lands a few hours late, so run it from cron after about 04:00 in the account's time zone. Save your own defaults with `admobctl config set check.drop 40` (also `check.window`, `check.baseline`, `check.minRequests`).
+`--baseline Nw` compares the window's weekdays in the N weeks before it (default 4w; the window can be at most 7 days), `--baseline Nd` the N days just before it (the default, 7d, for windows over 7 days). An app that stops sending ad requests is a breach too. Apps with fewer than 1000 baseline requests are listed as `too little data` and not judged (`--min-requests`). Network data lands a few hours late, so run it from cron after about 04:00 in the account's time zone; before then the output carries a notice that yesterday may be incomplete. Save your own defaults with `admobctl config set check.drop 40` (also `check.window`, `check.baseline` such as `7d` or `4w`, `check.minRequests`).
 
 ### Lint
 

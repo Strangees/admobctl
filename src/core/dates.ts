@@ -94,6 +94,11 @@ export function todayIn(timeZone: string, now: Date = new Date()): ApiDate {
   return { year: get("year"), month: get("month"), day: get("day") };
 }
 
+/** The wall-clock time of `now` in the given IANA time zone, as HH:MM (24-hour). */
+export function timeIn(timeZone: string, now: Date = new Date()): string {
+  return new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(now);
+}
+
 /** True when the whole month lies strictly before `today`. */
 export function isMonthComplete(ym: YearMonth, today: ApiDate): boolean {
   return compareDates(monthEnd(ym), today) < 0;

@@ -11172,6 +11172,7 @@ function ensurePrivateDir(dir) {
 }
 
 // src/core/config.ts
+var CHECK_BASELINE = /^([1-9]\d*)([dw]?)$/;
 var DEFAULT_FINANCE = {
   receivableAccount: "1509",
   revenueAccount: "3120",
@@ -11247,7 +11248,10 @@ function setProfileValue(config2, profile, key, value) {
   if (key === "finance.decimalSeparator" && value !== void 0 && value !== "." && value !== ",") {
     throw usageError('finance.decimalSeparator must be "." or ","');
   }
-  if (CHECK_KEYS.includes(key) && value !== void 0 && !/^[1-9]\d*$/.test(value)) {
+  if (key === "check.baseline" && value !== void 0 && !CHECK_BASELINE.test(value)) {
+    throw usageError(`check.baseline must be days like 7d or weeks like 4w, got "${value}"`);
+  }
+  if (CHECK_KEYS.includes(key) && key !== "check.baseline" && value !== void 0 && !/^[1-9]\d*$/.test(value)) {
     throw usageError(`${key} must be a positive whole number, got "${value}"`);
   }
   const [head, sub, ...rest] = key.split(".");
@@ -11831,6 +11835,9 @@ function todayIn(timeZone, now = /* @__PURE__ */ new Date()) {
   }).formatToParts(now);
   const get = (type) => Number(parts.find((p) => p.type === type)?.value);
   return { year: get("year"), month: get("month"), day: get("day") };
+}
+function timeIn(timeZone, now = /* @__PURE__ */ new Date()) {
+  return new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(now);
 }
 function isMonthComplete(ym, today) {
   return compareDates(monthEnd(ym), today) < 0;
@@ -12833,11 +12840,13 @@ async function checkAppAds(svc, opts) {
 }
 
 // src/core/check.ts
-var CHECK_DEFAULTS = { window: 1, baseline: 7, drop: 0.3, minRequests: 1e3 };
+var CHECK_DEFAULTS = { window: 1, baselineWeeks: 4, baseline: 7, drop: 0.3, minRequests: 1e3 };
+var MAX_WEEKDAY_WINDOW = 7;
 var ZERO = { earnings: 0, requests: 0, matched: 0, impressions: 0 };
-function sumByApp(report) {
+function sumByApp(report, days) {
   const out = /* @__PURE__ */ new Map();
   for (const row of report.rows) {
+    if (days && !days.has(row.dimensions.DATE?.value ?? "")) continue;
     const id = row.dimensions.APP?.value ?? "unknown";
     const s = out.get(id) ?? { ...ZERO };
     s.earnings += row.metrics.ESTIMATED_EARNINGS ?? 0;
@@ -12859,18 +12868,39 @@ function wholeNumber(value, configured, fallback, name, max) {
   if (!Number.isInteger(n) || n < 1 || n > max) throw usageError(`${name} must be a whole number between 1 and ${max}, got "${value ?? configured}"`);
   return n;
 }
+function askedBaseline(opts, configured) {
+  if (opts.baseline !== void 0 && opts.baselineWeeks !== void 0) throw usageError("Give the baseline in days or in weeks, not both.");
+  if (opts.baseline !== void 0 || opts.baselineWeeks !== void 0) return { days: opts.baseline, weeks: opts.baselineWeeks };
+  if (configured === void 0) return void 0;
+  const m = CHECK_BASELINE.exec(configured);
+  if (!m) throw usageError(`check.baseline must be days like 7d or weeks like 4w, got "${configured}"`);
+  return m[2] === "w" ? { weeks: Number(m[1]) } : { days: Number(m[1]) };
+}
+var apiDate = (d) => formatDate(d).replace(/-/g, "");
 async function check(svc, opts = {}) {
   const cfg = svc.profile.check ?? {};
   const windowDays = wholeNumber(opts.window, cfg.window, CHECK_DEFAULTS.window, "The window (--window, check.window) in days", 90);
-  const baselineDays = wholeNumber(opts.baseline, cfg.baseline, CHECK_DEFAULTS.baseline, "The baseline (--baseline, check.baseline) in days", 366);
+  const asked = askedBaseline(opts, cfg.baseline);
+  let weeks;
+  let baselineDays;
+  if (asked ? asked.weeks !== void 0 : windowDays <= MAX_WEEKDAY_WINDOW) {
+    weeks = wholeNumber(asked?.weeks, void 0, CHECK_DEFAULTS.baselineWeeks, "The baseline (--baseline, check.baseline) in weeks", 52);
+    if (windowDays > MAX_WEEKDAY_WINDOW) {
+      throw usageError(`A baseline in weeks compares the same weekdays, so it needs a window of 7 days or fewer, not ${windowDays}. Give it in days, e.g. --baseline 28d.`);
+    }
+    baselineDays = weeks * windowDays;
+  } else {
+    baselineDays = wholeNumber(asked?.days, void 0, CHECK_DEFAULTS.baseline, "The baseline (--baseline, check.baseline) in days", 366);
+  }
   const dropPercent = opts.drop !== void 0 ? opts.drop * 100 : cfg.drop === void 0 ? CHECK_DEFAULTS.drop * 100 : Number(cfg.drop);
   if (!(dropPercent >= 1 && dropPercent <= 99)) throw usageError("The drop threshold (--drop, check.drop) must be between 1 and 99 (percent).");
   const drop = dropPercent / 100;
   const minRequests = wholeNumber(opts.minRequests, cfg.minRequests, CHECK_DEFAULTS.minRequests, "The minimum requests (--min-requests, check.minRequests)", 1e9);
   const acct = await svc.account();
-  const window = lastNDays(windowDays, todayIn(acct.reportingTimeZone, svc.now()));
-  const baselineEnd = addDays(window.startDate, -1);
-  const baseline = { startDate: addDays(baselineEnd, -(baselineDays - 1)), endDate: baselineEnd };
+  const asOf = svc.now();
+  const window = lastNDays(windowDays, todayIn(acct.reportingTimeZone, asOf));
+  const baseline = weeks ? { startDate: addDays(window.startDate, -7 * weeks), endDate: addDays(window.endDate, -7) } : { startDate: addDays(window.startDate, -baselineDays), endDate: addDays(window.startDate, -1) };
+  const sameWeekdays = weeks ? new Set(Array.from({ length: baselineDays }, (_, i) => apiDate(addDays(baseline.startDate, Math.floor(i / windowDays) * 7 + i % windowDays)))) : void 0;
   const [{ current, previous }, apps] = await Promise.all([
     svc.rawReportWithPrevious(
       "network",
@@ -12880,13 +12910,13 @@ async function check(svc, opts = {}) {
         metrics: ["earnings", "requests", "matched-requests", "impressions"],
         filters: opts.app ? { app: [opts.app] } : void 0
       },
-      { dateRange: baseline }
+      weeks ? { dateRange: baseline, by: ["app", "date"] } : { dateRange: baseline }
     ),
     svc.apps()
   ]);
   const currency = current.report.currency ?? acct.currencyCode;
   const now = sumByApp(current.report);
-  const before = sumByApp(previous.report);
+  const before = sumByApp(previous.report, sameWeekdays);
   const alias = new Map(apps.map((a) => [a.appId, a.alias]));
   const perDay = (micros, days) => Math.round(micros / days);
   const money = (micros) => `${formatMicros(micros)} ${currency}`;
@@ -12943,7 +12973,7 @@ async function check(svc, opts = {}) {
   const rows = ids.map((id) => judge(alias.get(id) ?? id, id, now.get(id) ?? ZERO, before.get(id) ?? ZERO));
   const result = {
     window: { from: formatDate(window.startDate), to: formatDate(window.endDate), days: windowDays },
-    baseline: { from: formatDate(baseline.startDate), to: formatDate(baseline.endDate), days: baselineDays },
+    baseline: { from: formatDate(baseline.startDate), to: formatDate(baseline.endDate), days: baselineDays, ...weeks ? { weeks } : {} },
     thresholds: { drop, min_requests: minRequests },
     currency,
     timeZone: current.report.timeZone ?? acct.reportingTimeZone,
@@ -12960,7 +12990,17 @@ async function check(svc, opts = {}) {
   if (thin) {
     result.notices.push(`${thin} ${thin === 1 ? "app" : "apps"} had fewer than ${minRequests} requests in the baseline and ${thin === 1 ? "was" : "were"} not judged.`);
   }
-  const span = `${result.window.from}${windowDays > 1 ? ` \u2192 ${result.window.to}` : ""} against ${result.baseline.from} \u2192 ${result.baseline.to}`;
+  const clock = timeIn(acct.reportingTimeZone, asOf);
+  if (Number(clock.slice(0, 2)) < 4) {
+    result.notices.unshift(
+      `It is ${clock} in ${acct.reportingTimeZone}: AdMob data arrives a few hours late, so yesterday's figures may still be incomplete and look like a drop. Run the check after about 04:00 there.`
+    );
+  }
+  const { from, to } = result.baseline;
+  const range = from === to ? from : `${from} \u2192 ${to}`;
+  const day = (/* @__PURE__ */ new Date(`${result.window.from}T00:00:00Z`)).toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" });
+  const against = !weeks ? range : windowDays === 1 ? `the ${weeks === 1 ? day : `${weeks} ${day}s`} before (${range})` : `the same weekdays in the ${weeks === 1 ? "week" : `${weeks} weeks`} before (${range})`;
+  const span = `${result.window.from}${windowDays > 1 ? ` \u2192 ${result.window.to}` : ""} against ${against}`;
   result.summary = findings.length ? [`${findings.length} ${findings.length === 1 ? "drop" : "drops"} of ${pct(drop)} or more, ${span}.`, ...findings.map((f) => f.message), ESTIMATE_LABEL] : [`No drop of ${pct(drop)} or more in earnings, match rate or show rate, ${span}.`, ESTIMATE_LABEL];
   return result;
 }
@@ -15019,13 +15059,13 @@ async function analyzeTrend(svc, opts = {}) {
     series.days.set(date5, sums);
     bySeries.set(key, series);
   }
-  const apiDate = (d) => `${d.year}${String(d.month).padStart(2, "0")}${String(d.day).padStart(2, "0")}`;
+  const apiDate2 = (d) => `${d.year}${String(d.month).padStart(2, "0")}${String(d.day).padStart(2, "0")}`;
   const money = (micros) => formatMicros(Math.round(micros));
   const highlights = [];
   const all = [...bySeries.entries()].map(([key, s]) => {
     const days = [];
     for (let d = r.range.startDate; compareDates(d, r.range.endDate) <= 0; d = addDays(d, 1)) {
-      const sums = s.days.get(apiDate(d));
+      const sums = s.days.get(apiDate2(d));
       if (!days.length && !sums?.requests && !sums?.earnings) continue;
       const v = sums ?? { earnings: 0, requests: 0, matched: 0, impressions: 0 };
       days.push({
@@ -15753,6 +15793,11 @@ function parseDays(v, flag = "--last") {
   if (!m) throw new AdmobctlError("USAGE", `${flag} expects a number of days like 30d, got "${v}"`);
   return Number(m[1]);
 }
+function parseBaseline(v) {
+  const m = /^(\d+)([dw])$/.exec(v.trim());
+  if (!m) throw new AdmobctlError("USAGE", `--baseline expects days like 7d or weeks like 4w, got "${v}"`);
+  return m[2] === "w" ? { weeks: Number(m[1]) } : { days: Number(m[1]) };
+}
 function readJsonFile(path2) {
   let text;
   try {
@@ -16094,8 +16139,17 @@ function buildProgram(io) {
     });
     emit(cmd, insightsView(r));
   });
-  program2.command("check").description("Health check for cron: exits 1 when an app's earnings, match rate or show rate dropped against the days before").option("--window <Nd>", "complete days to judge, ending yesterday (default 1d)", (v) => parseDays(v, "--window")).option("--baseline <Nd>", "days just before the window to compare with (default 7d)", (v) => parseDays(v, "--baseline")).option("--drop <percent>", "a drop of this much or more is a breach (default 30)", positiveInt).option("--min-requests <n>", "baseline requests an app needs before it is judged (default 1000)", positiveInt).option("--app <alias|id>", "only this app").action(async (o, cmd) => {
-    const r = await check(svc(cmd), { ...o, drop: o.drop === void 0 ? void 0 : o.drop / 100 });
+  program2.command("check").description("Health check for cron: exits 1 when an app's earnings, match rate or show rate dropped against the same weekday in the weeks before").option("--window <Nd>", "complete days to judge, ending yesterday (default 1d)", (v) => parseDays(v, "--window")).option(
+    "--baseline <Nw|Nd>",
+    "compare with the window's weekdays in the N weeks before (default 4w), or with the N days just before (7d; the default for windows over 7d)",
+    parseBaseline
+  ).option("--drop <percent>", "a drop of this much or more is a breach (default 30)", positiveInt).option("--min-requests <n>", "baseline requests an app needs before it is judged (default 1000)", positiveInt).option("--app <alias|id>", "only this app").action(async (o, cmd) => {
+    const r = await check(svc(cmd), {
+      ...o,
+      baseline: o.baseline?.days,
+      baselineWeeks: o.baseline?.weeks,
+      drop: o.drop === void 0 ? void 0 : o.drop / 100
+    });
     emit(cmd, checkView(r));
     if (r.breaches) process.exitCode = 1;
   });
@@ -45495,7 +45549,8 @@ var SERVICE_TTL_MS = 5 * 6e4;
 var INSTRUCTIONS = `Read-only access to the user's Google AdMob account via admobctl.
 - Apps are referred to by alias (e.g. "my-game-ios"); call admobctl_list_apps to see them.
 - All earnings are ESTIMATES. When reporting money, say so and that they should be reconciled against AdMob Payments (finalized).
-- For "is everything OK?" or "did revenue drop?" use admobctl_check: it compares the last complete day with the week before.
+- For "is everything OK?" or "did revenue drop?" use admobctl_check: it compares the last complete day with the same
+  weekday in the four weeks before.
 - For "what did I earn in <month>" use admobctl_finance_month; for trends and recommendations use admobctl_insights.
 - For "what is my balance / what will Google pay me" use admobctl_finance_balance (unpaid balance; it needs an extra scope, so pass its Fix line on if it fails).
 - For a file an accounting system can import, use admobctl_finance_export and hand over its \`content\` unchanged.
@@ -45839,10 +45894,11 @@ function createMcpServer(deps) {
     "admobctl_check",
     {
       title: "AdMob health check",
-      description: 'Did anything break? Compares the last complete day(s) with the days just before, per app and in total, and reports `findings` where daily earnings, match rate or show rate dropped by the threshold or more, or an app stopped sending ad requests (`breaches` is their count; 0 means nothing dropped). Rows with status `thin` had too little baseline traffic to judge: do not report them as problems. Use for "is everything OK", "did revenue drop" or a daily check; use admobctl_insights for a fuller analysis. Earnings are estimates.',
+      description: 'Did anything break? Compares the last complete day(s) with the same weekdays in the 4 weeks before (or, with baseline_days, the days just before), per app and in total, and reports `findings` where daily earnings, match rate or show rate dropped by the threshold or more, or an app stopped sending ad requests (`breaches` is their count; 0 means nothing dropped). Rows with status `thin` had too little baseline traffic to judge: do not report them as problems. Use for "is everything OK", "did revenue drop" or a daily check; use admobctl_insights for a fuller analysis. Earnings are estimates.',
       inputSchema: {
         window_days: external_exports.number().int().min(1).max(90).optional().describe("Complete days to judge, ending yesterday (default 1)"),
-        baseline_days: external_exports.number().int().min(1).max(366).optional().describe("Days just before the window to compare with (default 7)"),
+        baseline_weeks: external_exports.number().int().min(1).max(52).optional().describe("Compare with the window's weekdays in this many weeks before it (default 4; window_days up to 7)"),
+        baseline_days: external_exports.number().int().min(1).max(366).optional().describe("Compare with this many days just before the window instead (default 7 when window_days is over 7)"),
         drop_percent: external_exports.number().int().min(1).max(99).optional().describe("A drop of this percent or more is a breach (default 30)"),
         min_requests: external_exports.number().int().positive().optional().describe("Baseline requests an app needs before it is judged (default 1000)"),
         ...appArg,
@@ -45868,6 +45924,7 @@ function createMcpServer(deps) {
         ...await check(svc(a), {
           window: a.window_days,
           baseline: a.baseline_days,
+          baselineWeeks: a.baseline_weeks,
           drop: a.drop_percent === void 0 ? void 0 : a.drop_percent / 100,
           minRequests: a.min_requests,
           app: a.app

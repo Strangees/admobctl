@@ -21,11 +21,14 @@ export interface FinanceConfig {
   decimalSeparator?: "." | ",";
 }
 
+/** check.baseline: days just before the window ("7" or "7d") or weeks of the same weekdays ("4w"). */
+export const CHECK_BASELINE = /^([1-9]\d*)([dw]?)$/;
+
 /** Defaults for `admobctl check`, stored as the strings `config set` writes. */
 export interface CheckConfig {
   /** Complete days to judge (default 1). */
   window?: string;
-  /** Days before the window to compare with (default 7). */
+  /** Days before the window ("7", "7d") or weeks of the same weekdays ("4w"). Default 4w, or 7d for windows over 7 days. */
   baseline?: string;
   /** Percent drop that counts as a breach (default 30). */
   drop?: string;
@@ -148,7 +151,10 @@ export function setProfileValue(config: ConfigFile, profile: string, key: string
   if (key === "finance.decimalSeparator" && value !== undefined && value !== "." && value !== ",") {
     throw usageError('finance.decimalSeparator must be "." or ","');
   }
-  if (CHECK_KEYS.includes(key) && value !== undefined && !/^[1-9]\d*$/.test(value)) {
+  if (key === "check.baseline" && value !== undefined && !CHECK_BASELINE.test(value)) {
+    throw usageError(`check.baseline must be days like 7d or weeks like 4w, got "${value}"`);
+  }
+  if (CHECK_KEYS.includes(key) && key !== "check.baseline" && value !== undefined && !/^[1-9]\d*$/.test(value)) {
     throw usageError(`${key} must be a positive whole number, got "${value}"`);
   }
   const [head, sub, ...rest] = key.split(".");

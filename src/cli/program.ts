@@ -127,6 +127,13 @@ function parseDays(v: string, flag = "--last"): number {
   return Number(m[1]);
 }
 
+/** check --baseline: 7d (the days just before the window) or 4w (the window's weekdays in the weeks before). */
+function parseBaseline(v: string): { days?: number; weeks?: number } {
+  const m = /^(\d+)([dw])$/.exec(v.trim());
+  if (!m) throw new AdmobctlError("USAGE", `--baseline expects days like 7d or weeks like 4w, got "${v}"`);
+  return m[2] === "w" ? { weeks: Number(m[1]) } : { days: Number(m[1]) };
+}
+
 function readJsonFile(path: string): unknown {
   let text: string;
   try {
@@ -713,14 +720,23 @@ export function buildProgram(io: CliIO): Command {
   // ── check ─────────────────────────────────────────────────────────
   program
     .command("check")
-    .description("Health check for cron: exits 1 when an app's earnings, match rate or show rate dropped against the days before")
+    .description("Health check for cron: exits 1 when an app's earnings, match rate or show rate dropped against the same weekday in the weeks before")
     .option("--window <Nd>", "complete days to judge, ending yesterday (default 1d)", (v) => parseDays(v, "--window"))
-    .option("--baseline <Nd>", "days just before the window to compare with (default 7d)", (v) => parseDays(v, "--baseline"))
+    .option(
+      "--baseline <Nw|Nd>",
+      "compare with the window's weekdays in the N weeks before (default 4w), or with the N days just before (7d; the default for windows over 7d)",
+      parseBaseline,
+    )
     .option("--drop <percent>", "a drop of this much or more is a breach (default 30)", positiveInt)
     .option("--min-requests <n>", "baseline requests an app needs before it is judged (default 1000)", positiveInt)
     .option("--app <alias|id>", "only this app")
-    .action(async (o: { window?: number; baseline?: number; drop?: number; minRequests?: number; app?: string }, cmd: Command) => {
-      const r = await check(svc(cmd), { ...o, drop: o.drop === undefined ? undefined : o.drop / 100 });
+    .action(async (o: { window?: number; baseline?: { days?: number; weeks?: number }; drop?: number; minRequests?: number; app?: string }, cmd: Command) => {
+      const r = await check(svc(cmd), {
+        ...o,
+        baseline: o.baseline?.days,
+        baselineWeeks: o.baseline?.weeks,
+        drop: o.drop === undefined ? undefined : o.drop / 100,
+      });
       emit(cmd, checkView(r));
       if (r.breaches) process.exitCode = 1;
     });

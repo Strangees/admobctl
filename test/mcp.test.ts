@@ -390,6 +390,18 @@ describe("mcp server", () => {
     expect((wf.structuredContent!.rows as unknown[]).length).toBe(1);
   });
 
+  it("admobctl_check compares with the same weekdays by default and takes the baseline in days or weeks", async () => {
+    const { client } = await connect();
+    const baselineOf = async (args: Record<string, unknown>) =>
+      ((await client.callTool({ name: "admobctl_check", arguments: args })) as ToolResult).structuredContent!.baseline;
+    expect(await baselineOf({})).toEqual({ from: "2026-09-03", to: "2026-09-24", days: 4, weeks: 4 });
+    expect(await baselineOf({ baseline_weeks: 2 })).toEqual({ from: "2026-09-17", to: "2026-09-24", days: 2, weeks: 2 });
+    expect(await baselineOf({ baseline_days: 7 })).toEqual({ from: "2026-09-24", to: "2026-09-30", days: 7 });
+    const both = (await client.callTool({ name: "admobctl_check", arguments: { baseline_days: 7, baseline_weeks: 4 } })) as ToolResult;
+    expect(both.isError).toBe(true);
+    expect(both.content[0]!.text).toMatch(/days or in weeks, not both/);
+  });
+
   it("says when the geo country totals are cut to the biggest", async () => {
     const country = (c: string) => ({
       row: { dimensionValues: { COUNTRY: { value: c }, FORMAT: { value: "BANNER" } }, metricValues: { ESTIMATED_EARNINGS: { microsValue: "1000000" }, AD_REQUESTS: { integerValue: "10" } } },
