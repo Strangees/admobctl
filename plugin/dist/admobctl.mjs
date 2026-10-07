@@ -7202,7 +7202,7 @@ var require_dist = __commonJS({
 });
 
 // src/cli/program.ts
-import { chmodSync as chmodSync5, readFileSync as readFileSync5, writeFileSync as writeFileSync3 } from "node:fs";
+import { readFileSync as readFileSync5 } from "node:fs";
 
 // node_modules/commander/lib/error.js
 var CommanderError = class extends Error {
@@ -10941,6 +10941,10 @@ var exec = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
   child.stdin?.end(opts.input ?? "");
 });
 
+// src/core/fs.ts
+import { chmodSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename } from "node:path";
+
 // src/core/log.ts
 var verbose = Boolean(process.env.ADMOBCTL_DEBUG);
 var log = {
@@ -10956,6 +10960,38 @@ var log = {
 `);
   }
 };
+
+// src/core/fs.ts
+function ensurePrivateDir(dir) {
+  if (mkdirSync(dir, { recursive: true, mode: 448 }) !== void 0) {
+    chmodSync(dir, 448);
+    return;
+  }
+  if (process.platform === "win32" || typeof process.getuid !== "function") return;
+  const st = statSync(dir);
+  if ((st.mode & 63) === 0) return;
+  const warning = `${dir} is accessible to other users (mode ${(st.mode & 511).toString(8)}). Fix: chmod 700 ${dir}`;
+  if (basename(dir) === ".admobctl" && st.uid === process.getuid()) {
+    try {
+      chmodSync(dir, 448);
+      return;
+    } catch {
+    }
+  }
+  log.warn(warning);
+}
+function writePrivateFile(file2, content) {
+  const tmp = `${file2}.${process.pid}.tmp`;
+  rmSync(tmp, { force: true });
+  try {
+    writeFileSync(tmp, content, { mode: 384, flag: "wx" });
+    renameSync(tmp, file2);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
+  chmodSync(file2, 384);
+}
 
 // src/core/http.ts
 var DEFAULT_TIMEOUT_MS = 3e4;
@@ -11145,33 +11181,9 @@ var CloudClient = class {
 };
 
 // src/core/config.ts
-import { chmodSync as chmodSync2, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync as chmodSync2, existsSync, readFileSync, renameSync as renameSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-
-// src/core/fs.ts
-import { chmodSync, mkdirSync, statSync } from "node:fs";
-import { basename } from "node:path";
-function ensurePrivateDir(dir) {
-  if (mkdirSync(dir, { recursive: true, mode: 448 }) !== void 0) {
-    chmodSync(dir, 448);
-    return;
-  }
-  if (process.platform === "win32" || typeof process.getuid !== "function") return;
-  const st = statSync(dir);
-  if ((st.mode & 63) === 0) return;
-  const warning = `${dir} is accessible to other users (mode ${(st.mode & 511).toString(8)}). Fix: chmod 700 ${dir}`;
-  if (basename(dir) === ".admobctl" && st.uid === process.getuid()) {
-    try {
-      chmodSync(dir, 448);
-      return;
-    } catch {
-    }
-  }
-  log.warn(warning);
-}
-
-// src/core/config.ts
 var DEFAULT_FINANCE = {
   receivableAccount: "1509",
   revenueAccount: "3120",
@@ -11203,9 +11215,9 @@ function saveConfig(dir, config2) {
   ensurePrivateDir(dir);
   const file2 = configPath(dir);
   const tmp = `${file2}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(config2, null, 2)}
+  writeFileSync2(tmp, `${JSON.stringify(config2, null, 2)}
 `, { mode: 384 });
-  renameSync(tmp, file2);
+  renameSync2(tmp, file2);
   chmodSync2(file2, 384);
 }
 function resolveProfile(config2, name) {
@@ -11518,7 +11530,7 @@ import { randomBytes as randomBytes2 } from "node:crypto";
 
 // src/core/auth/oauth.ts
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync as chmodSync4, existsSync as existsSync2, readFileSync as readFileSync3, renameSync as renameSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { chmodSync as chmodSync4, existsSync as existsSync2, readFileSync as readFileSync3, renameSync as renameSync3, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "node:fs";
 import { createServer } from "node:http";
 import { join as join3 } from "node:path";
 var AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -11565,13 +11577,13 @@ var FileSecretStore = class {
     ensurePrivateDir(this.dir);
     const file2 = this.file(profile);
     const tmp = `${file2}.${process.pid}.tmp`;
-    rmSync(tmp, { force: true });
-    writeFileSync2(tmp, value, { mode: 384, flag: "wx" });
-    renameSync2(tmp, file2);
+    rmSync2(tmp, { force: true });
+    writeFileSync3(tmp, value, { mode: 384, flag: "wx" });
+    renameSync3(tmp, file2);
     chmodSync4(file2, 384);
   }
   async delete(profile) {
-    rmSync(this.file(profile), { force: true });
+    rmSync2(this.file(profile), { force: true });
   }
 };
 function defaultSecretStore(configDir2, exec2) {
@@ -12165,7 +12177,11 @@ var ratio = (a, b) => b > 0 ? a / b : 0;
 var perMille = (micros, n) => microsToAmount(Math.round(ratio(micros, n) * 1e3));
 var pct = (f) => `${(f * 100).toFixed(1)}%`;
 var signedPct = (f) => `${f >= 0 ? "+" : ""}${(f * 100).toFixed(1)}%`;
+function checkRangeArgs(opts) {
+  if (opts.last !== void 0 && (opts.from || opts.to)) throw usageError("Give either --last (last_days) or --from/--to, not both.");
+}
 function resolveInsightRange(opts, today) {
+  checkRangeArgs(opts);
   if (opts.from || opts.to) return dateRangeFromArgs(opts.from ?? opts.to, opts.to ?? opts.from);
   const days = opts.last ?? 30;
   if (!Number.isInteger(days) || days < 1 || days > 366) throw usageError("--last must be between 1d and 366d");
@@ -12175,6 +12191,7 @@ async function insights(svc, opts) {
   if (!INSIGHT_DIMENSIONS.includes(opts.by)) {
     throw usageError(`--by must be one of ${INSIGHT_DIMENSIONS.join(", ")}`);
   }
+  checkRangeArgs(opts);
   const acct = await svc.account();
   const range = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
   const metrics = ["earnings", "requests", "matched-requests", "impressions", "clicks"];
@@ -12302,6 +12319,7 @@ function thinDataNotice(thin, total, what, also = "") {
   return thin ? [`${thin} of ${total} ${what} had fewer than ${MIN_REQUESTS} requests${also}; treat their rates as noise, not findings.`] : [];
 }
 async function fetchReport(svc, kind, opts) {
+  checkRangeArgs(opts);
   const acct = await svc.account();
   const range = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
   const { report, notices } = await svc.rawReport(kind, {
@@ -12329,6 +12347,7 @@ var VERSION_DIM = { sdk: "GMA_SDK_VERSION", app: "APP_VERSION_NAME", os: "MOBILE
 var VERSION_NOUN = { sdk: "SDK version", app: "app version", os: "OS version" };
 async function analyzeVersions(svc, opts) {
   if (!VERSION_KINDS.includes(opts.by)) throw usageError(`--by must be one of ${VERSION_KINDS.join(", ")}`);
+  checkRangeArgs(opts);
   const groupDim = opts.by === "app" ? "APP" : "PLATFORM";
   const dim = VERSION_DIM[opts.by];
   const [r, apps] = await Promise.all([
@@ -12425,6 +12444,7 @@ async function analyzeVersions(svc, opts) {
 var SERVING_RESTRICTION_START = { year: 2021, month: 3, day: 13 };
 var UNRESTRICTED = /no restriction|unrestricted|^none$|restriction_none|no_restriction/i;
 async function analyzeConsent(svc, opts) {
+  checkRangeArgs(opts);
   const [r, appRefs] = await Promise.all([
     fetchReport(svc, "network", {
       ...opts,
@@ -13266,6 +13286,7 @@ async function analyzeGeo(svc, opts = {}) {
 
 // src/core/lint.ts
 async function lint(svc, opts = {}) {
+  checkRangeArgs(opts);
   const acct = await svc.account();
   const range = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
   const from = formatDate(range.startDate);
@@ -13422,6 +13443,447 @@ async function exportMediationGroups(svc, opts = {}) {
   }
   notes.push("To create a copy: edit displayName (it must be unique), targeting.adUnitIds and each line's adUnitMappings for the target ad units, then admobctl mediation-groups create --file <file>.");
   return { groups, notes };
+}
+
+// src/core/ratelimit.ts
+var MINUTE = 6e4;
+var QUOTAS = { account: 900, inventory: 120, reporting: 900 };
+var RateLimiter = class {
+  constructor(limit, windowMs, now = Date.now) {
+    this.limit = limit;
+    this.windowMs = windowMs;
+    this.now = now;
+  }
+  limit;
+  windowMs;
+  now;
+  starts = [];
+  /** Wait until a call may start. `sleep` is the caller's, so tests with a fake sleep never block. */
+  async take(sleep = defaultSleep) {
+    const t = this.now();
+    this.starts = this.starts.filter((s) => s > t - this.windowMs);
+    const at = this.starts.length >= this.limit ? this.starts[this.starts.length - this.limit] + this.windowMs : t;
+    this.starts.push(at);
+    this.starts.sort((a, b) => a - b);
+    if (at > t) {
+      log.debug(`rate limit: waiting ${at - t}ms for a free slot`);
+      await sleep(at - t);
+    }
+  }
+};
+function createLimiters(now) {
+  const make = (c) => new RateLimiter(QUOTAS[c], MINUTE, now);
+  return { account: make("account"), inventory: make("inventory"), reporting: make("reporting") };
+}
+var processLimiters = createLimiters();
+
+// src/core/report.ts
+var DIMENSIONS = {
+  network: [
+    "DATE",
+    "MONTH",
+    "WEEK",
+    "AD_UNIT",
+    "APP",
+    "AD_TYPE",
+    "COUNTRY",
+    "FORMAT",
+    "PLATFORM",
+    "MOBILE_OS_VERSION",
+    "GMA_SDK_VERSION",
+    "APP_VERSION_NAME",
+    "SERVING_RESTRICTION"
+  ],
+  mediation: [
+    "DATE",
+    "MONTH",
+    "WEEK",
+    "AD_SOURCE",
+    "AD_SOURCE_INSTANCE",
+    "AD_UNIT",
+    "APP",
+    "MEDIATION_GROUP",
+    "COUNTRY",
+    "FORMAT",
+    "PLATFORM",
+    "MOBILE_OS_VERSION",
+    "GMA_SDK_VERSION",
+    "APP_VERSION_NAME",
+    "SERVING_RESTRICTION"
+  ],
+  // v1beta campaignReport: AdMob app-promotion campaigns (the publisher as advertiser).
+  campaign: [
+    "DATE",
+    "CAMPAIGN_ID",
+    "CAMPAIGN_NAME",
+    "AD_ID",
+    "AD_NAME",
+    "PLACEMENT_ID",
+    "PLACEMENT_NAME",
+    "PLACEMENT_PLATFORM",
+    "COUNTRY",
+    "FORMAT"
+  ]
+};
+var METRICS = {
+  network: [
+    "AD_REQUESTS",
+    "CLICKS",
+    "ESTIMATED_EARNINGS",
+    "IMPRESSIONS",
+    "IMPRESSION_CTR",
+    "IMPRESSION_RPM",
+    "MATCHED_REQUESTS",
+    "MATCH_RATE",
+    "SHOW_RATE"
+  ],
+  mediation: [
+    "AD_REQUESTS",
+    "CLICKS",
+    "ESTIMATED_EARNINGS",
+    "IMPRESSIONS",
+    "IMPRESSION_CTR",
+    "MATCHED_REQUESTS",
+    "MATCH_RATE",
+    "OBSERVED_ECPM"
+  ],
+  campaign: ["IMPRESSIONS", "CLICKS", "CLICK_THROUGH_RATE", "INSTALLS", "ESTIMATED_COST", "AVERAGE_CPI", "INTERACTIONS"]
+};
+var MONEY_METRICS = /* @__PURE__ */ new Set(["ESTIMATED_EARNINGS", "IMPRESSION_RPM", "OBSERVED_ECPM", "ESTIMATED_COST", "AVERAGE_CPI"]);
+var METRIC_ALIASES = {
+  EARNINGS: "ESTIMATED_EARNINGS",
+  REVENUE: "ESTIMATED_EARNINGS",
+  REQUESTS: "AD_REQUESTS",
+  MATCHED: "MATCHED_REQUESTS",
+  CTR: "IMPRESSION_CTR",
+  RPM: "IMPRESSION_RPM",
+  ECPM: "OBSERVED_ECPM",
+  COST: "ESTIMATED_COST",
+  CPI: "AVERAGE_CPI"
+};
+var KIND_METRIC_ALIASES = {
+  campaign: { CTR: "CLICK_THROUGH_RATE" }
+};
+var DIMENSION_ALIASES = {
+  UNIT: "AD_UNIT",
+  SOURCE: "AD_SOURCE",
+  OS_VERSION: "MOBILE_OS_VERSION",
+  SDK_VERSION: "GMA_SDK_VERSION",
+  APP_VERSION: "APP_VERSION_NAME",
+  CAMPAIGN: "CAMPAIGN_NAME",
+  AD: "AD_NAME",
+  PLACEMENT: "PLACEMENT_NAME"
+};
+function canonical(name) {
+  return name.trim().toUpperCase().replace(/-/g, "_");
+}
+function friendlyName(apiName) {
+  return apiName.toLowerCase().replace(/_/g, "-");
+}
+function friendlyMetric(apiName) {
+  const alias = Object.keys(METRIC_ALIASES).find((k) => METRIC_ALIASES[k] === apiName);
+  return friendlyName(alias ?? apiName);
+}
+function normalizeDimension(name, kind) {
+  const c = canonical(name);
+  const resolved = DIMENSION_ALIASES[c] ?? c;
+  if (!DIMENSIONS[kind].includes(resolved)) {
+    throw usageError(
+      `Dimension "${name}" is not supported by ${kind} reports. Valid: ${DIMENSIONS[kind].map(friendlyName).join(", ")}`
+    );
+  }
+  return resolved;
+}
+function normalizeMetric(name, kind) {
+  const c = canonical(name);
+  const resolved = KIND_METRIC_ALIASES[kind]?.[c] ?? METRIC_ALIASES[c] ?? c;
+  if (!METRICS[kind].includes(resolved)) {
+    throw usageError(
+      `Metric "${name}" is not supported by ${kind} reports. Valid: ${METRICS[kind].map(friendlyName).join(", ")}`
+    );
+  }
+  return resolved;
+}
+var API_MAX_ROWS = 1e5;
+var TIME_DIMENSIONS = ["DATE", "WEEK", "MONTH"];
+var INCOMPATIBLE = {
+  AD_TYPE: ["AD_REQUESTS", "MATCH_RATE", "IMPRESSION_RPM"]
+};
+var DISCOURAGED = {
+  MOBILE_OS_VERSION: ["ESTIMATED_EARNINGS", "OBSERVED_ECPM", "IMPRESSION_RPM"],
+  GMA_SDK_VERSION: ["ESTIMATED_EARNINGS", "OBSERVED_ECPM", "IMPRESSION_RPM"],
+  APP_VERSION_NAME: ["ESTIMATED_EARNINGS", "OBSERVED_ECPM", "IMPRESSION_RPM"]
+};
+function compatibleMetrics(_kind, dimensions, metrics) {
+  const excluded = new Set(dimensions.flatMap((d) => [...INCOMPATIBLE[d] ?? [], ...DISCOURAGED[d] ?? []]));
+  return { kept: metrics.filter((m) => !excluded.has(m)), dropped: metrics.filter((m) => excluded.has(m)) };
+}
+function checkCombination(dimensions, metrics) {
+  const timeDims = dimensions.filter((d) => TIME_DIMENSIONS.includes(d));
+  if (timeDims.length > 1) {
+    throw usageError(`A report can use only one time dimension (date, week or month), got ${timeDims.map(friendlyName).join(", ")}.`);
+  }
+  for (const d of dimensions) {
+    const bad = metrics.filter((m) => INCOMPATIBLE[d]?.includes(m));
+    if (bad.length) {
+      throw usageError(`${friendlyName(d)} cannot be combined with ${bad.map(friendlyMetric).join(", ")} (an AdMob API restriction). Drop one of them.`);
+    }
+  }
+}
+function normalizeCurrency(code2) {
+  const c = code2.trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(c)) throw usageError(`Currency must be an ISO 4217 code like USD or EUR, got "${code2}"`);
+  return c;
+}
+function parseSort(input2, kind, dimensions, metrics) {
+  const [field = "", dir, ...rest] = input2.split(":").map((p) => p.trim());
+  const order = dir?.toLowerCase();
+  if (rest.length || order !== void 0 && order !== "asc" && order !== "desc") {
+    throw usageError(`--sort expects <field>[:asc|desc] with asc or desc, got "${input2}"`);
+  }
+  const named = (resolve) => {
+    try {
+      return resolve();
+    } catch {
+      return void 0;
+    }
+  };
+  const dimension = named(() => normalizeDimension(field, kind));
+  if (dimension && dimensions.includes(dimension)) return { dimension, order: order === "desc" ? "DESCENDING" : "ASCENDING" };
+  const metric2 = named(() => normalizeMetric(field, kind));
+  if (metric2 && metrics.includes(metric2)) return { metric: metric2, order: order === "asc" ? "ASCENDING" : "DESCENDING" };
+  throw usageError(
+    `Cannot sort by "${field}": it is not in this report. Sort by one of: ${[...dimensions.map(friendlyName), ...metrics.map(friendlyMetric)].join(", ")}`
+  );
+}
+function buildReportSpec(kind, input2) {
+  const dimensions = input2.dimensions.map((d) => normalizeDimension(d, kind));
+  const metrics = input2.metrics.map((m) => normalizeMetric(m, kind));
+  checkCombination(dimensions, metrics);
+  const spec = { dateRange: input2.dateRange, dimensions, metrics };
+  const filters = Object.entries(input2.filters ?? {});
+  if (filters.length) {
+    spec.dimensionFilters = filters.map(([dim, values]) => ({
+      dimension: normalizeDimension(dim, kind),
+      matchesAny: { values }
+    }));
+  }
+  const timeDim = dimensions.find((d) => TIME_DIMENSIONS.includes(d));
+  if (input2.sort !== void 0) spec.sortConditions = [parseSort(input2.sort, kind, dimensions, metrics)];
+  else if (timeDim) spec.sortConditions = [{ dimension: timeDim, order: "ASCENDING" }];
+  else if (metrics.includes("ESTIMATED_EARNINGS")) {
+    spec.sortConditions = [{ metric: "ESTIMATED_EARNINGS", order: "DESCENDING" }];
+  }
+  if (input2.currency !== void 0) spec.localizationSettings = { currencyCode: normalizeCurrency(input2.currency) };
+  if (input2.maxRows !== void 0) spec.maxReportRows = input2.maxRows;
+  return spec;
+}
+function metricNumber(key, v) {
+  if (v.microsValue !== void 0) return parseMicros(v.microsValue);
+  if (v.integerValue !== void 0) return Number(v.integerValue);
+  if (MONEY_METRICS.has(key) && v.doubleValue !== void 0) return Math.round(v.doubleValue * 1e6);
+  return v.doubleValue ?? 0;
+}
+function parseReport(raw) {
+  const rows = raw?.rows;
+  const chunks = Array.isArray(raw) ? raw : Array.isArray(rows) ? rows.map((row) => ({ row })) : [raw];
+  const report = { rows: [], warnings: [] };
+  for (const chunk of chunks) {
+    if (chunk.header) {
+      report.currency = chunk.header.localizationSettings?.currencyCode;
+      report.timeZone = chunk.header.reportingTimeZone;
+      report.dateRange = chunk.header.dateRange;
+    }
+    if (chunk.row) {
+      const dimensions = {};
+      for (const [k, v] of Object.entries(chunk.row.dimensionValues ?? {})) {
+        dimensions[k] = v.displayLabel === void 0 ? { value: v.value ?? "" } : { value: v.value ?? "", label: v.displayLabel };
+      }
+      const metrics = {};
+      for (const [k, v] of Object.entries(chunk.row.metricValues ?? {})) metrics[k] = metricNumber(k, v);
+      report.rows.push({ dimensions, metrics });
+    }
+    if (chunk.footer) {
+      if (chunk.footer.matchingRowCount !== void 0) report.matchingRowCount = Number(chunk.footer.matchingRowCount);
+      for (const w of chunk.footer.warnings ?? []) report.warnings.push(w.description ?? w.type ?? "unknown warning");
+    }
+  }
+  return report;
+}
+
+// src/core/client.ts
+var API_BASE = "https://admob.googleapis.com/v1";
+var API_BASE_BETA = "https://admob.googleapis.com/v1beta";
+var ADSENSE_API_BASE = "https://adsense.googleapis.com/v2";
+var WriteOutcomeUnknownError = class extends AdmobctlError {
+};
+function accountName(account) {
+  return account.startsWith("accounts/") ? account : `accounts/${account}`;
+}
+var AdmobClient = class {
+  constructor(opts) {
+    this.opts = opts;
+  }
+  opts;
+  async request(quota, method, path2, body, version2 = "v1", http = {}, token) {
+    const limiter = (this.opts.limiters ?? processLimiters)[quota];
+    const headers = {
+      authorization: `Bearer ${token ?? await this.opts.getToken()}`,
+      accept: "application/json"
+    };
+    if (this.opts.quotaProject) headers["x-goog-user-project"] = this.opts.quotaProject;
+    if (body !== void 0) headers["content-type"] = "application/json";
+    const base = version2 === "v1" ? this.opts.baseUrl ?? API_BASE : version2 === "v1beta" ? this.opts.betaBaseUrl ?? API_BASE_BETA : this.opts.adsenseBaseUrl ?? ADSENSE_API_BASE;
+    try {
+      return await requestJson(
+        `${base}/${path2}`,
+        { method, headers, body: body === void 0 ? void 0 : JSON.stringify(body) },
+        // Every attempt, retries included, takes a rate-limiter slot.
+        { ...this.opts, ...http, beforeAttempt: () => limiter.take(this.opts.sleep) }
+      );
+    } catch (err) {
+      throw version2 === "v1beta" ? betaError(err, path2, method) : err;
+    }
+  }
+  async paginate(quota, path2, key, opts = {}) {
+    const out = [];
+    let pageToken;
+    do {
+      const qs = new URLSearchParams({ pageSize: "1000", ...opts.params });
+      if (pageToken) qs.set("pageToken", pageToken);
+      const page = await this.request(quota, "GET", `${path2}?${qs}`, void 0, opts.version);
+      out.push(...page?.[key] ?? []);
+      pageToken = page?.nextPageToken || void 0;
+    } while (pageToken);
+    return out;
+  }
+  listAccounts() {
+    return this.paginate("account", "accounts", "account");
+  }
+  listApps(account) {
+    return this.paginate("inventory", `${accountName(account)}/apps`, "apps");
+  }
+  listAdUnits(account) {
+    return this.paginate("inventory", `${accountName(account)}/adUnits`, "adUnits");
+  }
+  async networkReport(account, spec) {
+    const raw = await this.request("reporting", "POST", `${accountName(account)}/networkReport:generate`, { reportSpec: spec });
+    return parseReport(raw);
+  }
+  async mediationReport(account, spec) {
+    const raw = await this.request("reporting", "POST", `${accountName(account)}/mediationReport:generate`, { reportSpec: spec });
+    return parseReport(raw);
+  }
+  // ── v1beta reads ──────────────────────────────────────────────────
+  listAdSources(account) {
+    return this.paginate("inventory", `${accountName(account)}/adSources`, "adSources", { version: "v1beta" });
+  }
+  listAdapters(account, adSourceId) {
+    return this.paginate("inventory", `${accountName(account)}/adSources/${adSourceId}/adapters`, "adapters", { version: "v1beta" });
+  }
+  /** `filter` uses the API's EBNF syntax, e.g. IN(FORMAT, "BANNER") AND CONTAINS_ANY(APP_IDS, "…"). */
+  listMediationGroups(account, filter) {
+    return this.paginate("inventory", `${accountName(account)}/mediationGroups`, "mediationGroups", {
+      version: "v1beta",
+      params: filter ? { filter } : void 0
+    });
+  }
+  /** `adUnit` is the ad unit's resource name, accounts/{pub}/adUnits/{fragment}. */
+  listAdUnitMappings(adUnit) {
+    return this.paginate("inventory", `${adUnit}/adUnitMappings`, "adUnitMappings", { version: "v1beta" });
+  }
+  // ── v1beta writes (admob.monetization scope) ─────────────────────
+  /** Send a write to v1beta. `path` is relative to the version root, e.g. accounts/pub-1/adUnits. */
+  async write(method, path2, body, query) {
+    const qs = query && Object.keys(query).length ? `?${new URLSearchParams(query)}` : "";
+    const token = await this.opts.getToken();
+    try {
+      return await this.request("inventory", method, `${path2}${qs}`, body, "v1beta", { retries: 0 }, token);
+    } catch (err) {
+      if (err instanceof AdmobctlError && (err.status === void 0 || err.status >= 500)) {
+        throw new WriteOutcomeUnknownError(err.code, `${err.message} The change may have been applied anyway.`, {
+          status: err.status,
+          cause: err,
+          fix: "Check with admobctl (e.g. apps list, ad-units list, mediation-groups show) before retrying, so it is not applied twice."
+        });
+      }
+      if (err instanceof AdmobctlError && err.code === "AUTH_SCOPE_MISSING") {
+        throw new AdmobctlError("AUTH_SCOPE_MISSING", "Write commands need the admob.monetization scope, which your credentials do not include.", {
+          status: err.status,
+          cause: err,
+          fix: "admobctl setup login --features write --yes"
+        });
+      }
+      throw err;
+    }
+  }
+  // ── AdSense Management API (adsense.readonly scope) ──────────────
+  /** All payments of the publisher's Google payments account: `unpaid` plus paid ones. Not paginated. */
+  async listPayments(account) {
+    try {
+      const page = await this.request("account", "GET", `${accountName(account)}/payments`, void 0, "adsense");
+      return page?.payments ?? [];
+    } catch (err) {
+      throw paymentsError(err, account.replace(/^accounts\//, ""));
+    }
+  }
+  async campaignReport(account, spec) {
+    try {
+      const raw = await this.request("reporting", "POST", `${accountName(account)}/campaignReport:generate`, { reportSpec: spec }, "v1beta");
+      return parseReport(raw);
+    } catch (err) {
+      if (err instanceof AdmobctlError && err.status === 400) {
+        throw new AdmobctlError(
+          "CAMPAIGN_REPORT_REJECTED",
+          `The AdMob API rejected the campaign report (400: ${err.message.replace(/^AdMob API error 400: /, "")}). This usually means the account has no AdMob app-promotion campaigns, or is not enabled for campaignReport (AdMob API v1beta).`,
+          {
+            status: 400,
+            cause: err,
+            fix: "Check AdMob \u2192 Campaigns for app-promotion campaigns. If you run some there, ask your Google AdMob account manager to enable AdMob API (v1beta) campaign reporting for this account."
+          }
+        );
+      }
+      throw err;
+    }
+  }
+};
+function methodName(path2, httpMethod) {
+  const segments = path2.split("?")[0].split("/");
+  const last = segments[segments.length - 1];
+  if (last.includes(":")) return last.replace(":", ".");
+  const collection = segments.length % 2 === 1 ? last : segments[segments.length - 2];
+  return `${collection}.${httpMethod === "GET" ? "list" : httpMethod === "PATCH" ? "patch" : "create"}`;
+}
+function betaError(err, path2, httpMethod) {
+  if (!(err instanceof AdmobctlError) || err.code !== "PERMISSION_DENIED") return err;
+  return new AdmobctlError(
+    "BETA_ACCESS_DENIED",
+    `Permission denied for ${methodName(path2, httpMethod)} (AdMob API v1beta). Google limits several v1beta methods to allowlisted accounts.`,
+    {
+      status: err.status,
+      cause: err,
+      fix: "If `admobctl accounts list` works, ask your Google AdMob account manager to enable AdMob API (v1beta) access for this publisher account."
+    }
+  );
+}
+function paymentsError(err, publisherId) {
+  if (!(err instanceof AdmobctlError)) return err;
+  const opts = { status: err.status, cause: err };
+  switch (err.code) {
+    case "AUTH_SCOPE_MISSING":
+      return new AdmobctlError("AUTH_SCOPE_MISSING", "finance balance needs the adsense.readonly scope, which your credentials do not include.", {
+        ...opts,
+        fix: "admobctl setup login --features payments --yes"
+      });
+    case "PERMISSION_DENIED":
+    case "NOT_FOUND":
+      return new AdmobctlError("PAYMENTS_UNAVAILABLE", `No Google payments (AdSense) account was found or accessible for ${publisherId}, so the unpaid balance is unavailable. (Google: ${err.message})`, {
+        ...opts,
+        fix: "Check AdMob \u2192 Payments in the web UI. If your balance shows there, run admobctl auth doctor and make sure you signed in as the AdMob account owner."
+      });
+    default:
+      return err;
+  }
 }
 
 // src/core/write.ts
@@ -13712,7 +14174,14 @@ async function applyPlan(svc, plan) {
   try {
     result = await svc.client.write(plan.method, plan.path, plan.body, plan.query);
   } catch (err) {
-    audit(svc, { ...entry, ok: false, error: err instanceof AdmobctlError ? err.code : String(err) });
+    audit(svc, {
+      ...entry,
+      ok: false,
+      // Sent, then a timeout, network error or 5xx: not a rejection, the API may have applied it.
+      ...err instanceof WriteOutcomeUnknownError ? { outcome: "unknown" } : {},
+      error: err instanceof AdmobctlError ? err.code : String(err),
+      ...err instanceof AdmobctlError ? { message: err.message } : {}
+    });
     throw err;
   }
   const name = result?.name;
@@ -13858,444 +14327,6 @@ function mergeCampaignChunks(chunks, dimensions) {
     if ("AVERAGE_CPI" in m) m.AVERAGE_CPI = m.INSTALLS ? Math.round((m.ESTIMATED_COST ?? 0) / m.INSTALLS) : 0;
   }
   return { rows, warnings: chunks.flatMap((c) => c.warnings) };
-}
-
-// src/core/ratelimit.ts
-var MINUTE = 6e4;
-var QUOTAS = { account: 900, inventory: 120, reporting: 900 };
-var RateLimiter = class {
-  constructor(limit, windowMs, now = Date.now) {
-    this.limit = limit;
-    this.windowMs = windowMs;
-    this.now = now;
-  }
-  limit;
-  windowMs;
-  now;
-  starts = [];
-  /** Wait until a call may start. `sleep` is the caller's, so tests with a fake sleep never block. */
-  async take(sleep = defaultSleep) {
-    const t = this.now();
-    this.starts = this.starts.filter((s) => s > t - this.windowMs);
-    const at = this.starts.length >= this.limit ? this.starts[this.starts.length - this.limit] + this.windowMs : t;
-    this.starts.push(at);
-    this.starts.sort((a, b) => a - b);
-    if (at > t) {
-      log.debug(`rate limit: waiting ${at - t}ms for a free slot`);
-      await sleep(at - t);
-    }
-  }
-};
-function createLimiters(now) {
-  const make = (c) => new RateLimiter(QUOTAS[c], MINUTE, now);
-  return { account: make("account"), inventory: make("inventory"), reporting: make("reporting") };
-}
-var processLimiters = createLimiters();
-
-// src/core/report.ts
-var DIMENSIONS = {
-  network: [
-    "DATE",
-    "MONTH",
-    "WEEK",
-    "AD_UNIT",
-    "APP",
-    "AD_TYPE",
-    "COUNTRY",
-    "FORMAT",
-    "PLATFORM",
-    "MOBILE_OS_VERSION",
-    "GMA_SDK_VERSION",
-    "APP_VERSION_NAME",
-    "SERVING_RESTRICTION"
-  ],
-  mediation: [
-    "DATE",
-    "MONTH",
-    "WEEK",
-    "AD_SOURCE",
-    "AD_SOURCE_INSTANCE",
-    "AD_UNIT",
-    "APP",
-    "MEDIATION_GROUP",
-    "COUNTRY",
-    "FORMAT",
-    "PLATFORM",
-    "MOBILE_OS_VERSION",
-    "GMA_SDK_VERSION",
-    "APP_VERSION_NAME",
-    "SERVING_RESTRICTION"
-  ],
-  // v1beta campaignReport: AdMob app-promotion campaigns (the publisher as advertiser).
-  campaign: [
-    "DATE",
-    "CAMPAIGN_ID",
-    "CAMPAIGN_NAME",
-    "AD_ID",
-    "AD_NAME",
-    "PLACEMENT_ID",
-    "PLACEMENT_NAME",
-    "PLACEMENT_PLATFORM",
-    "COUNTRY",
-    "FORMAT"
-  ]
-};
-var METRICS = {
-  network: [
-    "AD_REQUESTS",
-    "CLICKS",
-    "ESTIMATED_EARNINGS",
-    "IMPRESSIONS",
-    "IMPRESSION_CTR",
-    "IMPRESSION_RPM",
-    "MATCHED_REQUESTS",
-    "MATCH_RATE",
-    "SHOW_RATE"
-  ],
-  mediation: [
-    "AD_REQUESTS",
-    "CLICKS",
-    "ESTIMATED_EARNINGS",
-    "IMPRESSIONS",
-    "IMPRESSION_CTR",
-    "MATCHED_REQUESTS",
-    "MATCH_RATE",
-    "OBSERVED_ECPM"
-  ],
-  campaign: ["IMPRESSIONS", "CLICKS", "CLICK_THROUGH_RATE", "INSTALLS", "ESTIMATED_COST", "AVERAGE_CPI", "INTERACTIONS"]
-};
-var MONEY_METRICS = /* @__PURE__ */ new Set(["ESTIMATED_EARNINGS", "IMPRESSION_RPM", "OBSERVED_ECPM", "ESTIMATED_COST", "AVERAGE_CPI"]);
-var METRIC_ALIASES = {
-  EARNINGS: "ESTIMATED_EARNINGS",
-  REVENUE: "ESTIMATED_EARNINGS",
-  REQUESTS: "AD_REQUESTS",
-  MATCHED: "MATCHED_REQUESTS",
-  CTR: "IMPRESSION_CTR",
-  RPM: "IMPRESSION_RPM",
-  ECPM: "OBSERVED_ECPM",
-  COST: "ESTIMATED_COST",
-  CPI: "AVERAGE_CPI"
-};
-var KIND_METRIC_ALIASES = {
-  campaign: { CTR: "CLICK_THROUGH_RATE" }
-};
-var DIMENSION_ALIASES = {
-  UNIT: "AD_UNIT",
-  SOURCE: "AD_SOURCE",
-  OS_VERSION: "MOBILE_OS_VERSION",
-  SDK_VERSION: "GMA_SDK_VERSION",
-  APP_VERSION: "APP_VERSION_NAME",
-  CAMPAIGN: "CAMPAIGN_NAME",
-  AD: "AD_NAME",
-  PLACEMENT: "PLACEMENT_NAME"
-};
-function canonical(name) {
-  return name.trim().toUpperCase().replace(/-/g, "_");
-}
-function friendlyName(apiName) {
-  return apiName.toLowerCase().replace(/_/g, "-");
-}
-function friendlyMetric(apiName) {
-  const alias = Object.keys(METRIC_ALIASES).find((k) => METRIC_ALIASES[k] === apiName);
-  return friendlyName(alias ?? apiName);
-}
-function normalizeDimension(name, kind) {
-  const c = canonical(name);
-  const resolved = DIMENSION_ALIASES[c] ?? c;
-  if (!DIMENSIONS[kind].includes(resolved)) {
-    throw usageError(
-      `Dimension "${name}" is not supported by ${kind} reports. Valid: ${DIMENSIONS[kind].map(friendlyName).join(", ")}`
-    );
-  }
-  return resolved;
-}
-function normalizeMetric(name, kind) {
-  const c = canonical(name);
-  const resolved = KIND_METRIC_ALIASES[kind]?.[c] ?? METRIC_ALIASES[c] ?? c;
-  if (!METRICS[kind].includes(resolved)) {
-    throw usageError(
-      `Metric "${name}" is not supported by ${kind} reports. Valid: ${METRICS[kind].map(friendlyName).join(", ")}`
-    );
-  }
-  return resolved;
-}
-var API_MAX_ROWS = 1e5;
-var TIME_DIMENSIONS = ["DATE", "WEEK", "MONTH"];
-var INCOMPATIBLE = {
-  AD_TYPE: ["AD_REQUESTS", "MATCH_RATE", "IMPRESSION_RPM"]
-};
-var DISCOURAGED = {
-  MOBILE_OS_VERSION: ["ESTIMATED_EARNINGS", "OBSERVED_ECPM", "IMPRESSION_RPM"],
-  GMA_SDK_VERSION: ["ESTIMATED_EARNINGS", "OBSERVED_ECPM", "IMPRESSION_RPM"],
-  APP_VERSION_NAME: ["ESTIMATED_EARNINGS", "OBSERVED_ECPM", "IMPRESSION_RPM"]
-};
-function compatibleMetrics(_kind, dimensions, metrics) {
-  const excluded = new Set(dimensions.flatMap((d) => [...INCOMPATIBLE[d] ?? [], ...DISCOURAGED[d] ?? []]));
-  return { kept: metrics.filter((m) => !excluded.has(m)), dropped: metrics.filter((m) => excluded.has(m)) };
-}
-function checkCombination(dimensions, metrics) {
-  const timeDims = dimensions.filter((d) => TIME_DIMENSIONS.includes(d));
-  if (timeDims.length > 1) {
-    throw usageError(`A report can use only one time dimension (date, week or month), got ${timeDims.map(friendlyName).join(", ")}.`);
-  }
-  for (const d of dimensions) {
-    const bad = metrics.filter((m) => INCOMPATIBLE[d]?.includes(m));
-    if (bad.length) {
-      throw usageError(`${friendlyName(d)} cannot be combined with ${bad.map(friendlyMetric).join(", ")} (an AdMob API restriction). Drop one of them.`);
-    }
-  }
-}
-function normalizeCurrency(code2) {
-  const c = code2.trim().toUpperCase();
-  if (!/^[A-Z]{3}$/.test(c)) throw usageError(`Currency must be an ISO 4217 code like USD or EUR, got "${code2}"`);
-  return c;
-}
-function parseSort(input2, kind, dimensions, metrics) {
-  const [field = "", dir, ...rest] = input2.split(":").map((p) => p.trim());
-  const order = dir?.toLowerCase();
-  if (rest.length || order !== void 0 && order !== "asc" && order !== "desc") {
-    throw usageError(`--sort expects <field>[:asc|desc] with asc or desc, got "${input2}"`);
-  }
-  const named = (resolve) => {
-    try {
-      return resolve();
-    } catch {
-      return void 0;
-    }
-  };
-  const dimension = named(() => normalizeDimension(field, kind));
-  if (dimension && dimensions.includes(dimension)) return { dimension, order: order === "desc" ? "DESCENDING" : "ASCENDING" };
-  const metric2 = named(() => normalizeMetric(field, kind));
-  if (metric2 && metrics.includes(metric2)) return { metric: metric2, order: order === "asc" ? "ASCENDING" : "DESCENDING" };
-  throw usageError(
-    `Cannot sort by "${field}": it is not in this report. Sort by one of: ${[...dimensions.map(friendlyName), ...metrics.map(friendlyMetric)].join(", ")}`
-  );
-}
-function buildReportSpec(kind, input2) {
-  const dimensions = input2.dimensions.map((d) => normalizeDimension(d, kind));
-  const metrics = input2.metrics.map((m) => normalizeMetric(m, kind));
-  checkCombination(dimensions, metrics);
-  const spec = { dateRange: input2.dateRange, dimensions, metrics };
-  const filters = Object.entries(input2.filters ?? {});
-  if (filters.length) {
-    spec.dimensionFilters = filters.map(([dim, values]) => ({
-      dimension: normalizeDimension(dim, kind),
-      matchesAny: { values }
-    }));
-  }
-  const timeDim = dimensions.find((d) => TIME_DIMENSIONS.includes(d));
-  if (input2.sort !== void 0) spec.sortConditions = [parseSort(input2.sort, kind, dimensions, metrics)];
-  else if (timeDim) spec.sortConditions = [{ dimension: timeDim, order: "ASCENDING" }];
-  else if (metrics.includes("ESTIMATED_EARNINGS")) {
-    spec.sortConditions = [{ metric: "ESTIMATED_EARNINGS", order: "DESCENDING" }];
-  }
-  if (input2.currency !== void 0) spec.localizationSettings = { currencyCode: normalizeCurrency(input2.currency) };
-  if (input2.maxRows !== void 0) spec.maxReportRows = input2.maxRows;
-  return spec;
-}
-function metricNumber(key, v) {
-  if (v.microsValue !== void 0) return parseMicros(v.microsValue);
-  if (v.integerValue !== void 0) return Number(v.integerValue);
-  if (MONEY_METRICS.has(key) && v.doubleValue !== void 0) return Math.round(v.doubleValue * 1e6);
-  return v.doubleValue ?? 0;
-}
-function parseReport(raw) {
-  const rows = raw?.rows;
-  const chunks = Array.isArray(raw) ? raw : Array.isArray(rows) ? rows.map((row) => ({ row })) : [raw];
-  const report = { rows: [], warnings: [] };
-  for (const chunk of chunks) {
-    if (chunk.header) {
-      report.currency = chunk.header.localizationSettings?.currencyCode;
-      report.timeZone = chunk.header.reportingTimeZone;
-      report.dateRange = chunk.header.dateRange;
-    }
-    if (chunk.row) {
-      const dimensions = {};
-      for (const [k, v] of Object.entries(chunk.row.dimensionValues ?? {})) {
-        dimensions[k] = v.displayLabel === void 0 ? { value: v.value ?? "" } : { value: v.value ?? "", label: v.displayLabel };
-      }
-      const metrics = {};
-      for (const [k, v] of Object.entries(chunk.row.metricValues ?? {})) metrics[k] = metricNumber(k, v);
-      report.rows.push({ dimensions, metrics });
-    }
-    if (chunk.footer) {
-      if (chunk.footer.matchingRowCount !== void 0) report.matchingRowCount = Number(chunk.footer.matchingRowCount);
-      for (const w of chunk.footer.warnings ?? []) report.warnings.push(w.description ?? w.type ?? "unknown warning");
-    }
-  }
-  return report;
-}
-
-// src/core/client.ts
-var API_BASE = "https://admob.googleapis.com/v1";
-var API_BASE_BETA = "https://admob.googleapis.com/v1beta";
-var ADSENSE_API_BASE = "https://adsense.googleapis.com/v2";
-function accountName(account) {
-  return account.startsWith("accounts/") ? account : `accounts/${account}`;
-}
-var AdmobClient = class {
-  constructor(opts) {
-    this.opts = opts;
-  }
-  opts;
-  async request(quota, method, path2, body, version2 = "v1", http = {}) {
-    const limiter = (this.opts.limiters ?? processLimiters)[quota];
-    const headers = {
-      authorization: `Bearer ${await this.opts.getToken()}`,
-      accept: "application/json"
-    };
-    if (this.opts.quotaProject) headers["x-goog-user-project"] = this.opts.quotaProject;
-    if (body !== void 0) headers["content-type"] = "application/json";
-    const base = version2 === "v1" ? this.opts.baseUrl ?? API_BASE : version2 === "v1beta" ? this.opts.betaBaseUrl ?? API_BASE_BETA : this.opts.adsenseBaseUrl ?? ADSENSE_API_BASE;
-    try {
-      return await requestJson(
-        `${base}/${path2}`,
-        { method, headers, body: body === void 0 ? void 0 : JSON.stringify(body) },
-        // Every attempt, retries included, takes a rate-limiter slot.
-        { ...this.opts, ...http, beforeAttempt: () => limiter.take(this.opts.sleep) }
-      );
-    } catch (err) {
-      throw version2 === "v1beta" ? betaError(err, path2, method) : err;
-    }
-  }
-  async paginate(quota, path2, key, opts = {}) {
-    const out = [];
-    let pageToken;
-    do {
-      const qs = new URLSearchParams({ pageSize: "1000", ...opts.params });
-      if (pageToken) qs.set("pageToken", pageToken);
-      const page = await this.request(quota, "GET", `${path2}?${qs}`, void 0, opts.version);
-      out.push(...page?.[key] ?? []);
-      pageToken = page?.nextPageToken || void 0;
-    } while (pageToken);
-    return out;
-  }
-  listAccounts() {
-    return this.paginate("account", "accounts", "account");
-  }
-  listApps(account) {
-    return this.paginate("inventory", `${accountName(account)}/apps`, "apps");
-  }
-  listAdUnits(account) {
-    return this.paginate("inventory", `${accountName(account)}/adUnits`, "adUnits");
-  }
-  async networkReport(account, spec) {
-    const raw = await this.request("reporting", "POST", `${accountName(account)}/networkReport:generate`, { reportSpec: spec });
-    return parseReport(raw);
-  }
-  async mediationReport(account, spec) {
-    const raw = await this.request("reporting", "POST", `${accountName(account)}/mediationReport:generate`, { reportSpec: spec });
-    return parseReport(raw);
-  }
-  // ── v1beta reads ──────────────────────────────────────────────────
-  listAdSources(account) {
-    return this.paginate("inventory", `${accountName(account)}/adSources`, "adSources", { version: "v1beta" });
-  }
-  listAdapters(account, adSourceId) {
-    return this.paginate("inventory", `${accountName(account)}/adSources/${adSourceId}/adapters`, "adapters", { version: "v1beta" });
-  }
-  /** `filter` uses the API's EBNF syntax, e.g. IN(FORMAT, "BANNER") AND CONTAINS_ANY(APP_IDS, "…"). */
-  listMediationGroups(account, filter) {
-    return this.paginate("inventory", `${accountName(account)}/mediationGroups`, "mediationGroups", {
-      version: "v1beta",
-      params: filter ? { filter } : void 0
-    });
-  }
-  /** `adUnit` is the ad unit's resource name, accounts/{pub}/adUnits/{fragment}. */
-  listAdUnitMappings(adUnit) {
-    return this.paginate("inventory", `${adUnit}/adUnitMappings`, "adUnitMappings", { version: "v1beta" });
-  }
-  // ── v1beta writes (admob.monetization scope) ─────────────────────
-  /** Send a write to v1beta. `path` is relative to the version root, e.g. accounts/pub-1/adUnits. */
-  async write(method, path2, body, query) {
-    const qs = query && Object.keys(query).length ? `?${new URLSearchParams(query)}` : "";
-    try {
-      return await this.request("inventory", method, `${path2}${qs}`, body, "v1beta", { retries: 0 });
-    } catch (err) {
-      if (err instanceof AdmobctlError && (err.status === void 0 || err.status >= 500)) {
-        throw new AdmobctlError(err.code, `${err.message} The change may have been applied anyway.`, {
-          status: err.status,
-          cause: err,
-          fix: "Check with admobctl (e.g. apps list, ad-units list, mediation-groups show) before retrying, so it is not applied twice."
-        });
-      }
-      if (err instanceof AdmobctlError && err.code === "AUTH_SCOPE_MISSING") {
-        throw new AdmobctlError("AUTH_SCOPE_MISSING", "Write commands need the admob.monetization scope, which your credentials do not include.", {
-          status: err.status,
-          cause: err,
-          fix: "admobctl setup login --features write --yes"
-        });
-      }
-      throw err;
-    }
-  }
-  // ── AdSense Management API (adsense.readonly scope) ──────────────
-  /** All payments of the publisher's Google payments account: `unpaid` plus paid ones. Not paginated. */
-  async listPayments(account) {
-    try {
-      const page = await this.request("account", "GET", `${accountName(account)}/payments`, void 0, "adsense");
-      return page?.payments ?? [];
-    } catch (err) {
-      throw paymentsError(err, account.replace(/^accounts\//, ""));
-    }
-  }
-  async campaignReport(account, spec) {
-    try {
-      const raw = await this.request("reporting", "POST", `${accountName(account)}/campaignReport:generate`, { reportSpec: spec }, "v1beta");
-      return parseReport(raw);
-    } catch (err) {
-      if (err instanceof AdmobctlError && err.status === 400) {
-        throw new AdmobctlError(
-          "CAMPAIGN_REPORT_REJECTED",
-          `The AdMob API rejected the campaign report (400: ${err.message.replace(/^AdMob API error 400: /, "")}). This usually means the account has no AdMob app-promotion campaigns, or is not enabled for campaignReport (AdMob API v1beta).`,
-          {
-            status: 400,
-            cause: err,
-            fix: "Check AdMob \u2192 Campaigns for app-promotion campaigns. If you run some there, ask your Google AdMob account manager to enable AdMob API (v1beta) campaign reporting for this account."
-          }
-        );
-      }
-      throw err;
-    }
-  }
-};
-function methodName(path2, httpMethod) {
-  const segments = path2.split("?")[0].split("/");
-  const last = segments[segments.length - 1];
-  if (last.includes(":")) return last.replace(":", ".");
-  const collection = segments.length % 2 === 1 ? last : segments[segments.length - 2];
-  return `${collection}.${httpMethod === "GET" ? "list" : httpMethod === "PATCH" ? "patch" : "create"}`;
-}
-function betaError(err, path2, httpMethod) {
-  if (!(err instanceof AdmobctlError) || err.code !== "PERMISSION_DENIED") return err;
-  return new AdmobctlError(
-    "BETA_ACCESS_DENIED",
-    `Permission denied for ${methodName(path2, httpMethod)} (AdMob API v1beta). Google limits several v1beta methods to allowlisted accounts.`,
-    {
-      status: err.status,
-      cause: err,
-      fix: "If `admobctl accounts list` works, ask your Google AdMob account manager to enable AdMob API (v1beta) access for this publisher account."
-    }
-  );
-}
-function paymentsError(err, publisherId) {
-  if (!(err instanceof AdmobctlError)) return err;
-  const opts = { status: err.status, cause: err };
-  switch (err.code) {
-    case "AUTH_SCOPE_MISSING":
-      return new AdmobctlError("AUTH_SCOPE_MISSING", "finance balance needs the adsense.readonly scope, which your credentials do not include.", {
-        ...opts,
-        fix: "admobctl setup login --features payments --yes"
-      });
-    case "PERMISSION_DENIED":
-    case "NOT_FOUND":
-      return new AdmobctlError("PAYMENTS_UNAVAILABLE", `No Google payments (AdSense) account was found or accessible for ${publisherId}, so the unpaid balance is unavailable. (Google: ${err.message})`, {
-        ...opts,
-        fix: "Check AdMob \u2192 Payments in the web UI. If your balance shows there, run admobctl auth doctor and make sure you signed in as the AdMob account owner."
-      });
-    default:
-      return err;
-  }
 }
 
 // src/core/freshness.ts
@@ -14938,6 +14969,7 @@ var weekdayOf = (d) => WEEKDAYS[(new Date(Date.UTC(d.year, d.month - 1, d.day)).
 async function analyzeTrend(svc, opts = {}) {
   const by = opts.by ?? "total";
   if (!TREND_SPLITS.includes(by)) throw usageError(`--by must be one of ${TREND_SPLITS.join(", ")}`);
+  checkRangeArgs(opts);
   const dim = by === "total" ? void 0 : SPLIT_DIM[by];
   const [r, apps] = await Promise.all([
     fetchReport(svc, "network", {
@@ -15534,6 +15566,7 @@ function writeView(plans, results) {
   };
 }
 function auditLogView(log2) {
+  const unknown2 = log2.entries.filter((e) => !e.ok && e.outcome === "unknown").length;
   return {
     data: log2,
     table: {
@@ -15548,12 +15581,15 @@ function auditLogView(log2) {
         time: e.time.replace("T", " ").replace(/\.\d+Z$/, ""),
         action: e.action,
         request: `${e.method} ${e.path}`,
-        outcome: e.ok ? e.result ?? "ok" : `failed: ${e.error ?? "unknown"}`,
+        outcome: e.ok ? e.result ?? "ok" : `${e.outcome === "unknown" ? "unknown (may have been applied)" : "failed"}: ${e.error ?? "unknown"}`,
         profile: e.profile
       }))
     },
     notes: [
       ...log2.entries.length ? [] : [`No applied writes recorded in ${log2.file}.`],
+      ...unknown2 ? [
+        `${unknown2} ${unknown2 === 1 ? "write has" : "writes have"} an unknown outcome: sent, then a timeout, network error or server error. Check with admobctl (e.g. apps list, ad-units list, mediation-groups show) what was applied before retrying.`
+      ] : [],
       ...log2.skipped ? [`Skipped ${log2.skipped} unreadable ${log2.skipped === 1 ? "line" : "lines"} in ${log2.file}.`] : []
     ]
   };
@@ -15721,22 +15757,38 @@ function parsePairs(values = [], flag) {
   }
   return out;
 }
-function positiveAmount(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n) || n <= 0) throw new AdmobctlError("USAGE", `Expected a positive amount, got "${v}"`);
-  return n;
+function positiveAmount(flag) {
+  return (v) => {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) throw new AdmobctlError("USAGE", `${flag} expects a positive amount, got "${v}"`);
+    return n;
+  };
 }
-function positiveInt(v) {
-  const n = Number(v);
-  if (!Number.isInteger(n) || n <= 0) throw new AdmobctlError("USAGE", `Expected a positive integer, got "${v}"`);
-  return n;
+function positiveInt(flag) {
+  return (v) => {
+    const n = Number(v);
+    if (!Number.isInteger(n) || n <= 0) throw new AdmobctlError("USAGE", `${flag} expects a positive integer, got "${v}"`);
+    return n;
+  };
+}
+function intBetween(flag, min, max) {
+  return (v) => {
+    const n = /^\d+$/.test(v.trim()) ? Number(v) : NaN;
+    if (!(n >= min && n <= max)) throw new AdmobctlError("USAGE", `${flag} expects a whole number from ${min} to ${max}, got "${v}"`);
+    return n;
+  };
 }
 function buildProgram(io) {
   const program2 = new Command("admobctl");
   const g = (cmd) => cmd.optsWithGlobals();
   const svc = (cmd) => AdmobService.create({ profile: g(cmd).profile, account: g(cmd).account }, io.service);
   const dir = () => io.service?.configDir ?? configDir();
-  const emit = (cmd, out) => io.stdout(render(out, g(cmd).output ?? defaultFormat(io.isTTY)));
+  const print = (out, format) => {
+    io.stdout(render(out, format));
+    if (format === "csv") for (const n of out.notes ?? []) io.stderr(`${n}
+`);
+  };
+  const emit = (cmd, out) => print(out, g(cmd).output ?? defaultFormat(io.isTTY));
   const repeat = (v, p = []) => [...p, v];
   const runWrite = async (cmd, s, plans, yes) => {
     if (!yes) {
@@ -15830,7 +15882,7 @@ function buildProgram(io) {
     io.stderr(`Logged out of profile "${profileName}".
 `);
   });
-  auth.command("status").description("Show which credentials are active").action(async (_o, cmd) => {
+  auth.command("status").description("Show which credentials are active; exits 1 when the token check fails").action(async (_o, cmd) => {
     const s = svc(cmd);
     const info = {
       profile: s.profile.name,
@@ -15847,6 +15899,7 @@ function buildProgram(io) {
       info.error = err instanceof AdmobctlError ? `${err.message}${err.fix ? ` (fix: ${err.fix})` : ""}` : String(err);
     }
     emit(cmd, keyValueView(info));
+    if (info.error) process.exitCode = 1;
   });
   auth.command("doctor").description("Diagnose setup problems and print the exact admobctl command that fixes each (same as setup status)").action(async (_o, cmd) => emitStatus(cmd));
   const setupOpts = (cmd) => cmd.optsWithGlobals();
@@ -15918,8 +15971,7 @@ function buildProgram(io) {
     const content = `${JSON.stringify(group ? r.groups[0] : r.groups, null, 2)}
 `;
     if (o.out) {
-      writeFileSync3(o.out, content, { mode: 384 });
-      chmodSync5(o.out, 384);
+      writePrivateFile(o.out, content);
       io.stderr(`Wrote ${o.out}
 `);
     } else io.stdout(content);
@@ -15930,11 +15982,11 @@ function buildProgram(io) {
     const s = svc(cmd);
     await runWrite(cmd, s, [await planCreateMediationGroup(s, readJsonFile(o.file))], o.yes);
   });
-  groups.command("set-line <group> <line>").description("Change a mediation line's manual CPM (USD), state or name (v1beta write)").option("--cpm <usd>", "manual CPM in USD (MANUAL lines only)", positiveAmount).option("--state <state>", "enabled or disabled").option("--name <name>", "new display name").addOption(yesOption()).action(async (group, line, o, cmd) => {
+  groups.command("set-line <group> <line>").description("Change a mediation line's manual CPM (USD), state or name (v1beta write)").option("--cpm <usd>", "manual CPM in USD (MANUAL lines only)", positiveAmount("--cpm")).option("--state <state>", "enabled or disabled").option("--name <name>", "new display name").addOption(yesOption()).action(async (group, line, o, cmd) => {
     const s = svc(cmd);
     await runWrite(cmd, s, [await planUpdateLine(s, { group, line, cpm: o.cpm, state: o.state, name: o.name })], o.yes);
   });
-  groups.command("add-line <group>").description("Add a mediation line to a group (v1beta write)").requiredOption("--ad-source <name|id>", "the ad source").requiredOption("--name <name>", "display name for the line").option("--cpm <usd>", "manual CPM in USD; omit for a LIVE (bidding/optimized) line", positiveAmount).option("--mapping <ad-unit=mapping>", "ad unit mapping resource for an ad unit, repeatable", repeat).addOption(yesOption()).action(async (group, o, cmd) => {
+  groups.command("add-line <group>").description("Add a mediation line to a group (v1beta write)").requiredOption("--ad-source <name|id>", "the ad source").requiredOption("--name <name>", "display name for the line").option("--cpm <usd>", "manual CPM in USD; omit for a LIVE (bidding/optimized) line", positiveAmount("--cpm")).option("--mapping <ad-unit=mapping>", "ad unit mapping resource for an ad unit, repeatable", repeat).addOption(yesOption()).action(async (group, o, cmd) => {
     const s = svc(cmd);
     const plan = await planAddLine(s, { group, adSource: o.adSource, name: o.name, cpm: o.cpm, mappings: parsePairs(o.mapping, "--mapping") });
     await runWrite(cmd, s, [plan], o.yes);
@@ -15944,7 +15996,7 @@ function buildProgram(io) {
     await runWrite(cmd, s, [await planSetGroupAdUnits(s, { group, adUnits: adUnits2 })], o.yes);
   });
   const experiment = groups.command("experiment").description("Mediation A/B experiments (v1beta write)");
-  experiment.command("start <group>").description("Start an A/B experiment: a share of traffic gets the treatment lines").requiredOption("--name <name>", "experiment name").requiredOption("--percent <n>", "share of traffic for the treatment (1-99)", positiveInt).requiredOption("--lines <path>", "JSON array of the treatment's mediation lines").addOption(yesOption()).action(async (group, o, cmd) => {
+  experiment.command("start <group>").description("Start an A/B experiment: a share of traffic gets the treatment lines").requiredOption("--name <name>", "experiment name").requiredOption("--percent <n>", "share of traffic for the treatment (1-99)", positiveInt("--percent")).requiredOption("--lines <path>", "JSON array of the treatment's mediation lines").addOption(yesOption()).action(async (group, o, cmd) => {
     const s = svc(cmd);
     const lines = readJsonFile(o.lines);
     await runWrite(cmd, s, [await planStartExperiment(s, { group, name: o.name, percent: o.percent, lines })], o.yes);
@@ -15955,7 +16007,7 @@ function buildProgram(io) {
   });
   const report = program2.command("report").description("Network and mediation reports");
   for (const kind of ["network", "mediation"]) {
-    report.command(kind).description(`Generate a ${kind} report`).requiredOption("--from <date>", "start, YYYY-MM or YYYY-MM-DD").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD (default: same as --from)").option("--by <dims>", `dimensions, comma-separated (e.g. app,country${kind === "mediation" ? ",ad-source" : ""})`, list).option("--metrics <metrics>", "metrics, comma-separated (default: all common ones)", list).option("--filter <k=v,\u2026>", "filter, repeatable (e.g. country=NO,SE or app=<alias>)", (v, p = []) => [...p, v]).option("--max-rows <n>", "cap the number of rows", positiveInt).option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)").option("--sort <field[:asc|desc]>", "sort by a dimension or metric of the report (default: by time, else by earnings)").addOption(new Option("--compare <period>", "add each row's change against the equal-length period just before").choices([...COMPARISONS])).action(async (o, cmd) => {
+    report.command(kind).description(`Generate a ${kind} report`).requiredOption("--from <date>", "start, YYYY-MM or YYYY-MM-DD").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD (default: same as --from)").option("--by <dims>", `dimensions, comma-separated (e.g. app,country${kind === "mediation" ? ",ad-source" : ""})`, list).option("--metrics <metrics>", "metrics, comma-separated (default: all common ones)", list).option("--filter <k=v,\u2026>", "filter, repeatable (e.g. country=NO,SE or app=<alias>)", (v, p = []) => [...p, v]).option("--max-rows <n>", "cap the number of rows", positiveInt("--max-rows")).option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)").option("--sort <field[:asc|desc]>", "sort by a dimension or metric of the report (default: by time, else by earnings)").addOption(new Option("--compare <period>", "add each row's change against the equal-length period just before").choices([...COMPARISONS])).action(async (o, cmd) => {
       const s = svc(cmd);
       const q = {
         from: o.from,
@@ -15981,7 +16033,7 @@ function buildProgram(io) {
     const explicit = g(cmd).output;
     if (as === "journal") {
       const out = journal();
-      if (explicit) io.stdout(render(out, explicit));
+      if (explicit) print(out, explicit);
       else {
         io.stdout(renderTsv(out.table));
         for (const n of out.notes ?? []) io.stderr(`${n}
@@ -15990,7 +16042,7 @@ function buildProgram(io) {
       return;
     }
     const format = as === "csv" || as === "json" ? as : explicit ?? defaultFormat(io.isTTY);
-    io.stdout(render(summary, format));
+    print(summary, format);
   };
   const finance = program2.command("finance").description("Monthly earnings for bookkeeping (estimates)");
   finance.command("month <YYYY-MM>").description("Estimated earnings per app for one month, optionally as journal rows").addOption(asOption()).action(async (month, o, cmd) => {
@@ -16006,12 +16058,11 @@ function buildProgram(io) {
     const view = financeBalanceView(await financeBalance(svc(cmd)));
     emitFinance(cmd, o.as, view, () => view);
   });
-  finance.command("export").description("Export accrual vouchers in the Revenue Journal format (spec/SPEC.md), for accounting imports").option("--month <YYYY-MM>", "one month").option("--from <YYYY-MM>", "first month of a range").option("--to <YYYY-MM>", "last month of a range").option("--as <format>", `export format: ${EXPORT_FORMATS.join(", ")}`, "revenue-journal-json").option("--integer-amounts", "write amounts as JSON integers instead of decimal strings (JSON only)").option("--scale <digits>", "decimal places the integers carry, 0-6 (default 2; 6 = micros)", (v) => Number(v)).option("--out <file>", "write to this file (readable only by you) instead of stdout").action(
+  finance.command("export").description("Export accrual vouchers in the Revenue Journal format (spec/SPEC.md), for accounting imports").option("--month <YYYY-MM>", "one month").option("--from <YYYY-MM>", "first month of a range").option("--to <YYYY-MM>", "last month of a range").option("--as <format>", `export format: ${EXPORT_FORMATS.join(", ")}`, "revenue-journal-json").option("--integer-amounts", "write amounts as JSON integers instead of decimal strings (JSON only)").option("--scale <digits>", "decimal places the integers carry, 0-6 (default 2; 6 = micros)", intBetween("--scale", 0, 6)).option("--out <file>", "write to this file (readable only by you) instead of stdout").action(
     async (o, cmd) => {
       const { content, notes } = await exportJournal(svc(cmd), o);
       if (o.out) {
-        writeFileSync3(o.out, content, { mode: 384 });
-        chmodSync5(o.out, 384);
+        writePrivateFile(o.out, content);
         io.stderr(`Wrote ${o.out}
 `);
       } else io.stdout(content);
@@ -16029,7 +16080,8 @@ function buildProgram(io) {
       () => journalView(r.months.flatMap((m) => journalRows(m, s.profile.finance)), r.notes)
     );
   });
-  program2.command("insights").description("Monetization insights: top/bottom earners, low fill, swings vs the previous period").option("--last <Nd>", "the last N complete days (default 30d)", (v) => parseDays(v)).option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD").addOption(new Option("--by <dimension>", "group by").choices([...INSIGHT_DIMENSIONS]).default("ad-unit")).option("--swing <percent>", "change that counts as a swing (default 30)", positiveInt).option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)").action(async (o, cmd) => {
+  const lastOption = () => new Option("--last <Nd>", "the last N complete days (default 30d)").argParser((v) => parseDays(v)).conflicts(["from", "to"]);
+  program2.command("insights").description("Monetization insights: top/bottom earners, low fill, swings vs the previous period").addOption(lastOption()).option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD").addOption(new Option("--by <dimension>", "group by").choices([...INSIGHT_DIMENSIONS]).default("ad-unit")).option("--swing <percent>", "change that counts as a swing (default 30)", positiveInt("--swing")).option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)").action(async (o, cmd) => {
     const r = await insights(svc(cmd), {
       last: o.last,
       from: o.from,
@@ -16040,12 +16092,12 @@ function buildProgram(io) {
     });
     emit(cmd, insightsView(r));
   });
-  program2.command("check").description("Health check for cron: exits 1 when an app's earnings, match rate or show rate dropped against the days before").option("--window <Nd>", "complete days to judge, ending yesterday (default 1d)", (v) => parseDays(v, "--window")).option("--baseline <Nd>", "days just before the window to compare with (default 7d)", (v) => parseDays(v, "--baseline")).option("--drop <percent>", "a drop of this much or more is a breach (default 30)", positiveInt).option("--min-requests <n>", "baseline requests an app needs before it is judged (default 1000)", positiveInt).option("--app <alias|id>", "only this app").action(async (o, cmd) => {
+  program2.command("check").description("Health check for cron: exits 1 when an app's earnings, match rate or show rate dropped against the days before").option("--window <Nd>", "complete days to judge, ending yesterday (default 1d)", (v) => parseDays(v, "--window")).option("--baseline <Nd>", "days just before the window to compare with (default 7d)", (v) => parseDays(v, "--baseline")).option("--drop <percent>", "a drop of this much or more is a breach (default 30)", positiveInt("--drop")).option("--min-requests <n>", "baseline requests an app needs before it is judged (default 1000)", positiveInt("--min-requests")).option("--app <alias|id>", "only this app").action(async (o, cmd) => {
     const r = await check(svc(cmd), { ...o, drop: o.drop === void 0 ? void 0 : o.drop / 100 });
     emit(cmd, checkView(r));
     if (r.breaches) process.exitCode = 1;
   });
-  const withRange = (cmd) => cmd.option("--last <Nd>", "the last N complete days (default 30d)", (v) => parseDays(v)).option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD");
+  const withRange = (cmd) => cmd.addOption(lastOption()).option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD");
   const range = (o) => ({ last: o.last, from: o.from, to: o.to });
   withRange(
     program2.command("lint").description("Check the setup: apps needing action, broken mediation groups, ad units that are unused or in no group; exits 1 on a problem").option("--app <alias|id>", "only this app")
@@ -16071,7 +16123,7 @@ function buildProgram(io) {
     emit(cmd, waterfallView(await analyzeWaterfall(svc(cmd), { ...range(o), app: o.app, group: o.group, currency: o.currency })));
   });
   withRange(
-    analyze.command("geo").description("Earnings, fill and eCPM per country and format, flagging big cells that fill badly and small ones that pay well").option("--app <alias|id>", "only this app").option("--min-requests <n>", "requests a country and format need before they are judged (default 1000)", positiveInt).option("--currency <code>", "convert earnings to this ISO 4217 currency")
+    analyze.command("geo").description("Earnings, fill and eCPM per country and format, flagging big cells that fill badly and small ones that pay well").option("--app <alias|id>", "only this app").option("--min-requests <n>", "requests a country and format need before they are judged (default 1000)", positiveInt("--min-requests")).option("--currency <code>", "convert earnings to this ISO 4217 currency")
   ).action(async (o, cmd) => {
     emit(cmd, geoView(await analyzeGeo(svc(cmd), { ...range(o), app: o.app, minRequests: o.minRequests, currency: o.currency })));
   });
@@ -16088,7 +16140,7 @@ function buildProgram(io) {
     });
     await new Promise((resolve) => process.stdin.on("close", resolve));
   });
-  program2.command("audit-log").description("Show the writes applied with --yes (from the local audit log), newest first").option("--last <n>", "only the newest n entries", positiveInt).option("--failed", "only writes the API rejected").action((o, cmd) => emit(cmd, auditLogView(readAudit(dir(), o))));
+  program2.command("audit-log").description("Show the writes applied with --yes (from the local audit log), newest first").option("--last <n>", "only the newest n entries", positiveInt("--last")).option("--failed", "only writes that failed, or whose outcome is unknown (a timeout, network or server error after sending)").action((o, cmd) => emit(cmd, auditLogView(readAudit(dir(), o))));
   const config2 = program2.command("config").description("Read and write ~/.admobctl/config.json (no secrets)");
   config2.command("get [key]").description("Show the resolved profile, or one key").action((key, _o, cmd) => {
     const p = resolveProfile(loadConfig(dir()), g(cmd).profile);
@@ -46009,6 +46061,12 @@ async function runStdioServer(deps) {
 }
 
 // src/bin.ts
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on("error", (err) => {
+    if (err.code !== "EPIPE") throw err;
+    process.exit(process.exitCode);
+  });
+}
 var code = await run(process.argv, {
   stdout: (s) => process.stdout.write(s),
   stderr: (s) => process.stderr.write(s),

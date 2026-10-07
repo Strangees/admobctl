@@ -35,6 +35,25 @@ describe("writes are sent once", () => {
     expect(err.fix).toMatch(/before retrying/);
   });
 
+  it("says a write may have been applied after a network error, since it may have reached the API", async () => {
+    const f = fakeFetch({ "POST /apps": () => Promise.reject(new TypeError("fetch failed")) });
+    const client = new AdmobClient({ getToken: async () => "t", fetch: f.fetch, sleep: noSleep });
+    const err = (await client.write("POST", "accounts/pub-1/apps", { platform: "IOS" }).catch((e: unknown) => e)) as AdmobctlError;
+    expect(f.calls).toHaveLength(1);
+    expect(err.message).toMatch(/fetch failed.*may have been applied/);
+  });
+
+  it("keeps a sign-in failure's own message and fix: nothing was sent", async () => {
+    const f = fakeFetch({});
+    const expired = new AdmobctlError("AUTH_TOKEN_EXPIRED", "The saved sign-in has expired.", { fix: "admobctl auth login" });
+    const client = new AdmobClient({ getToken: () => Promise.reject(expired), fetch: f.fetch, sleep: noSleep });
+    const err = (await client.write("POST", "accounts/pub-1/apps", { platform: "IOS" }).catch((e: unknown) => e)) as AdmobctlError;
+    expect(f.calls).toHaveLength(0);
+    expect(err.code).toBe("AUTH_TOKEN_EXPIRED");
+    expect(err.message).toBe("The saved sign-in has expired.");
+    expect(err.fix).toBe("admobctl auth login");
+  });
+
   it("still reports a write that succeeded when the audit log cannot be written", async () => {
     const dir = mkdtempSync(join(tmpdir(), "admobctl-fix-"));
     mkdirSync(join(dir, "audit.log")); // appending to a directory fails with EISDIR

@@ -540,6 +540,7 @@ export function writeView(plans: WritePlan[], results?: unknown[]): Output {
 }
 
 export function auditLogView(log: AuditLog): Output {
+  const unknown = log.entries.filter((e) => !e.ok && e.outcome === "unknown").length;
   return {
     data: log,
     table: {
@@ -554,12 +555,17 @@ export function auditLogView(log: AuditLog): Output {
         time: e.time.replace("T", " ").replace(/\.\d+Z$/, ""),
         action: e.action,
         request: `${e.method} ${e.path}`,
-        outcome: e.ok ? (e.result ?? "ok") : `failed: ${e.error ?? "unknown"}`,
+        outcome: e.ok ? (e.result ?? "ok") : `${e.outcome === "unknown" ? "unknown (may have been applied)" : "failed"}: ${e.error ?? "unknown"}`,
         profile: e.profile,
       })),
     },
     notes: [
       ...(log.entries.length ? [] : [`No applied writes recorded in ${log.file}.`]),
+      ...(unknown
+        ? [
+            `${unknown} ${unknown === 1 ? "write has" : "writes have"} an unknown outcome: sent, then a timeout, network error or server error. Check with admobctl (e.g. apps list, ad-units list, mediation-groups show) what was applied before retrying.`,
+          ]
+        : []),
       ...(log.skipped ? [`Skipped ${log.skipped} unreadable ${log.skipped === 1 ? "line" : "lines"} in ${log.file}.`] : []),
     ],
   };

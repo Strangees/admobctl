@@ -1,7 +1,8 @@
-import { chmodSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { Command, CommanderError, Option } from "commander";
 import { fetchTokenInfo } from "../core/auth/doctor.js";
 import { exec as defaultExec } from "../core/exec.js";
+import { writePrivateFile } from "../core/fs.js";
 import { CloudClient } from "../core/setup/cloud.js";
 import { parseFeatures } from "../core/setup/features.js";
 import { setupStatus } from "../core/setup/status.js";
@@ -151,16 +152,29 @@ function parsePairs(values: string[] = [], flag: string): Record<string, string>
   return out;
 }
 
-function positiveAmount(v: string): number {
-  const n = Number(v);
-  if (!Number.isFinite(n) || n <= 0) throw new AdmobctlError("USAGE", `Expected a positive amount, got "${v}"`);
-  return n;
+/** Option value parsers, made per flag so that errors name it (commander hands a parser only the value). */
+function positiveAmount(flag: string): (v: string) => number {
+  return (v) => {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) throw new AdmobctlError("USAGE", `${flag} expects a positive amount, got "${v}"`);
+    return n;
+  };
 }
 
-function positiveInt(v: string): number {
-  const n = Number(v);
-  if (!Number.isInteger(n) || n <= 0) throw new AdmobctlError("USAGE", `Expected a positive integer, got "${v}"`);
-  return n;
+function positiveInt(flag: string): (v: string) => number {
+  return (v) => {
+    const n = Number(v);
+    if (!Number.isInteger(n) || n <= 0) throw new AdmobctlError("USAGE", `${flag} expects a positive integer, got "${v}"`);
+    return n;
+  };
+}
+
+function intBetween(flag: string, min: number, max: number): (v: string) => number {
+  return (v) => {
+    const n = /^\d+$/.test(v.trim()) ? Number(v) : NaN;
+    if (!(n >= min && n <= max)) throw new AdmobctlError("USAGE", `${flag} expects a whole number from ${min} to ${max}, got "${v}"`);
+    return n;
+  };
 }
 
 export function buildProgram(io: CliIO): Command {
@@ -168,7 +182,12 @@ export function buildProgram(io: CliIO): Command {
   const g = (cmd: Command) => cmd.optsWithGlobals<GlobalOpts>();
   const svc = (cmd: Command) => AdmobService.create({ profile: g(cmd).profile, account: g(cmd).account }, io.service);
   const dir = () => io.service?.configDir ?? configDir();
-  const emit = (cmd: Command, out: Output) => io.stdout(render(out, g(cmd).output ?? defaultFormat(io.isTTY)));
+  /** CSV has no place for notes (truncation, API warnings, the estimate disclaimer), so they go to stderr. */
+  const print = (out: Output, format: OutputFormat) => {
+    io.stdout(render(out, format));
+    if (format === "csv") for (const n of out.notes ?? []) io.stderr(`${n}\n`);
+  };
+  const emit = (cmd: Command, out: Output) => print(out, g(cmd).output ?? defaultFormat(io.isTTY));
   const repeat = (v: string, p: string[] = []) => [...p, v];
   /** Writes are dry runs unless --yes: print the plan, or apply each plan in order and print what the API returned. */
   const runWrite = async (cmd: Command, s: AdmobService, plans: WritePlan[], yes: boolean | undefined) => {
@@ -286,7 +305,7 @@ export function buildProgram(io: CliIO): Command {
 
   auth
     .command("status")
-    .description("Show which credentials are active")
+    .description("Show which credentials are active; exits 1 when the token check fails")
     .action(async (_o, cmd: Command) => {
       const s = svc(cmd);
       const info: Record<string, unknown> = {
@@ -304,6 +323,7 @@ export function buildProgram(io: CliIO): Command {
         info.error = err instanceof AdmobctlError ? `${err.message}${err.fix ? ` (fix: ${err.fix})` : ""}` : String(err);
       }
       emit(cmd, keyValueView(info));
+      if (info.error) process.exitCode = 1;
     });
 
   auth
@@ -488,8 +508,7 @@ export function buildProgram(io: CliIO): Command {
       // Always JSON, whatever -o says: the output is a file for `create --file`. One group is one object.
       const content = `${JSON.stringify(group ? r.groups[0] : r.groups, null, 2)}\n`;
       if (o.out) {
-        writeFileSync(o.out, content, { mode: 0o600 });
-        chmodSync(o.out, 0o600);
+        writePrivateFile(o.out, content);
         io.stderr(`Wrote ${o.out}\n`);
       } else io.stdout(content);
       for (const n of r.notes) io.stderr(`${n}\n`);
@@ -506,7 +525,7 @@ export function buildProgram(io: CliIO): Command {
   groups
     .command("set-line <group> <line>")
     .description("Change a mediation line's manual CPM (USD), state or name (v1beta write)")
-    .option("--cpm <usd>", "manual CPM in USD (MANUAL lines only)", positiveAmount)
+    .option("--cpm <usd>", "manual CPM in USD (MANUAL lines only)", positiveAmount("--cpm"))
     .option("--state <state>", "enabled or disabled")
     .option("--name <name>", "new display name")
     .addOption(yesOption())
@@ -519,7 +538,7 @@ export function buildProgram(io: CliIO): Command {
     .description("Add a mediation line to a group (v1beta write)")
     .requiredOption("--ad-source <name|id>", "the ad source")
     .requiredOption("--name <name>", "display name for the line")
-    .option("--cpm <usd>", "manual CPM in USD; omit for a LIVE (bidding/optimized) line", positiveAmount)
+    .option("--cpm <usd>", "manual CPM in USD; omit for a LIVE (bidding/optimized) line", positiveAmount("--cpm"))
     .option("--mapping <ad-unit=mapping>", "ad unit mapping resource for an ad unit, repeatable", repeat)
     .addOption(yesOption())
     .action(async (group: string, o: { adSource: string; name: string; cpm?: number; mapping?: string[]; yes?: boolean }, cmd: Command) => {
@@ -540,7 +559,7 @@ export function buildProgram(io: CliIO): Command {
     .command("start <group>")
     .description("Start an A/B experiment: a share of traffic gets the treatment lines")
     .requiredOption("--name <name>", "experiment name")
-    .requiredOption("--percent <n>", "share of traffic for the treatment (1-99)", positiveInt)
+    .requiredOption("--percent <n>", "share of traffic for the treatment (1-99)", positiveInt("--percent"))
     .requiredOption("--lines <path>", "JSON array of the treatment's mediation lines")
     .addOption(yesOption())
     .action(async (group: string, o: { name: string; percent: number; lines: string; yes?: boolean }, cmd: Command) => {
@@ -569,7 +588,7 @@ export function buildProgram(io: CliIO): Command {
       .option("--by <dims>", `dimensions, comma-separated (e.g. app,country${kind === "mediation" ? ",ad-source" : ""})`, list)
       .option("--metrics <metrics>", "metrics, comma-separated (default: all common ones)", list)
       .option("--filter <k=v,…>", "filter, repeatable (e.g. country=NO,SE or app=<alias>)", (v, p: string[] = []) => [...p, v])
-      .option("--max-rows <n>", "cap the number of rows", positiveInt)
+      .option("--max-rows <n>", "cap the number of rows", positiveInt("--max-rows"))
       .option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)")
       .option("--sort <field[:asc|desc]>", "sort by a dimension or metric of the report (default: by time, else by earnings)")
       .addOption(new Option("--compare <period>", "add each row's change against the equal-length period just before").choices([...COMPARISONS]))
@@ -612,7 +631,7 @@ export function buildProgram(io: CliIO): Command {
     const explicit = g(cmd).output;
     if (as === "journal") {
       const out = journal();
-      if (explicit) io.stdout(render(out, explicit));
+      if (explicit) print(out, explicit);
       else {
         io.stdout(renderTsv(out.table));
         for (const n of out.notes ?? []) io.stderr(`${n}\n`);
@@ -620,7 +639,7 @@ export function buildProgram(io: CliIO): Command {
       return;
     }
     const format = as === "csv" || as === "json" ? as : (explicit ?? defaultFormat(io.isTTY));
-    io.stdout(render(summary, format));
+    print(summary, format);
   };
 
   const finance = program.command("finance").description("Monthly earnings for bookkeeping (estimates)");
@@ -657,7 +676,7 @@ export function buildProgram(io: CliIO): Command {
     .option("--to <YYYY-MM>", "last month of a range")
     .option("--as <format>", `export format: ${EXPORT_FORMATS.join(", ")}`, "revenue-journal-json")
     .option("--integer-amounts", "write amounts as JSON integers instead of decimal strings (JSON only)")
-    .option("--scale <digits>", "decimal places the integers carry, 0-6 (default 2; 6 = micros)", (v) => Number(v))
+    .option("--scale <digits>", "decimal places the integers carry, 0-6 (default 2; 6 = micros)", intBetween("--scale", 0, 6))
     .option("--out <file>", "write to this file (readable only by you) instead of stdout")
     .action(
       async (
@@ -666,8 +685,7 @@ export function buildProgram(io: CliIO): Command {
       ) => {
         const { content, notes } = await exportJournal(svc(cmd), o);
         if (o.out) {
-          writeFileSync(o.out, content, { mode: 0o600 });
-          chmodSync(o.out, 0o600);
+          writePrivateFile(o.out, content);
           io.stderr(`Wrote ${o.out}\n`);
         } else io.stdout(content);
         for (const n of notes) io.stderr(`${n}\n`);
@@ -688,14 +706,17 @@ export function buildProgram(io: CliIO): Command {
     });
 
   // ── insights ──────────────────────────────────────────────────────
+  /** --last and --from/--to are two ways to give the range: both together is a usage error, not a silent pick. */
+  const lastOption = () =>
+    new Option("--last <Nd>", "the last N complete days (default 30d)").argParser((v) => parseDays(v)).conflicts(["from", "to"]);
   program
     .command("insights")
     .description("Monetization insights: top/bottom earners, low fill, swings vs the previous period")
-    .option("--last <Nd>", "the last N complete days (default 30d)", (v) => parseDays(v))
+    .addOption(lastOption())
     .option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)")
     .option("--to <date>", "end, YYYY-MM or YYYY-MM-DD")
     .addOption(new Option("--by <dimension>", "group by").choices([...INSIGHT_DIMENSIONS]).default("ad-unit"))
-    .option("--swing <percent>", "change that counts as a swing (default 30)", positiveInt)
+    .option("--swing <percent>", "change that counts as a swing (default 30)", positiveInt("--swing"))
     .option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)")
     .action(async (o: { last?: number; from?: string; to?: string; by: InsightDimension; swing?: number; currency?: string }, cmd: Command) => {
       const r = await insights(svc(cmd), {
@@ -715,8 +736,8 @@ export function buildProgram(io: CliIO): Command {
     .description("Health check for cron: exits 1 when an app's earnings, match rate or show rate dropped against the days before")
     .option("--window <Nd>", "complete days to judge, ending yesterday (default 1d)", (v) => parseDays(v, "--window"))
     .option("--baseline <Nd>", "days just before the window to compare with (default 7d)", (v) => parseDays(v, "--baseline"))
-    .option("--drop <percent>", "a drop of this much or more is a breach (default 30)", positiveInt)
-    .option("--min-requests <n>", "baseline requests an app needs before it is judged (default 1000)", positiveInt)
+    .option("--drop <percent>", "a drop of this much or more is a breach (default 30)", positiveInt("--drop"))
+    .option("--min-requests <n>", "baseline requests an app needs before it is judged (default 1000)", positiveInt("--min-requests"))
     .option("--app <alias|id>", "only this app")
     .action(async (o: { window?: number; baseline?: number; drop?: number; minRequests?: number; app?: string }, cmd: Command) => {
       const r = await check(svc(cmd), { ...o, drop: o.drop === undefined ? undefined : o.drop / 100 });
@@ -728,7 +749,7 @@ export function buildProgram(io: CliIO): Command {
   type RangeOpts = { last?: number; from?: string; to?: string };
   const withRange = (cmd: Command) =>
     cmd
-      .option("--last <Nd>", "the last N complete days (default 30d)", (v) => parseDays(v))
+      .addOption(lastOption())
       .option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)")
       .option("--to <date>", "end, YYYY-MM or YYYY-MM-DD");
   const range = (o: RangeOpts) => ({ last: o.last, from: o.from, to: o.to });
@@ -780,7 +801,7 @@ export function buildProgram(io: CliIO): Command {
       .command("geo")
       .description("Earnings, fill and eCPM per country and format, flagging big cells that fill badly and small ones that pay well")
       .option("--app <alias|id>", "only this app")
-      .option("--min-requests <n>", "requests a country and format need before they are judged (default 1000)", positiveInt)
+      .option("--min-requests <n>", "requests a country and format need before they are judged (default 1000)", positiveInt("--min-requests"))
       .option("--currency <code>", "convert earnings to this ISO 4217 currency"),
   ).action(async (o: RangeOpts & { app?: string; minRequests?: number; currency?: string }, cmd: Command) => {
     emit(cmd, geoView(await analyzeGeo(svc(cmd), { ...range(o), app: o.app, minRequests: o.minRequests, currency: o.currency })));
@@ -814,8 +835,8 @@ export function buildProgram(io: CliIO): Command {
   program
     .command("audit-log")
     .description("Show the writes applied with --yes (from the local audit log), newest first")
-    .option("--last <n>", "only the newest n entries", positiveInt)
-    .option("--failed", "only writes the API rejected")
+    .option("--last <n>", "only the newest n entries", positiveInt("--last"))
+    .option("--failed", "only writes that failed, or whose outcome is unknown (a timeout, network or server error after sending)")
     .action((o: { last?: number; failed?: boolean }, cmd: Command) => emit(cmd, auditLogView(readAudit(dir(), o))));
 
   // ── config ────────────────────────────────────────────────────────

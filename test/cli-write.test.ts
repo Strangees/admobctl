@@ -140,6 +140,34 @@ describe("cli write commands", () => {
     expect(table.stdout).toMatch(/failed: AUTH_SCOPE_MISSING/);
   });
 
+  it("audit-log shows writes with an unknown outcome apart from rejected ones, and --failed lists both", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "admobctl-cliw-"));
+    const base = { profile: "default", action: "Create app", method: "POST", path: "accounts/pub-0000000000000001/apps", body: {} };
+    writeFileSync(
+      join(dir, "audit.log"),
+      [
+        // A line from before outcome and message were recorded.
+        { ...base, time: "2026-10-01T10:00:00.000Z", ok: false, error: "API_ERROR" },
+        { ...base, time: "2026-10-01T11:00:00.000Z", ok: false, error: "PERMISSION_DENIED", message: "The caller does not have permission" },
+        { ...base, time: "2026-10-01T12:00:00.000Z", ok: false, outcome: "unknown", error: "API_ERROR", message: "Request timed out. The change may have been applied anyway." },
+        { ...base, time: "2026-10-01T13:00:00.000Z", ok: true, result: "accounts/pub-0000000000000001/apps/7" },
+      ]
+        .map((e) => JSON.stringify(e))
+        .join("\n") + "\n",
+    );
+    const table = await cli(["audit-log"], { dir, isTTY: true });
+    expect(table.code, table.stderr).toBe(0);
+    const rows = table.stdout.split("\n");
+    expect(rows.find((l) => l.includes("12:00:00"))).toMatch(/unknown \(may have been applied\): API_ERROR/);
+    expect(rows.find((l) => l.includes("11:00:00"))).toMatch(/failed: PERMISSION_DENIED/);
+    expect(rows.find((l) => l.includes("10:00:00"))).toMatch(/failed: API_ERROR/);
+    expect(table.stdout).toMatch(/1 write has an unknown outcome.*before retrying/);
+
+    const failed = JSON.parse((await cli(["audit-log", "--failed", "-o", "json"], { dir })).stdout) as { entries: Array<{ outcome?: string; message?: string }> };
+    expect(failed.entries.map((e) => e.outcome ?? "failed")).toEqual(["unknown", "failed", "failed"]);
+    expect(failed.entries[0]!.message).toMatch(/may have been applied/);
+  });
+
   it("audit-log copes with no log and with damaged lines", async () => {
     const empty = await cli(["audit-log", "-o", "json"]);
     expect(empty.code).toBe(0);

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { linkSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -408,5 +408,70 @@ describe("cli", () => {
     expect(r.code, r.stderr).toBe(0);
     expect(r.stdout.split("\n")[0]).toBe("Campaign name,Impressions,Clicks,CTR,Installs,Cost,CPI");
     expect(r.stdout.split("\n")[1]).toBe("Quiz cross-promo,50000,500,1.0%,40,80.00,2.00");
+  });
+});
+
+describe("cli robustness", () => {
+  it("sends notes to stderr with -o csv, which has no place for them", async () => {
+    const r = await cli(["report", "network", "--from", "2026-09", "--max-rows", "1", "-o", "csv"]);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout.trim().split("\n")).toHaveLength(2);
+    expect(r.stdout).not.toMatch(/Truncated/);
+    expect(r.stderr).toMatch(/Truncated: /);
+    expect(r.stderr).toMatch(/reconcile against AdMob Payments/);
+    const fin = await cli(["finance", "month", "2026-09", "--as", "csv"]);
+    expect(fin.code, fin.stderr).toBe(0);
+    expect(fin.stderr).toMatch(/booking date/);
+  });
+
+  it("keeps notes out of stderr for the formats that show them", async () => {
+    const r = await cli(["report", "network", "--from", "2026-09", "--max-rows", "1", "-o", "markdown"]);
+    expect(r.stdout).toMatch(/> Truncated: /);
+    expect(r.stderr).toBe("");
+  });
+
+  it.each([
+    [["finance", "export", "--month", "2026-09", "--integer-amounts", "--scale", "abc"], /--scale .*0 to 6.*"abc"/],
+    [["finance", "export", "--month", "2026-09", "--integer-amounts", "--scale", "2.5"], /--scale .*0 to 6.*"2\.5"/],
+    [["finance", "export", "--month", "2026-09", "--integer-amounts", "--scale", "7"], /--scale .*0 to 6.*"7"/],
+    [["audit-log", "--last", "0"], /--last expects a positive integer, got "0"/],
+    [["report", "network", "--from", "2026-09", "--max-rows", "x"], /--max-rows expects a positive integer/],
+    [["mediation-groups", "set-line", "Banners", "Waterfall 3.00", "--cpm", "-1"], /--cpm expects a positive amount, got "-1"/],
+  ])("rejects %j before any API call, naming the flag", async (args, message) => {
+    const r = await cli(args);
+    expect(r.code).toBe(2);
+    expect((JSON.parse(r.stderr) as { error: { message: string } }).error.message).toMatch(message);
+    expect(r.calls).toEqual([]);
+  });
+
+  it.each([
+    ["insights", "--from", "2026-09"],
+    ["lint", "--to", "2026-09"],
+    ["analyze", "trend", "--from", "2026-09-01", "--to", "2026-09-30"],
+  ])("rejects --last together with --from/--to (%s)", async (...args) => {
+    const r = await cli([...args, "--last", "7d"]);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toMatch(/--last.*cannot be used with.*--(from|to)/);
+    expect(r.calls).toEqual([]);
+  });
+
+  it("auth status exits 1 when the token check fails", async () => {
+    const r = await cli(["auth", "status", "-o", "json"], { routes: { "POST /tokeninfo": () => jsonResponse({ error: "invalid_token" }, 400) } });
+    expect(r.code).toBe(1);
+    expect(JSON.parse(r.stdout).error).toMatch(/Google rejected the access token/);
+  });
+
+  it("replaces an existing --out file instead of writing earnings into it while others can read it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "admobctl-cli-"));
+    const out = join(dir, "sept.rj.json");
+    writeFileSync(out, "old", { mode: 0o644 });
+    linkSync(out, join(dir, "other-link"));
+    const r = await cli(["finance", "export", "--month", "2026-09", "--out", out]);
+    expect(r.code, r.stderr).toBe(0);
+    expect(JSON.parse(readFileSync(out, "utf8")).format).toBe("revenue-journal/1");
+    expect(statSync(out).mode & 0o777).toBe(0o600);
+    // A new file was renamed over the target; the old inode (still readable through the link) never got the data.
+    expect(readFileSync(join(dir, "other-link"), "utf8")).toBe("old");
+    expect(readdirSync(dir).sort()).toEqual(["other-link", "sept.rj.json"]);
   });
 });

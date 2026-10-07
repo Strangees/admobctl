@@ -17,7 +17,7 @@ import {
   planUpdateLine,
 } from "../src/core/write.js";
 import type { TokenProvider } from "../src/core/auth/types.js";
-import type { AdmobctlError } from "../src/core/errors.js";
+import { AdmobctlError } from "../src/core/errors.js";
 import { fakeFetch, fixture, jsonResponse, noSleep, type RecordedCall } from "./helpers.js";
 
 const token: TokenProvider = { mode: "adc", getToken: async () => "t", quotaProject: () => "qp" };
@@ -205,7 +205,43 @@ describe("applyPlan", () => {
     const patch = calls.find((c) => c.method === "PATCH")!;
     expect(new URL(patch.url).searchParams.get("updateMask")).toBe('mediation_group_lines["4000000000000003"].state');
     const audit = JSON.parse(readFileSync(join(dir, "audit.log"), "utf8").trim());
-    expect(audit).toMatchObject({ ok: false, error: "AUTH_SCOPE_MISSING" });
+    expect(audit).toMatchObject({ ok: false, error: "AUTH_SCOPE_MISSING", message: expect.stringMatching(/admob\.monetization/) });
+    expect(audit).not.toHaveProperty("outcome");
+  });
+
+  it.each([
+    ["a 5xx", () => jsonResponse({ error: { code: 503, message: "The service is currently unavailable.", status: "UNAVAILABLE" } }, 503), /unavailable/],
+    ["a network error", () => Promise.reject(new TypeError("fetch failed")), /fetch failed/],
+  ])("audits a write that failed after it was sent (%s) with an unknown outcome and the message", async (_what, respond, cause) => {
+    const { svc, dir } = service({ "POST /v1beta/accounts/pub-0000000000000001/apps": respond });
+    const err = (await applyPlan(svc, await planCreateApp(svc, { platform: "ios", name: "x" })).catch((e: unknown) => e)) as AdmobctlError;
+    expect(err.message).toMatch(/may have been applied/);
+    const audit = JSON.parse(readFileSync(join(dir, "audit.log"), "utf8").trim());
+    expect(audit).toMatchObject({ ok: false, outcome: "unknown", error: err.code });
+    expect(audit.message).toMatch(cause);
+    expect(audit.message).toMatch(/may have been applied/);
+  });
+
+  it("audits a write that failed before it was sent as failed, not unknown", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "admobctl-write-"));
+    const f = fakeFetch({ "GET /v1/accounts?": () => jsonResponse(fixture("accounts.json")) });
+    let signedIn = true;
+    const expiring: TokenProvider = {
+      ...token,
+      getToken: async () => {
+        if (signedIn) return "t";
+        throw new AdmobctlError("AUTH_TOKEN_EXPIRED", "The saved sign-in has expired.", { fix: "admobctl auth login" });
+      },
+    };
+    const svc = AdmobService.create({}, { configDir: dir, tokenProvider: expiring, fetch: f.fetch, sleep: noSleep, now: () => new Date("2026-10-02T08:00:00Z") });
+    const plan = await planCreateApp(svc, { platform: "ios", name: "x" });
+    signedIn = false;
+    const err = (await applyPlan(svc, plan).catch((e: unknown) => e)) as AdmobctlError;
+    expect(err.fix).toBe("admobctl auth login");
+    expect(f.calls.filter((c) => c.method === "POST")).toEqual([]);
+    const audit = JSON.parse(readFileSync(join(dir, "audit.log"), "utf8").trim());
+    expect(audit).toMatchObject({ ok: false, error: "AUTH_TOKEN_EXPIRED", message: "The saved sign-in has expired." });
+    expect(audit).not.toHaveProperty("outcome");
   });
 
   it("explains allowlisting when a write is denied", async () => {

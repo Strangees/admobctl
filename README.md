@@ -47,7 +47,8 @@ admobctl setup --features write,payments --yes
 Setup never drops a feature you already have. The steps also run on their own:
 `setup login [--features …]`, `setup project list`, `setup project use <id>`, `setup apis [--features …] [--project <id>]`
 (change commands are dry runs without `--yes`; `project list` is read-only). Sign-in, scope, quota-project and API errors
-name the `admobctl setup …` command to run, and `auth doctor` is the same report as `setup status`. If
+name the `admobctl setup …` command to run, and `auth doctor` is the same report as `setup status`. `auth status` shows
+the active credentials and exits 1 when it cannot get a token that Google accepts. If
 `GOOGLE_APPLICATION_CREDENTIALS` selects a service account, first unset it in the terminal running admobctl;
 setup reports this manual prerequisite and refuses to open a login that would leave the override in place.
 Account, aliases and finance settings use the existing `admobctl config set` commands below.
@@ -114,7 +115,7 @@ Global flags:
 
 | Flag | Meaning |
 |---|---|
-| `-o, --output json\|table\|csv\|markdown` | Default: `table` on a terminal, `json` when piped |
+| `-o, --output json\|table\|csv\|markdown` | Default: `table` on a terminal, `json` when piped. With `csv`, notes (truncation, API warnings, the estimate reminder) go to stderr |
 | `--profile <name>` | Use a named profile from the config |
 | `--account pub-…` | Pick the publisher account (otherwise auto-selected when there is only one) |
 | `-v, --verbose` | Debug logs to stderr |
@@ -127,6 +128,8 @@ dimensions, `ad-type` with requests, match rate or RPM) fail before any API call
 fit the chosen dimensions are left out with a note. Reports also note when they include data that is still arriving
 (today's AdMob data; the last day of third-party mediation data).
 
+`insights`, `lint` and `analyze` take either `--last 30d` or `--from`/`--to`; giving both is a usage error.
+
 Dates are `YYYY-MM` (whole month) or `YYYY-MM-DD`. Dimensions and metrics accept friendly names
 (`app`, `ad-unit`, `country`, `format`, `platform`, `date`, `month`; `earnings`, `requests`, `impressions`,
 `match-rate`, `show-rate`, `ctr`, `rpm`, `ecpm`).
@@ -137,7 +140,7 @@ All earnings are **estimates**. Reconcile them against AdMob Payments, because t
 
 `finance month` returns estimated earnings per app and the month total, with the per-app amounts rounded so they sum exactly to the total. It flags months that are not over yet. `--as journal` emits one debit row (receivable, default account 1509) and one credit row per app (revenue, default 3120), dated at month-end, with the columns `Bilag, Dato, Kilde, Beskrivelse, Konto, Kontonavn, Debet, Kredit, MVA-behandling, Motpart, Status, Merknad`. Set accounts, names, VAT text and the decimal separator with `admobctl config set finance.<key> <value>`.
 
-`finance export` writes the same accruals in [Revenue Journal](spec/README.md), an open format for platform revenue bookkeeping: one balanced voucher per month, one revenue line per app. `--as revenue-journal-json` (default) or `revenue-journal-csv`; `--integer-amounts` writes JSON integers instead of decimal strings (`--scale 6` for micros); `--out <file>` writes a file only you can read. Lines carry account roles (`earnings_receivable`, `revenue`) and generic names; account numbers appear only when you have set `finance.receivableAccount` / `finance.revenueAccount`.
+`finance export` writes the same accruals in [Revenue Journal](spec/README.md), an open format for platform revenue bookkeeping: one balanced voucher per month, one revenue line per app. `--as revenue-journal-json` (default) or `revenue-journal-csv`; `--integer-amounts` writes JSON integers instead of decimal strings (`--scale 6` for micros); `--out <file>` writes a file only you can read (a new file renamed over any existing one, so earlier permissions never apply). Lines carry account roles (`earnings_receivable`, `revenue`) and generic names; account numbers appear only when you have set `finance.receivableAccount` / `finance.revenueAccount`.
 
 ### Insights
 
@@ -203,7 +206,9 @@ calls use the AdMob API's v1beta write methods, which need two things beyond the
 Every write command is a **dry run unless you add `--yes`**: it prints the exact request (method, URL, update mask and
 JSON body) and a plain-words summary, then exits without sending anything. Input is checked first: formats and ad
 types, adapter platform and format, required adapter settings, CPMs, experiment state. Applied writes, including
-failed ones, are appended to `~/.admobctl/audit.log`; `admobctl audit-log` shows them, newest first.
+failed ones, are appended to `~/.admobctl/audit.log`; `admobctl audit-log` shows them, newest first. A write that
+failed after it was sent (a timeout, network error or server error) is recorded with an **unknown outcome**, since the
+API may have applied it: check before you retry it. `audit-log --failed` lists those and the failed ones.
 
 ```bash
 admobctl apps create --platform android --store-id com.example.game

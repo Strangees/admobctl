@@ -3,7 +3,7 @@ import { fetchReport, type AnalyzeRange, type Base, type Finding } from "./analy
 import { addDays, compareDates, formatDate, type ApiDate } from "./dates.js";
 import { usageError } from "./errors.js";
 import { ESTIMATE_LABEL } from "./finance.js";
-import { perMille, ratio, signedPct } from "./insights.js";
+import { checkRangeArgs, perMille, ratio, signedPct } from "./insights.js";
 import { formatMicros, microsToAmount } from "./money.js";
 import type { AdmobService } from "./service.js";
 
@@ -97,6 +97,7 @@ interface DaySums {
 export async function analyzeTrend(svc: AdmobService, opts: TrendOptions = {}): Promise<TrendResult> {
   const by = opts.by ?? "total";
   if (!TREND_SPLITS.includes(by)) throw usageError(`--by must be one of ${TREND_SPLITS.join(", ")}`);
+  checkRangeArgs(opts);
   const dim = by === "total" ? undefined : SPLIT_DIM[by];
   const [r, apps] = await Promise.all([
     fetchReport(svc, "network", {

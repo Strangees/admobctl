@@ -12,9 +12,17 @@ export interface AuditEntry {
   query?: Record<string, string>;
   body: unknown;
   ok: boolean;
+  /**
+   * "unknown": the write failed after it was sent (timeout, network error, 5xx), so the API may have applied it.
+   * Only on such failures (ok is false); lines written before this field existed lack it.
+   */
+  outcome?: "unknown";
   /** Resource name the API returned, when there is one. */
   result?: string;
+  /** Error code of a failed write (setup steps write the message here). */
   error?: string;
+  /** The failed write's error message. */
+  message?: string;
 }
 
 /** Append one JSON line per applied write to <configDir>/audit.log (0600). */
