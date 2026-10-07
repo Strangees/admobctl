@@ -39,11 +39,21 @@ export function microsToAmount(micros: number, decimals = 2): number {
   return Number(formatMicros(micros, decimals));
 }
 
-/** Decimals of a currency's minor unit (ISO 4217): 2 for NOK and USD, 0 for JPY and KRW, 3 for KWD; 2 when unknown. */
+/**
+ * ISO 4217 currencies whose minor unit is not two decimals. A table, not Intl: Intl gives CLDR's display digits,
+ * which differ from ISO 4217 (IQD, LBP) and change between ICU versions (IDR), so the same export would come out
+ * differently on another Node version.
+ */
+const MINOR_UNIT_DIGITS: Readonly<Record<string, number>> = {
+  ...Object.fromEntries(
+    ["BIF", "CLP", "DJF", "GNF", "ISK", "JPY", "KMF", "KRW", "PYG", "RWF", "UGX", "UYI", "VND", "VUV", "XAF", "XOF", "XPF"].map((c) => [c, 0]),
+  ),
+  ...Object.fromEntries(["BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND"].map((c) => [c, 3])),
+  CLF: 4,
+  UYW: 4,
+};
+
+/** Decimals of a currency's minor unit (ISO 4217): 2 for NOK, USD and IDR, 0 for JPY and KRW, 3 for KWD; 2 when unknown. */
 export function currencyDigits(currency: string): number {
-  try {
-    return Math.min(6, new Intl.NumberFormat("en", { style: "currency", currency }).resolvedOptions().maximumFractionDigits ?? 2);
-  } catch {
-    return 2;
-  }
+  return MINOR_UNIT_DIGITS[currency.toUpperCase()] ?? 2;
 }

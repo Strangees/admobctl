@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatMicros, microsToAmount, parseMicros, sumMicros } from "../src/core/money.js";
+import { currencyDigits, formatMicros, microsToAmount, parseMicros, sumMicros } from "../src/core/money.js";
 
 describe("parseMicros", () => {
   it("parses the API's string micros into an integer", () => {
@@ -36,5 +36,15 @@ describe("microsToAmount", () => {
 describe("sumMicros", () => {
   it("sums integers exactly", () => {
     expect(sumMicros([100_000_001, 200_000_002, 3])).toBe(300_000_006);
+  });
+});
+
+describe("currencyDigits", () => {
+  it("follows ISO 4217, whatever the ICU version says", () => {
+    expect(["NOK", "USD", "IDR", "HUF", "LBP"].map(currencyDigits)).toEqual([2, 2, 2, 2, 2]);
+    expect(["JPY", "KRW", "VND", "CLP", "ISK"].map(currencyDigits)).toEqual([0, 0, 0, 0, 0]);
+    expect(["KWD", "BHD", "IQD"].map(currencyDigits)).toEqual([3, 3, 3]);
+    expect(currencyDigits("jpy")).toBe(0);
+    expect(currencyDigits("XYZ")).toBe(2);
   });
 });

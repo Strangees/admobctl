@@ -11894,12 +11894,16 @@ function formatMicros(micros, decimals = 2) {
 function microsToAmount(micros, decimals = 2) {
   return Number(formatMicros(micros, decimals));
 }
+var MINOR_UNIT_DIGITS = {
+  ...Object.fromEntries(
+    ["BIF", "CLP", "DJF", "GNF", "ISK", "JPY", "KMF", "KRW", "PYG", "RWF", "UGX", "UYI", "VND", "VUV", "XAF", "XOF", "XPF"].map((c) => [c, 0])
+  ),
+  ...Object.fromEntries(["BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND"].map((c) => [c, 3])),
+  CLF: 4,
+  UYW: 4
+};
 function currencyDigits(currency) {
-  try {
-    return Math.min(6, new Intl.NumberFormat("en", { style: "currency", currency }).resolvedOptions().maximumFractionDigits ?? 2);
-  } catch {
-    return 2;
-  }
+  return MINOR_UNIT_DIGITS[currency.toUpperCase()] ?? 2;
 }
 
 // src/core/finance.ts
