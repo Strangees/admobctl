@@ -10,7 +10,7 @@ import { AdmobctlError } from "../src/core/errors.js";
 import { BALANCE_NOTE } from "../src/core/payments.js";
 import { AdmobService } from "../src/core/service.js";
 import type { TokenProvider } from "../src/core/auth/types.js";
-import { fakeFetch, fixture, jsonResponse, noSleep } from "./helpers.js";
+import { fakeFetch, fixture, jsonResponse, noSleep, synthReport } from "./helpers.js";
 
 const token: TokenProvider = { mode: "adc", getToken: async () => "t", quotaProject: () => "qp" };
 
@@ -25,6 +25,33 @@ function bigReport(n: number) {
     })),
     { footer: { matchingRowCount: String(n) } },
   ];
+}
+
+/** `n` synthetic ad units of one app, more than fit the context budget when n is in the hundreds. */
+function manyAdUnits(n: number) {
+  return {
+    adUnits: Array.from({ length: n }, (_, i) => ({
+      name: `accounts/pub-0000000000000001/adUnits/${8000000000 + i}`,
+      adUnitId: `ca-app-pub-0000000000000001/${8000000000 + i}`,
+      appId: "ca-app-pub-0000000000000001~1111111111",
+      displayName: `Example unit ${i}`,
+      adFormat: "BANNER",
+      adTypes: ["RICH_MEDIA"],
+    })),
+  };
+}
+
+/** `n` copies of the first fixture mediation group, each with its own ID. */
+function manyMediationGroups(n: number) {
+  const [group] = fixture<{ mediationGroups: Array<Record<string, unknown>> }>("mediation-groups.json").mediationGroups;
+  return {
+    mediationGroups: Array.from({ length: n }, (_, i) => ({
+      ...group,
+      name: `accounts/pub-0000000000000001/mediationGroups/${2000000000 + i}`,
+      mediationGroupId: String(2000000000 + i),
+      displayName: `Example group ${i}`,
+    })),
+  };
 }
 
 async function connect(
@@ -224,6 +251,44 @@ describe("mcp server", () => {
     expect(r.content[0]!.text.length).toBeLessThanOrEqual(MAX_TEXT_CHARS);
     expect(r.structuredContent!.truncated).toBe(true);
     expect(String(r.structuredContent!.notice)).toMatch(/context/);
+  });
+
+  it("keeps the matching row count when a cut-short report is trimmed further", async () => {
+    const { client } = await connect();
+    const r = (await client.callTool({
+      name: "admobctl_network_report",
+      arguments: { from: "2026-09", by: ["country"], max_rows: 3000 },
+    })) as ToolResult;
+    expect(r.content[0]!.text.length).toBeLessThanOrEqual(MAX_TEXT_CHARS);
+    const shown = (r.structuredContent!.rows as unknown[]).length;
+    expect(shown).toBeLessThan(3000);
+    const notice = String(r.structuredContent!.notice);
+    expect(notice).toContain("showing 3000 of 5000 rows");
+    expect(notice).toContain(`Showing ${shown} of 3000 returned rows to stay within the context limit`);
+    // More rows would not fit either: only narrowing helps.
+    expect(notice).not.toMatch(/max_rows/);
+  });
+
+  it("trims every list to the context budget and says so", async () => {
+    const { client } = await connect({
+      "GET /adUnits": () => jsonResponse(manyAdUnits(600)),
+      "GET /mediationGroups": () => jsonResponse(manyMediationGroups(200)),
+      "POST /networkReport:generate": () => jsonResponse(synthReport([])),
+    });
+    const cases: Array<[tool: string, args: Record<string, unknown>, key: string]> = [
+      ["admobctl_list_ad_units", {}, "adUnits"],
+      ["admobctl_list_mediation_groups", {}, "mediationGroups"],
+      ["admobctl_lint", { last_days: 30 }, "findings"],
+    ];
+    for (const [tool, args, key] of cases) {
+      const r = (await client.callTool({ name: tool, arguments: args })) as ToolResult;
+      expect(r.isError, `${tool}: ${r.content[0]!.text.slice(0, 200)}`).toBeFalsy();
+      expect(r.content[0]!.text.length, tool).toBeLessThanOrEqual(MAX_TEXT_CHARS);
+      const items = r.structuredContent![key] as unknown[];
+      expect(items.length, tool).toBeGreaterThan(0);
+      expect(r.structuredContent!.truncated, tool).toBe(true);
+      expect(String(r.structuredContent!.notice), tool).toMatch(new RegExp(`^Showing ${items.length} of \\d+ returned ${key} to stay within the context limit`));
+    }
   });
 
   it("labels finance results as estimates", async () => {

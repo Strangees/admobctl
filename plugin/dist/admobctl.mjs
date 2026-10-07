@@ -45472,6 +45472,7 @@ var INSTRUCTIONS = `Read-only access to the user's Google AdMob account via admo
 - These tools never change anything. Changes (creating apps, ad units or mappings; editing mediation groups; A/B
   experiments) exist only as admobctl CLI commands, which print a plan and send nothing unless the user adds --yes.
 - Errors include a "Fix:" line with the exact command the user should run.
+- A result with truncated: true is partial; its notice says how much is shown and how to narrow the call.
 - For any sign-in, scope, quota project or API error, call admobctl_setup_status and run its next_command (an admobctl
   command) in the terminal exactly as given. Never improvise gcloud commands. Commands with --yes change the user's setup:
   show them first. The browser sign-in (admobctl setup login --yes) must run in the user's own terminal.
@@ -45498,28 +45499,26 @@ Fix: ${pinProfile(err.fix)}` : ""}` : `Unexpected error: ${err?.message ?? Strin
   return { content: [{ type: "text", text }], isError: true };
 }
 var GEO_MAX_COUNTRIES = 25;
-function fitRows(result) {
+var NARROW_QUERY = "Narrow the query (fewer dimensions, a filter, or a shorter range) to see the rest.";
+function fitRows(result, key = "rows", hint = NARROW_QUERY) {
   if (textOf(result).length <= MAX_TEXT_CHARS) return result;
-  const all = result.rows;
+  const all = result[key];
+  const notice = (n) => [result.notice, `Showing ${n} of ${all.length} returned ${key} to stay within the context limit.`, hint].filter(Boolean).join(" ");
+  const fitted = (n) => ({ ...result, [key]: all.slice(0, n), truncated: true, notice: notice(n) });
   let lo = 0;
   let hi = all.length;
   while (lo < hi) {
     const mid = Math.ceil((lo + hi) / 2);
-    const candidate = { ...result, rows: all.slice(0, mid), truncated: true, notice: "x".repeat(200) };
-    if (textOf(candidate).length <= MAX_TEXT_CHARS) lo = mid;
+    if (textOf(fitted(mid)).length <= MAX_TEXT_CHARS) lo = mid;
     else hi = mid - 1;
   }
-  return {
-    ...result,
-    rows: all.slice(0, lo),
-    truncated: true,
-    notice: `Showing ${lo} of ${all.length} returned rows to stay within the context limit. Narrow the query (fewer dimensions, a filter, or a shorter range) to see the rest.`
-  };
+  return fitted(lo);
 }
 function reportPayload(r) {
   const payload = { ...r };
   if (r.truncated) {
     payload.notice = `Truncated: ${shownRows(r)}. Raise max_rows (\u2264 ${HARD_MAX_ROWS}) or narrow the query.`;
+    if (textOf(payload).length > MAX_TEXT_CHARS) payload.notice = `Truncated: ${shownRows(r)}.`;
   }
   return fitRows(payload);
 }
@@ -45579,7 +45578,7 @@ function createMcpServer(deps) {
       outputSchema: loose({ accounts: external_exports.array(anyRecord) }),
       annotations
     },
-    wrap(async () => ({ accounts: await svc({}).listAccounts() }))
+    wrap(async () => fitRows({ accounts: await svc({}).listAccounts() }, "accounts", ""))
   );
   server.registerTool(
     "admobctl_list_apps",
@@ -45590,7 +45589,7 @@ function createMcpServer(deps) {
       outputSchema: loose({ apps: external_exports.array(anyRecord) }),
       annotations
     },
-    wrap(async (a) => ({ apps: await svc(a).apps() }))
+    wrap(async (a) => fitRows({ apps: await svc(a).apps() }, "apps", ""))
   );
   server.registerTool(
     "admobctl_check_app_ads",
@@ -45606,7 +45605,7 @@ function createMcpServer(deps) {
       annotations
     },
     wrap(
-      async (a) => await checkAppAds(svc(a), { app: a.app, website: a.website })
+      async (a) => fitRows({ ...await checkAppAds(svc(a), { app: a.app, website: a.website }) }, "apps", "Pass `app` to check one app.")
     )
   );
   server.registerTool(
@@ -45618,7 +45617,7 @@ function createMcpServer(deps) {
       outputSchema: loose({ adUnits: external_exports.array(anyRecord) }),
       annotations
     },
-    wrap(async (a) => ({ adUnits: await svc(a).adUnits({ app: a.app }) }))
+    wrap(async (a) => fitRows({ adUnits: await svc(a).adUnits({ app: a.app }) }, "adUnits", "Pass `app` for one app's ad units."))
   );
   for (const kind of ["network", "mediation"]) {
     server.registerTool(
@@ -45867,7 +45866,7 @@ function createMcpServer(deps) {
       outputSchema: loose({ adSources: external_exports.array(anyRecord) }),
       annotations
     },
-    wrap(async (a) => ({ adSources: await svc(a).adSources() }))
+    wrap(async (a) => fitRows({ adSources: await svc(a).adSources() }, "adSources", ""))
   );
   server.registerTool(
     "admobctl_list_adapters",
@@ -45878,7 +45877,7 @@ function createMcpServer(deps) {
       outputSchema: loose({ adapters: external_exports.array(anyRecord) }),
       annotations
     },
-    wrap(async (a) => ({ adapters: await svc(a).adapters(a.ad_source) }))
+    wrap(async (a) => fitRows({ adapters: await svc(a).adapters(a.ad_source) }, "adapters", ""))
   );
   server.registerTool(
     "admobctl_list_mediation_groups",
@@ -45896,9 +45895,13 @@ function createMcpServer(deps) {
       outputSchema: loose({ mediationGroups: external_exports.array(anyRecord) }),
       annotations
     },
-    wrap(async (a) => ({
-      mediationGroups: await svc(a).mediationGroups({ app: a.app, adSource: a.ad_source, format: a.format, platform: a.platform, state: a.state })
-    }))
+    wrap(
+      async (a) => fitRows(
+        { mediationGroups: await svc(a).mediationGroups({ app: a.app, adSource: a.ad_source, format: a.format, platform: a.platform, state: a.state }) },
+        "mediationGroups",
+        "Filter by app, ad_source, format, platform or state to see the rest."
+      )
+    )
   );
   server.registerTool(
     "admobctl_list_ad_unit_mappings",
@@ -45909,7 +45912,7 @@ function createMcpServer(deps) {
       outputSchema: loose({ adUnitMappings: external_exports.array(anyRecord) }),
       annotations
     },
-    wrap(async (a) => ({ adUnitMappings: await svc(a).adUnitMappings(a.ad_unit) }))
+    wrap(async (a) => fitRows({ adUnitMappings: await svc(a).adUnitMappings(a.ad_unit) }, "adUnitMappings", ""))
   );
   const rangeInput = {
     last_days: external_exports.number().int().min(1).max(366).optional().describe("The last N complete days (default 30)"),
@@ -45993,7 +45996,9 @@ function createMcpServer(deps) {
       outputSchema: loose({ from: external_exports.string(), to: external_exports.string(), checked: anyRecord, problems: external_exports.number(), findings: external_exports.array(anyRecord), summary: external_exports.array(external_exports.string()), notices: external_exports.array(external_exports.string()) }),
       annotations
     },
-    wrap(async (a) => ({ ...await lint(svc(a), { ...range(a), app: a.app }) }))
+    wrap(
+      async (a) => fitRows({ ...await lint(svc(a), { ...range(a), app: a.app }) }, "findings", "Problems come first; pass `app` to lint one app at a time.")
+    )
   );
   server.registerTool(
     "admobctl_analyze_trend",
