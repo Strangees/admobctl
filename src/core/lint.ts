@@ -2,7 +2,7 @@ import { approvalLabel } from "./aliases.js";
 import type { AnalyzeRange } from "./analyze.js";
 import { formatDate, todayIn } from "./dates.js";
 import { AdmobctlError } from "./errors.js";
-import { resolveInsightRange } from "./insights.js";
+import { checkRangeArgs, resolveInsightRange } from "./insights.js";
 import type { AdmobService, MediationGroupView } from "./service.js";
 
 /** Setup lint: joins the inventory (apps, ad units, mediation groups) with traffic to find what is broken or unused. */
@@ -41,6 +41,7 @@ export interface LintResult {
 }
 
 export async function lint(svc: AdmobService, opts: LintOptions = {}): Promise<LintResult> {
+  checkRangeArgs(opts);
   const acct = await svc.account();
   const range = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
   const from = formatDate(range.startDate);

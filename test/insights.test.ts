@@ -2,7 +2,11 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { analyzeConsent, analyzeVersions, analyzeWaterfall } from "../src/core/analyze.js";
+import { analyzeGeo } from "../src/core/geo.js";
 import { insights } from "../src/core/insights.js";
+import { lint } from "../src/core/lint.js";
+import { analyzeTrend } from "../src/core/trend.js";
 import { AdmobService } from "../src/core/service.js";
 import type { TokenProvider } from "../src/core/auth/types.js";
 import { fakeFetch, fixture, jsonResponse, noSleep, type RecordedCall } from "./helpers.js";
@@ -88,7 +92,26 @@ describe("insights", () => {
     for (const range of [{ from: "2026-09" }, { to: "2026-09-30" }, { from: "2026-09-01", to: "2026-09-30" }]) {
       await expect(insights(svc, { last: 7, ...range, by: "ad-unit" })).rejects.toMatchObject({ code: "USAGE", message: expect.stringMatching(/not both/) });
     }
-    expect(calls.filter((c) => c.url.includes("networkReport"))).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("rejects last days with from/to before any API call, in every command that takes a range", async () => {
+    // The account lookup would fail: the usage error must come first, not this unrelated one.
+    const f = fakeFetch({ "GET /v1/accounts?": () => jsonResponse({ error: { code: 401, message: "Request had invalid authentication credentials.", status: "UNAUTHENTICATED" } }, 401) });
+    const svc = AdmobService.create({}, { configDir: mkdtempSync(join(tmpdir(), "admobctl-ins-")), tokenProvider: token, fetch: f.fetch, sleep: noSleep });
+    const range = { last: 7, from: "2026-09" };
+    for (const run of [
+      () => insights(svc, { ...range, by: "app" }),
+      () => lint(svc, range),
+      () => analyzeVersions(svc, { ...range, by: "sdk" }),
+      () => analyzeConsent(svc, range),
+      () => analyzeWaterfall(svc, range),
+      () => analyzeGeo(svc, range),
+      () => analyzeTrend(svc, { ...range, by: "app" }),
+    ]) {
+      await expect(run()).rejects.toMatchObject({ code: "USAGE", message: expect.stringMatching(/not both/) });
+    }
+    expect(f.calls).toEqual([]);
   });
 
   it("fetches both reports and the apps list concurrently", async () => {

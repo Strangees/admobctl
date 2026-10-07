@@ -2,7 +2,7 @@ import type { AppRef } from "./aliases.js";
 import { compareDates, formatDate, todayIn, type ApiDate, type DateRange } from "./dates.js";
 import { usageError } from "./errors.js";
 import { ESTIMATE_LABEL } from "./finance.js";
-import { pct, perMille, ratio, resolveInsightRange } from "./insights.js";
+import { checkRangeArgs, pct, perMille, ratio, resolveInsightRange } from "./insights.js";
 import { formatMicros, microsToAmount, sumMicros } from "./money.js";
 import type { DimensionValue, Report } from "./report.js";
 import type { AdmobService, StreamedReportKind } from "./service.js";
@@ -10,7 +10,7 @@ import type { AdmobService, StreamedReportKind } from "./service.js";
 /** Curated analyses on report dimensions the plain reports leave to the user. */
 
 export interface AnalyzeRange {
-  /** Number of complete days ending yesterday. Ignored when from/to are given. */
+  /** Number of complete days ending yesterday. Not together with from/to. */
   last?: number;
   from?: string;
   to?: string;
@@ -47,6 +47,7 @@ export async function fetchReport(
   kind: StreamedReportKind,
   opts: AnalyzeRange & { by: string[]; metrics: string[]; filters?: Record<string, string[]>; currency?: string },
 ) {
+  checkRangeArgs(opts);
   const acct = await svc.account();
   const range = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
   const { report, notices } = await svc.rawReport(kind, {
@@ -109,6 +110,7 @@ export interface VersionsResult extends Base {
 
 export async function analyzeVersions(svc: AdmobService, opts: VersionsOptions): Promise<VersionsResult> {
   if (!VERSION_KINDS.includes(opts.by)) throw usageError(`--by must be one of ${VERSION_KINDS.join(", ")}`);
+  checkRangeArgs(opts);
   const groupDim = opts.by === "app" ? "APP" : "PLATFORM";
   const dim = VERSION_DIM[opts.by];
   // Traffic metrics only: the metrics guide says version dimensions do not combine with earnings.
@@ -261,6 +263,7 @@ const SERVING_RESTRICTION_START: ApiDate = { year: 2021, month: 3, day: 13 };
 const UNRESTRICTED = /no restriction|unrestricted|^none$|restriction_none|no_restriction/i;
 
 export async function analyzeConsent(svc: AdmobService, opts: ConsentOptions): Promise<ConsentResult> {
+  checkRangeArgs(opts);
   // Per app: apps differ so much in eCPM that an account-wide comparison mostly measures the app mix.
   const [r, appRefs] = await Promise.all([
     fetchReport(svc, "network", {

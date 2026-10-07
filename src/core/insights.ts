@@ -9,7 +9,7 @@ export const INSIGHT_DIMENSIONS = ["app", "ad-unit", "country", "format", "platf
 export type InsightDimension = (typeof INSIGHT_DIMENSIONS)[number];
 
 export interface InsightsOptions {
-  /** Number of complete days ending yesterday. Ignored when from/to are given. */
+  /** Number of complete days ending yesterday. Not together with from/to. */
   last?: number;
   from?: string;
   to?: string;
@@ -107,9 +107,14 @@ export const perMille = (micros: number, n: number) => microsToAmount(Math.round
 export const pct = (f: number) => `${(f * 100).toFixed(1)}%`;
 export const signedPct = (f: number) => `${f >= 0 ? "+" : ""}${(f * 100).toFixed(1)}%`;
 
+/** Last N days and from/to are two ways to give a range. Commands check this first, before any API call. */
+export function checkRangeArgs(opts: Pick<InsightsOptions, "last" | "from" | "to">): void {
+  if (opts.last !== undefined && (opts.from || opts.to)) throw usageError("Give either --last (last_days) or --from/--to, not both.");
+}
+
 /** --last N days (ending yesterday) or --from/--to. */
 export function resolveInsightRange(opts: Pick<InsightsOptions, "last" | "from" | "to">, today: ReturnType<typeof todayIn>): DateRange {
-  if (opts.last !== undefined && (opts.from || opts.to)) throw usageError("Give either --last (last_days) or --from/--to, not both.");
+  checkRangeArgs(opts);
   if (opts.from || opts.to) return dateRangeFromArgs(opts.from ?? opts.to!, opts.to ?? opts.from!);
   const days = opts.last ?? 30;
   if (!Number.isInteger(days) || days < 1 || days > 366) throw usageError("--last must be between 1d and 366d");
@@ -120,6 +125,7 @@ export async function insights(svc: AdmobService, opts: InsightsOptions): Promis
   if (!INSIGHT_DIMENSIONS.includes(opts.by)) {
     throw usageError(`--by must be one of ${INSIGHT_DIMENSIONS.join(", ")}`);
   }
+  checkRangeArgs(opts);
   const acct = await svc.account();
   const range = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
   const metrics = ["earnings", "requests", "matched-requests", "impressions", "clicks"];

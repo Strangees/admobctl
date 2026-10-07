@@ -12177,8 +12177,11 @@ var ratio = (a, b) => b > 0 ? a / b : 0;
 var perMille = (micros, n) => microsToAmount(Math.round(ratio(micros, n) * 1e3));
 var pct = (f) => `${(f * 100).toFixed(1)}%`;
 var signedPct = (f) => `${f >= 0 ? "+" : ""}${(f * 100).toFixed(1)}%`;
-function resolveInsightRange(opts, today) {
+function checkRangeArgs(opts) {
   if (opts.last !== void 0 && (opts.from || opts.to)) throw usageError("Give either --last (last_days) or --from/--to, not both.");
+}
+function resolveInsightRange(opts, today) {
+  checkRangeArgs(opts);
   if (opts.from || opts.to) return dateRangeFromArgs(opts.from ?? opts.to, opts.to ?? opts.from);
   const days = opts.last ?? 30;
   if (!Number.isInteger(days) || days < 1 || days > 366) throw usageError("--last must be between 1d and 366d");
@@ -12188,6 +12191,7 @@ async function insights(svc, opts) {
   if (!INSIGHT_DIMENSIONS.includes(opts.by)) {
     throw usageError(`--by must be one of ${INSIGHT_DIMENSIONS.join(", ")}`);
   }
+  checkRangeArgs(opts);
   const acct = await svc.account();
   const range = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
   const metrics = ["earnings", "requests", "matched-requests", "impressions", "clicks"];
@@ -12315,6 +12319,7 @@ function thinDataNotice(thin, total, what, also = "") {
   return thin ? [`${thin} of ${total} ${what} had fewer than ${MIN_REQUESTS} requests${also}; treat their rates as noise, not findings.`] : [];
 }
 async function fetchReport(svc, kind, opts) {
+  checkRangeArgs(opts);
   const acct = await svc.account();
   const range = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
   const { report, notices } = await svc.rawReport(kind, {
@@ -12342,6 +12347,7 @@ var VERSION_DIM = { sdk: "GMA_SDK_VERSION", app: "APP_VERSION_NAME", os: "MOBILE
 var VERSION_NOUN = { sdk: "SDK version", app: "app version", os: "OS version" };
 async function analyzeVersions(svc, opts) {
   if (!VERSION_KINDS.includes(opts.by)) throw usageError(`--by must be one of ${VERSION_KINDS.join(", ")}`);
+  checkRangeArgs(opts);
   const groupDim = opts.by === "app" ? "APP" : "PLATFORM";
   const dim = VERSION_DIM[opts.by];
   const [r, apps] = await Promise.all([
@@ -12438,6 +12444,7 @@ async function analyzeVersions(svc, opts) {
 var SERVING_RESTRICTION_START = { year: 2021, month: 3, day: 13 };
 var UNRESTRICTED = /no restriction|unrestricted|^none$|restriction_none|no_restriction/i;
 async function analyzeConsent(svc, opts) {
+  checkRangeArgs(opts);
   const [r, appRefs] = await Promise.all([
     fetchReport(svc, "network", {
       ...opts,
@@ -13279,6 +13286,7 @@ async function analyzeGeo(svc, opts = {}) {
 
 // src/core/lint.ts
 async function lint(svc, opts = {}) {
+  checkRangeArgs(opts);
   const acct = await svc.account();
   const range = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
   const from = formatDate(range.startDate);
@@ -14961,6 +14969,7 @@ var weekdayOf = (d) => WEEKDAYS[(new Date(Date.UTC(d.year, d.month - 1, d.day)).
 async function analyzeTrend(svc, opts = {}) {
   const by = opts.by ?? "total";
   if (!TREND_SPLITS.includes(by)) throw usageError(`--by must be one of ${TREND_SPLITS.join(", ")}`);
+  checkRangeArgs(opts);
   const dim = by === "total" ? void 0 : SPLIT_DIM[by];
   const [r, apps] = await Promise.all([
     fetchReport(svc, "network", {
