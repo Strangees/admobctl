@@ -218,7 +218,8 @@ Most arguments are the CLI's options in snake_case (`max_rows`, `sort`, `compare
 - `admobctl_check` takes `window_days`, `baseline_days`, `drop_percent`, `min_requests`, `app`.
 - `admobctl_finance_export` takes `month` or `from`+`to`, `as` (`json` or `csv`), `integer_amounts`, `scale`, and returns
   the file as `content` (no `--out`).
-- No output options (`-o`, `--as`): tools return JSON. The profile is the one `admobctl mcp` started with.
+- No `-o` and, apart from `admobctl_finance_export`'s `as`, no `--as`: tools return JSON. The profile is the one
+  `admobctl mcp` started with.
 Reports default to 200 rows.
 
 ## Write commands (v1beta; CLI only)

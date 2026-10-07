@@ -37,7 +37,9 @@ export function recordingFetch(upstream: typeof fetch) {
   const entries: CassetteEntry[] = [];
   const fn = async (input: string | URL | Request, init: RequestInit = {}) => {
     const res = await upstream(input, init);
-    if (isAuthEndpoint(String(input))) return res;
+    // A Request carries its own URL and method; String() of one is "[object Request]".
+    const url = input instanceof Request ? input.url : String(input);
+    if (isAuthEndpoint(url)) return res;
     const text = await res.clone().text();
     let response: unknown = text;
     try {
@@ -45,7 +47,8 @@ export function recordingFetch(upstream: typeof fetch) {
     } catch {
       // keep raw text
     }
-    const entry: CassetteEntry = { method: (init.method ?? "GET").toUpperCase(), url: String(input), status: res.status, response };
+    const method = init.method ?? (input instanceof Request ? input.method : "GET");
+    const entry: CassetteEntry = { method: method.toUpperCase(), url, status: res.status, response };
     if (typeof init.body === "string") entry.body = init.body;
     entries.push(entry);
     return res;

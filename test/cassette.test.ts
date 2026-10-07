@@ -30,6 +30,15 @@ describe("cassette", () => {
     await expect(replay("https://admob.googleapis.com/v1/other", {})).rejects.toThrow(/not in cassette/);
   });
 
+  it("recognises an OAuth endpoint passed as a Request, and records other Requests by their own URL and method", async () => {
+    const upstream = (async () => jsonResponse({ access_token: "ACCESS-TOKEN" })) as unknown as typeof fetch;
+    const rec = recordingFetch(upstream);
+    await rec.fetch(new Request("https://oauth2.googleapis.com/token", { method: "POST", body: "refresh_token=REFRESH" }));
+    expect(JSON.stringify(rec.cassette())).not.toMatch(/ACCESS-TOKEN|REFRESH/);
+    await rec.fetch(new Request("https://admob.googleapis.com/v1/accounts", { method: "POST" }));
+    expect(rec.cassette().entries.map((e) => `${e.method} ${e.url}`)).toEqual(["POST https://admob.googleapis.com/v1/accounts"]);
+  });
+
   it("never records Google's OAuth endpoints, so refresh tokens, client secrets and access tokens stay out", async () => {
     const upstream = fakeFetch({
       "POST oauth2.googleapis.com/token": () => jsonResponse({ access_token: "ACCESS-TOKEN", expires_in: 3600 }),
