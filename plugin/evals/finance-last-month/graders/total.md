@@ -1,4 +1,4 @@
 ---
 type: regex
-pattern: "102[.,]75"
+pattern: "102[.,]45"
 ---
