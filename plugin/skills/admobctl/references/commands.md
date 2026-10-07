@@ -2,6 +2,7 @@
 
 Global flags (any command): `-o json|table|csv|markdown` (default: table on a TTY, json when piped; with csv the notes
 go to stderr), `--profile <name>`, `--account pub-…`, `-v` (debug logs to stderr). Run `admobctl <cmd> --help` for details.
+`--last` and `--from`/`--to` (insights, lint, analyze) are alternatives: giving both is a usage error (exit 2).
 
 ## Setup and auth
 
@@ -12,7 +13,7 @@ go to stderr), `--profile <name>`, `--account pub-…`, `-v` (debug logs to stde
 | `admobctl setup login [--features …] [--yes]` | Sign in with the scopes the features need (both gcloud and own OAuth client open the browser; must run in a terminal). Keeps scopes already granted. |
 | `admobctl setup project list` / `setup project use <id> [--yes]` | Google Cloud projects you can use / store one as the quota project. |
 | `admobctl setup apis [--features …] [--project <id>] [--yes]` | Enable APIs in the explicit project or the quota project (as your user). `--project` does not overwrite the profile. OAuth without a quota project leaves enablement to its client project; `setup status` probes access. |
-| `admobctl auth status` | Active mode (adc/oauth), quota project, scopes, account |
+| `admobctl auth status` | Active mode (adc/oauth), quota project, scopes, account. Exit 1 when the token check fails (`error`). |
 | `admobctl auth login --client-id <id> --client-secret <s> [--write] [--payments] [--cloud-platform]` | Own Desktop OAuth client; refresh token goes to the macOS Keychain. Switches the profile to `oauth`. `--write` also grants admob.monetization; `--payments` grants adsense.readonly (for `finance balance`); `--cloud-platform` grants Cloud project/API management access. `setup login` requests it automatically and reuses the saved client secret. |
 | `admobctl auth logout` | Revoke and forget the OAuth login; back to gcloud ADC |
 

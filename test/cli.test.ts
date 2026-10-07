@@ -429,4 +429,35 @@ describe("cli robustness", () => {
     expect(r.stdout).toMatch(/> Truncated: /);
     expect(r.stderr).toBe("");
   });
+
+  it.each([
+    [["finance", "export", "--month", "2026-09", "--integer-amounts", "--scale", "abc"], /--scale .*0 to 6.*"abc"/],
+    [["finance", "export", "--month", "2026-09", "--integer-amounts", "--scale", "2.5"], /--scale .*0 to 6.*"2\.5"/],
+    [["finance", "export", "--month", "2026-09", "--integer-amounts", "--scale", "7"], /--scale .*0 to 6.*"7"/],
+    [["audit-log", "--last", "0"], /--last expects a positive integer, got "0"/],
+    [["report", "network", "--from", "2026-09", "--max-rows", "x"], /--max-rows expects a positive integer/],
+    [["mediation-groups", "set-line", "Banners", "Waterfall 3.00", "--cpm", "-1"], /--cpm expects a positive amount, got "-1"/],
+  ])("rejects %j before any API call, naming the flag", async (args, message) => {
+    const r = await cli(args);
+    expect(r.code).toBe(2);
+    expect((JSON.parse(r.stderr) as { error: { message: string } }).error.message).toMatch(message);
+    expect(r.calls).toEqual([]);
+  });
+
+  it.each([
+    ["insights", "--from", "2026-09"],
+    ["lint", "--to", "2026-09"],
+    ["analyze", "trend", "--from", "2026-09-01", "--to", "2026-09-30"],
+  ])("rejects --last together with --from/--to (%s)", async (...args) => {
+    const r = await cli([...args, "--last", "7d"]);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toMatch(/--last.*cannot be used with.*--(from|to)/);
+    expect(r.calls).toEqual([]);
+  });
+
+  it("auth status exits 1 when the token check fails", async () => {
+    const r = await cli(["auth", "status", "-o", "json"], { routes: { "POST /tokeninfo": () => jsonResponse({ error: "invalid_token" }, 400) } });
+    expect(r.code).toBe(1);
+    expect(JSON.parse(r.stdout).error).toMatch(/Google rejected the access token/);
+  });
 });

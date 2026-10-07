@@ -257,6 +257,14 @@ describe("mcp server", () => {
     expect(bad.content[0]!.text).toMatch(/month/);
   });
 
+  it("rejects last_days together with from/to as a usage error", async () => {
+    const { client, calls } = await connect();
+    const r = (await client.callTool({ name: "admobctl_insights", arguments: { last_days: 7, from: "2026-09" } })) as ToolResult;
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toMatch(/--last \(last_days\) or --from\/--to, not both/);
+    expect(calls.filter((c) => c.url.includes("networkReport"))).toEqual([]);
+  });
+
   it("returns actionable errors as tool errors, not protocol errors", async () => {
     const { client } = await connect({
       "GET /v1/accounts?": () =>

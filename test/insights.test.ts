@@ -83,6 +83,14 @@ describe("insights", () => {
     expect(r.totals.change).toBeCloseTo(0.3986, 3);
   });
 
+  it("rejects last days together with from/to instead of silently using one of them", async () => {
+    const { svc, calls } = service();
+    for (const range of [{ from: "2026-09" }, { to: "2026-09-30" }, { from: "2026-09-01", to: "2026-09-30" }]) {
+      await expect(insights(svc, { last: 7, ...range, by: "ad-unit" })).rejects.toMatchObject({ code: "USAGE", message: expect.stringMatching(/not both/) });
+    }
+    expect(calls.filter((c) => c.url.includes("networkReport"))).toEqual([]);
+  });
+
   it("fetches both reports and the apps list concurrently", async () => {
     // Each request is held until all three (current report, previous report, apps) are in flight.
     // If they are fetched one after another, the first is released by a short fallback timer instead.

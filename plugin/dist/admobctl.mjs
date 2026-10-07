@@ -12166,6 +12166,7 @@ var perMille = (micros, n) => microsToAmount(Math.round(ratio(micros, n) * 1e3))
 var pct = (f) => `${(f * 100).toFixed(1)}%`;
 var signedPct = (f) => `${f >= 0 ? "+" : ""}${(f * 100).toFixed(1)}%`;
 function resolveInsightRange(opts, today) {
+  if (opts.last !== void 0 && (opts.from || opts.to)) throw usageError("Give either --last (last_days) or --from/--to, not both.");
   if (opts.from || opts.to) return dateRangeFromArgs(opts.from ?? opts.to, opts.to ?? opts.from);
   const days = opts.last ?? 30;
   if (!Number.isInteger(days) || days < 1 || days > 366) throw usageError("--last must be between 1d and 366d");
@@ -15735,15 +15736,26 @@ function parsePairs(values = [], flag) {
   }
   return out;
 }
-function positiveAmount(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n) || n <= 0) throw new AdmobctlError("USAGE", `Expected a positive amount, got "${v}"`);
-  return n;
+function positiveAmount(flag) {
+  return (v) => {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) throw new AdmobctlError("USAGE", `${flag} expects a positive amount, got "${v}"`);
+    return n;
+  };
 }
-function positiveInt(v) {
-  const n = Number(v);
-  if (!Number.isInteger(n) || n <= 0) throw new AdmobctlError("USAGE", `Expected a positive integer, got "${v}"`);
-  return n;
+function positiveInt(flag) {
+  return (v) => {
+    const n = Number(v);
+    if (!Number.isInteger(n) || n <= 0) throw new AdmobctlError("USAGE", `${flag} expects a positive integer, got "${v}"`);
+    return n;
+  };
+}
+function intBetween(flag, min, max) {
+  return (v) => {
+    const n = /^\d+$/.test(v.trim()) ? Number(v) : NaN;
+    if (!(n >= min && n <= max)) throw new AdmobctlError("USAGE", `${flag} expects a whole number from ${min} to ${max}, got "${v}"`);
+    return n;
+  };
 }
 function buildProgram(io) {
   const program2 = new Command("admobctl");
@@ -15849,7 +15861,7 @@ function buildProgram(io) {
     io.stderr(`Logged out of profile "${profileName}".
 `);
   });
-  auth.command("status").description("Show which credentials are active").action(async (_o, cmd) => {
+  auth.command("status").description("Show which credentials are active; exits 1 when the token check fails").action(async (_o, cmd) => {
     const s = svc(cmd);
     const info = {
       profile: s.profile.name,
@@ -15866,6 +15878,7 @@ function buildProgram(io) {
       info.error = err instanceof AdmobctlError ? `${err.message}${err.fix ? ` (fix: ${err.fix})` : ""}` : String(err);
     }
     emit(cmd, keyValueView(info));
+    if (info.error) process.exitCode = 1;
   });
   auth.command("doctor").description("Diagnose setup problems and print the exact admobctl command that fixes each (same as setup status)").action(async (_o, cmd) => emitStatus(cmd));
   const setupOpts = (cmd) => cmd.optsWithGlobals();
@@ -15949,11 +15962,11 @@ function buildProgram(io) {
     const s = svc(cmd);
     await runWrite(cmd, s, [await planCreateMediationGroup(s, readJsonFile(o.file))], o.yes);
   });
-  groups.command("set-line <group> <line>").description("Change a mediation line's manual CPM (USD), state or name (v1beta write)").option("--cpm <usd>", "manual CPM in USD (MANUAL lines only)", positiveAmount).option("--state <state>", "enabled or disabled").option("--name <name>", "new display name").addOption(yesOption()).action(async (group, line, o, cmd) => {
+  groups.command("set-line <group> <line>").description("Change a mediation line's manual CPM (USD), state or name (v1beta write)").option("--cpm <usd>", "manual CPM in USD (MANUAL lines only)", positiveAmount("--cpm")).option("--state <state>", "enabled or disabled").option("--name <name>", "new display name").addOption(yesOption()).action(async (group, line, o, cmd) => {
     const s = svc(cmd);
     await runWrite(cmd, s, [await planUpdateLine(s, { group, line, cpm: o.cpm, state: o.state, name: o.name })], o.yes);
   });
-  groups.command("add-line <group>").description("Add a mediation line to a group (v1beta write)").requiredOption("--ad-source <name|id>", "the ad source").requiredOption("--name <name>", "display name for the line").option("--cpm <usd>", "manual CPM in USD; omit for a LIVE (bidding/optimized) line", positiveAmount).option("--mapping <ad-unit=mapping>", "ad unit mapping resource for an ad unit, repeatable", repeat).addOption(yesOption()).action(async (group, o, cmd) => {
+  groups.command("add-line <group>").description("Add a mediation line to a group (v1beta write)").requiredOption("--ad-source <name|id>", "the ad source").requiredOption("--name <name>", "display name for the line").option("--cpm <usd>", "manual CPM in USD; omit for a LIVE (bidding/optimized) line", positiveAmount("--cpm")).option("--mapping <ad-unit=mapping>", "ad unit mapping resource for an ad unit, repeatable", repeat).addOption(yesOption()).action(async (group, o, cmd) => {
     const s = svc(cmd);
     const plan = await planAddLine(s, { group, adSource: o.adSource, name: o.name, cpm: o.cpm, mappings: parsePairs(o.mapping, "--mapping") });
     await runWrite(cmd, s, [plan], o.yes);
@@ -15963,7 +15976,7 @@ function buildProgram(io) {
     await runWrite(cmd, s, [await planSetGroupAdUnits(s, { group, adUnits: adUnits2 })], o.yes);
   });
   const experiment = groups.command("experiment").description("Mediation A/B experiments (v1beta write)");
-  experiment.command("start <group>").description("Start an A/B experiment: a share of traffic gets the treatment lines").requiredOption("--name <name>", "experiment name").requiredOption("--percent <n>", "share of traffic for the treatment (1-99)", positiveInt).requiredOption("--lines <path>", "JSON array of the treatment's mediation lines").addOption(yesOption()).action(async (group, o, cmd) => {
+  experiment.command("start <group>").description("Start an A/B experiment: a share of traffic gets the treatment lines").requiredOption("--name <name>", "experiment name").requiredOption("--percent <n>", "share of traffic for the treatment (1-99)", positiveInt("--percent")).requiredOption("--lines <path>", "JSON array of the treatment's mediation lines").addOption(yesOption()).action(async (group, o, cmd) => {
     const s = svc(cmd);
     const lines = readJsonFile(o.lines);
     await runWrite(cmd, s, [await planStartExperiment(s, { group, name: o.name, percent: o.percent, lines })], o.yes);
@@ -15974,7 +15987,7 @@ function buildProgram(io) {
   });
   const report = program2.command("report").description("Network and mediation reports");
   for (const kind of ["network", "mediation"]) {
-    report.command(kind).description(`Generate a ${kind} report`).requiredOption("--from <date>", "start, YYYY-MM or YYYY-MM-DD").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD (default: same as --from)").option("--by <dims>", `dimensions, comma-separated (e.g. app,country${kind === "mediation" ? ",ad-source" : ""})`, list).option("--metrics <metrics>", "metrics, comma-separated (default: all common ones)", list).option("--filter <k=v,\u2026>", "filter, repeatable (e.g. country=NO,SE or app=<alias>)", (v, p = []) => [...p, v]).option("--max-rows <n>", "cap the number of rows", positiveInt).option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)").option("--sort <field[:asc|desc]>", "sort by a dimension or metric of the report (default: by time, else by earnings)").addOption(new Option("--compare <period>", "add each row's change against the equal-length period just before").choices([...COMPARISONS])).action(async (o, cmd) => {
+    report.command(kind).description(`Generate a ${kind} report`).requiredOption("--from <date>", "start, YYYY-MM or YYYY-MM-DD").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD (default: same as --from)").option("--by <dims>", `dimensions, comma-separated (e.g. app,country${kind === "mediation" ? ",ad-source" : ""})`, list).option("--metrics <metrics>", "metrics, comma-separated (default: all common ones)", list).option("--filter <k=v,\u2026>", "filter, repeatable (e.g. country=NO,SE or app=<alias>)", (v, p = []) => [...p, v]).option("--max-rows <n>", "cap the number of rows", positiveInt("--max-rows")).option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)").option("--sort <field[:asc|desc]>", "sort by a dimension or metric of the report (default: by time, else by earnings)").addOption(new Option("--compare <period>", "add each row's change against the equal-length period just before").choices([...COMPARISONS])).action(async (o, cmd) => {
       const s = svc(cmd);
       const q = {
         from: o.from,
@@ -16025,7 +16038,7 @@ function buildProgram(io) {
     const view = financeBalanceView(await financeBalance(svc(cmd)));
     emitFinance(cmd, o.as, view, () => view);
   });
-  finance.command("export").description("Export accrual vouchers in the Revenue Journal format (spec/SPEC.md), for accounting imports").option("--month <YYYY-MM>", "one month").option("--from <YYYY-MM>", "first month of a range").option("--to <YYYY-MM>", "last month of a range").option("--as <format>", `export format: ${EXPORT_FORMATS.join(", ")}`, "revenue-journal-json").option("--integer-amounts", "write amounts as JSON integers instead of decimal strings (JSON only)").option("--scale <digits>", "decimal places the integers carry, 0-6 (default 2; 6 = micros)", (v) => Number(v)).option("--out <file>", "write to this file (readable only by you) instead of stdout").action(
+  finance.command("export").description("Export accrual vouchers in the Revenue Journal format (spec/SPEC.md), for accounting imports").option("--month <YYYY-MM>", "one month").option("--from <YYYY-MM>", "first month of a range").option("--to <YYYY-MM>", "last month of a range").option("--as <format>", `export format: ${EXPORT_FORMATS.join(", ")}`, "revenue-journal-json").option("--integer-amounts", "write amounts as JSON integers instead of decimal strings (JSON only)").option("--scale <digits>", "decimal places the integers carry, 0-6 (default 2; 6 = micros)", intBetween("--scale", 0, 6)).option("--out <file>", "write to this file (readable only by you) instead of stdout").action(
     async (o, cmd) => {
       const { content, notes } = await exportJournal(svc(cmd), o);
       if (o.out) {
@@ -16048,7 +16061,8 @@ function buildProgram(io) {
       () => journalView(r.months.flatMap((m) => journalRows(m, s.profile.finance)), r.notes)
     );
   });
-  program2.command("insights").description("Monetization insights: top/bottom earners, low fill, swings vs the previous period").option("--last <Nd>", "the last N complete days (default 30d)", (v) => parseDays(v)).option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD").addOption(new Option("--by <dimension>", "group by").choices([...INSIGHT_DIMENSIONS]).default("ad-unit")).option("--swing <percent>", "change that counts as a swing (default 30)", positiveInt).option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)").action(async (o, cmd) => {
+  const lastOption = () => new Option("--last <Nd>", "the last N complete days (default 30d)").argParser((v) => parseDays(v)).conflicts(["from", "to"]);
+  program2.command("insights").description("Monetization insights: top/bottom earners, low fill, swings vs the previous period").addOption(lastOption()).option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD").addOption(new Option("--by <dimension>", "group by").choices([...INSIGHT_DIMENSIONS]).default("ad-unit")).option("--swing <percent>", "change that counts as a swing (default 30)", positiveInt("--swing")).option("--currency <code>", "convert earnings to this ISO 4217 currency (default: the account currency)").action(async (o, cmd) => {
     const r = await insights(svc(cmd), {
       last: o.last,
       from: o.from,
@@ -16059,12 +16073,12 @@ function buildProgram(io) {
     });
     emit(cmd, insightsView(r));
   });
-  program2.command("check").description("Health check for cron: exits 1 when an app's earnings, match rate or show rate dropped against the days before").option("--window <Nd>", "complete days to judge, ending yesterday (default 1d)", (v) => parseDays(v, "--window")).option("--baseline <Nd>", "days just before the window to compare with (default 7d)", (v) => parseDays(v, "--baseline")).option("--drop <percent>", "a drop of this much or more is a breach (default 30)", positiveInt).option("--min-requests <n>", "baseline requests an app needs before it is judged (default 1000)", positiveInt).option("--app <alias|id>", "only this app").action(async (o, cmd) => {
+  program2.command("check").description("Health check for cron: exits 1 when an app's earnings, match rate or show rate dropped against the days before").option("--window <Nd>", "complete days to judge, ending yesterday (default 1d)", (v) => parseDays(v, "--window")).option("--baseline <Nd>", "days just before the window to compare with (default 7d)", (v) => parseDays(v, "--baseline")).option("--drop <percent>", "a drop of this much or more is a breach (default 30)", positiveInt("--drop")).option("--min-requests <n>", "baseline requests an app needs before it is judged (default 1000)", positiveInt("--min-requests")).option("--app <alias|id>", "only this app").action(async (o, cmd) => {
     const r = await check(svc(cmd), { ...o, drop: o.drop === void 0 ? void 0 : o.drop / 100 });
     emit(cmd, checkView(r));
     if (r.breaches) process.exitCode = 1;
   });
-  const withRange = (cmd) => cmd.option("--last <Nd>", "the last N complete days (default 30d)", (v) => parseDays(v)).option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD");
+  const withRange = (cmd) => cmd.addOption(lastOption()).option("--from <date>", "start, YYYY-MM or YYYY-MM-DD (instead of --last)").option("--to <date>", "end, YYYY-MM or YYYY-MM-DD");
   const range = (o) => ({ last: o.last, from: o.from, to: o.to });
   withRange(
     program2.command("lint").description("Check the setup: apps needing action, broken mediation groups, ad units that are unused or in no group; exits 1 on a problem").option("--app <alias|id>", "only this app")
@@ -16090,7 +16104,7 @@ function buildProgram(io) {
     emit(cmd, waterfallView(await analyzeWaterfall(svc(cmd), { ...range(o), app: o.app, group: o.group, currency: o.currency })));
   });
   withRange(
-    analyze.command("geo").description("Earnings, fill and eCPM per country and format, flagging big cells that fill badly and small ones that pay well").option("--app <alias|id>", "only this app").option("--min-requests <n>", "requests a country and format need before they are judged (default 1000)", positiveInt).option("--currency <code>", "convert earnings to this ISO 4217 currency")
+    analyze.command("geo").description("Earnings, fill and eCPM per country and format, flagging big cells that fill badly and small ones that pay well").option("--app <alias|id>", "only this app").option("--min-requests <n>", "requests a country and format need before they are judged (default 1000)", positiveInt("--min-requests")).option("--currency <code>", "convert earnings to this ISO 4217 currency")
   ).action(async (o, cmd) => {
     emit(cmd, geoView(await analyzeGeo(svc(cmd), { ...range(o), app: o.app, minRequests: o.minRequests, currency: o.currency })));
   });
@@ -16107,7 +16121,7 @@ function buildProgram(io) {
     });
     await new Promise((resolve) => process.stdin.on("close", resolve));
   });
-  program2.command("audit-log").description("Show the writes applied with --yes (from the local audit log), newest first").option("--last <n>", "only the newest n entries", positiveInt).option("--failed", "only writes that failed, or whose outcome is unknown (a timeout, network or server error after sending)").action((o, cmd) => emit(cmd, auditLogView(readAudit(dir(), o))));
+  program2.command("audit-log").description("Show the writes applied with --yes (from the local audit log), newest first").option("--last <n>", "only the newest n entries", positiveInt("--last")).option("--failed", "only writes that failed, or whose outcome is unknown (a timeout, network or server error after sending)").action((o, cmd) => emit(cmd, auditLogView(readAudit(dir(), o))));
   const config2 = program2.command("config").description("Read and write ~/.admobctl/config.json (no secrets)");
   config2.command("get [key]").description("Show the resolved profile, or one key").action((key, _o, cmd) => {
     const p = resolveProfile(loadConfig(dir()), g(cmd).profile);

@@ -109,6 +109,7 @@ export const signedPct = (f: number) => `${f >= 0 ? "+" : ""}${(f * 100).toFixed
 
 /** --last N days (ending yesterday) or --from/--to. */
 export function resolveInsightRange(opts: Pick<InsightsOptions, "last" | "from" | "to">, today: ReturnType<typeof todayIn>): DateRange {
+  if (opts.last !== undefined && (opts.from || opts.to)) throw usageError("Give either --last (last_days) or --from/--to, not both.");
   if (opts.from || opts.to) return dateRangeFromArgs(opts.from ?? opts.to!, opts.to ?? opts.from!);
   const days = opts.last ?? 30;
   if (!Number.isInteger(days) || days < 1 || days > 366) throw usageError("--last must be between 1d and 366d");

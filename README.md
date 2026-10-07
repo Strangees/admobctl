@@ -47,7 +47,8 @@ admobctl setup --features write,payments --yes
 Setup never drops a feature you already have. The steps also run on their own:
 `setup login [--features …]`, `setup project list`, `setup project use <id>`, `setup apis [--features …] [--project <id>]`
 (change commands are dry runs without `--yes`; `project list` is read-only). Sign-in, scope, quota-project and API errors
-name the `admobctl setup …` command to run, and `auth doctor` is the same report as `setup status`. If
+name the `admobctl setup …` command to run, and `auth doctor` is the same report as `setup status`. `auth status` shows
+the active credentials and exits 1 when it cannot get a token that Google accepts. If
 `GOOGLE_APPLICATION_CREDENTIALS` selects a service account, first unset it in the terminal running admobctl;
 setup reports this manual prerequisite and refuses to open a login that would leave the override in place.
 Account, aliases and finance settings use the existing `admobctl config set` commands below.
@@ -126,6 +127,8 @@ Google's daily average rate; the default is the account currency. Combinations t
 dimensions, `ad-type` with requests, match rate or RPM) fail before any API call, and default metrics that do not
 fit the chosen dimensions are left out with a note. Reports also note when they include data that is still arriving
 (today's AdMob data; the last day of third-party mediation data).
+
+`insights`, `lint` and `analyze` take either `--last 30d` or `--from`/`--to`; giving both is a usage error.
 
 Dates are `YYYY-MM` (whole month) or `YYYY-MM-DD`. Dimensions and metrics accept friendly names
 (`app`, `ad-unit`, `country`, `format`, `platform`, `date`, `month`; `earnings`, `requests`, `impressions`,
