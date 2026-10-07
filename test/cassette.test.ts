@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { fetchTokenInfo } from "../src/core/auth/doctor.js";
+import { OAuthTokenProvider, type SecretStore } from "../src/core/auth/oauth.js";
 import { recordingFetch, replayFetch } from "./cassette.js";
 import { fakeFetch, jsonResponse } from "./helpers.js";
 
@@ -26,5 +28,32 @@ describe("cassette", () => {
     });
     expect(await r.json()).toEqual([{ echo: { reportSpec: { a: 1 } } }]);
     await expect(replay("https://admob.googleapis.com/v1/other", {})).rejects.toThrow(/not in cassette/);
+  });
+
+  it("never records Google's OAuth endpoints, so refresh tokens, client secrets and access tokens stay out", async () => {
+    const upstream = fakeFetch({
+      "POST oauth2.googleapis.com/token": () => jsonResponse({ access_token: "ACCESS-TOKEN", expires_in: 3600 }),
+      "POST oauth2.googleapis.com/tokeninfo": () => jsonResponse({ scope: "https://www.googleapis.com/auth/admob.readonly", expires_in: "3000" }),
+      "GET www.googleapis.com/oauth2/v3/tokeninfo": () => jsonResponse({ scope: "x" }),
+      "POST accounts.google.com/o/oauth2/token": () => jsonResponse({ access_token: "ACCESS-TOKEN" }),
+      "GET /v1/accounts?": () => jsonResponse({ account: [{ publisherId: "pub-1" }] }),
+    });
+    const rec = recordingFetch(upstream.fetch);
+    const store: SecretStore = {
+      get: async () => JSON.stringify({ clientId: "cid.apps.googleusercontent.com", clientSecret: "CLIENT-SECRET", refreshToken: "REFRESH-TOKEN" }),
+      set: async () => {},
+      delete: async () => {},
+    };
+    // What record-fixtures did: the OAuth token provider got the recording fetch.
+    const token = await new OAuthTokenProvider({ profile: "default", store, fetch: rec.fetch }).getToken();
+    await fetchTokenInfo(token, rec.fetch);
+    await rec.fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${token}`);
+    await rec.fetch("https://accounts.google.com/o/oauth2/token", { method: "POST", body: "refresh_token=REFRESH-TOKEN&client_secret=CLIENT-SECRET" });
+    await rec.fetch("https://admob.googleapis.com/v1/accounts?pageSize=1000", { headers: { authorization: `Bearer ${token}` } });
+
+    const json = JSON.stringify(rec.cassette());
+    for (const secret of ["REFRESH-TOKEN", "CLIENT-SECRET", "ACCESS-TOKEN"]) expect(json).not.toContain(secret);
+    expect(rec.cassette().entries.map((e) => e.url)).toEqual(["https://admob.googleapis.com/v1/accounts?pageSize=1000"]);
+    expect(upstream.calls).toHaveLength(5);
   });
 });

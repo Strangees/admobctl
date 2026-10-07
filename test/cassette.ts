@@ -1,6 +1,7 @@
 /**
  * Record/replay of real AdMob API traffic for golden tests.
- * Cassettes hold only URL, method, request body and response; never headers or tokens.
+ * Cassettes hold only URL, method, request body and response; never headers or tokens. Requests to Google's OAuth
+ * endpoints (token refresh, tokeninfo) pass through unrecorded: their bodies and responses are credentials.
  * Recorded cassettes live in test/fixtures/private/ (gitignored).
  */
 
@@ -21,10 +22,22 @@ function key(method: string, url: string, body?: string): string {
   return `${method.toUpperCase()} ${url} ${body ?? ""}`;
 }
 
+/** Google's OAuth token and tokeninfo endpoints. */
+function isAuthEndpoint(url: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return false;
+  }
+  return u.hostname === "oauth2.googleapis.com" || u.hostname === "accounts.google.com" || (u.hostname === "www.googleapis.com" && u.pathname.startsWith("/oauth2/"));
+}
+
 export function recordingFetch(upstream: typeof fetch) {
   const entries: CassetteEntry[] = [];
   const fn = async (input: string | URL | Request, init: RequestInit = {}) => {
     const res = await upstream(input, init);
+    if (isAuthEndpoint(String(input))) return res;
     const text = await res.clone().text();
     let response: unknown = text;
     try {

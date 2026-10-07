@@ -36,8 +36,11 @@ const cases: GoldenCase[] = [];
 let failures = 0;
 
 async function record(kind: "month" | "range", period: string, expectTotal: string | undefined) {
+  const opts = { profile: values.profile, account: values.account };
   const rec = recordingFetch(fetch);
-  const svc = AdmobService.create({ profile: values.profile, account: values.account }, { fetch: rec.fetch });
+  // Sign in with the real fetch: only AdMob API traffic goes through the recorder, never a token refresh.
+  const { tokenProvider } = AdmobService.create(opts);
+  const svc = AdmobService.create(opts, { fetch: rec.fetch, tokenProvider });
   const total =
     kind === "month"
       ? (await financeMonth(svc, period)).total
