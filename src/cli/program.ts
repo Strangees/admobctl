@@ -657,11 +657,12 @@ export function buildProgram(io: CliIO): Command {
     .option("--to <YYYY-MM>", "last month of a range")
     .option("--as <format>", `export format: ${EXPORT_FORMATS.join(", ")}`, "revenue-journal-json")
     .option("--integer-amounts", "write amounts as JSON integers instead of decimal strings (JSON only)")
-    .option("--scale <digits>", "decimal places the integers carry, 0-6 (default 2; 6 = micros)", (v) => Number(v))
+    .option("--scale <digits>", "decimal places the integers carry, 0-6 (default: the currency's, e.g. 2; 6 = micros)", (v) => Number(v))
+    .option("--allow-incomplete", "export a month that has not ended as a partial voucher through yesterday (its own ID)")
     .option("--out <file>", "write to this file (readable only by you) instead of stdout")
     .action(
       async (
-        o: { month?: string; from?: string; to?: string; as: string; integerAmounts?: boolean; scale?: number; out?: string },
+        o: { month?: string; from?: string; to?: string; as: string; integerAmounts?: boolean; scale?: number; allowIncomplete?: boolean; out?: string },
         cmd: Command,
       ) => {
         const { content, notes } = await exportJournal(svc(cmd), o);

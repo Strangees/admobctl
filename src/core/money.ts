@@ -38,3 +38,12 @@ export function formatMicros(micros: number, decimals = 2): string {
 export function microsToAmount(micros: number, decimals = 2): number {
   return Number(formatMicros(micros, decimals));
 }
+
+/** Decimals of a currency's minor unit (ISO 4217): 2 for NOK and USD, 0 for JPY and KRW, 3 for KWD; 2 when unknown. */
+export function currencyDigits(currency: string): number {
+  try {
+    return Math.min(6, new Intl.NumberFormat("en", { style: "currency", currency }).resolvedOptions().maximumFractionDigits ?? 2);
+  } catch {
+    return 2;
+  }
+}

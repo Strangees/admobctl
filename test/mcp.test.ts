@@ -255,6 +255,14 @@ describe("mcp server", () => {
     const bad = (await client.callTool({ name: "admobctl_finance_export", arguments: {} })) as ToolResult;
     expect(bad.isError).toBe(true);
     expect(bad.content[0]!.text).toMatch(/month/);
+
+    const incomplete = (await client.callTool({ name: "admobctl_finance_export", arguments: { month: "2026-10" } })) as ToolResult;
+    expect(incomplete.isError).toBe(true);
+    expect(incomplete.content[0]!.text).toMatch(/has not ended/);
+    const partial = (await client.callTool({ name: "admobctl_finance_export", arguments: { month: "2026-10", allow_incomplete: true } })) as ToolResult;
+    expect(partial.isError, partial.content[0]!.text).toBeFalsy();
+    const voucher = (JSON.parse(String(partial.structuredContent!.content)) as { vouchers: Array<{ voucher_id: string }> }).vouchers[0]!;
+    expect(voucher.voucher_id).toBe("admob:pub-0000000000000001:accrual:2026-10-01/2026-10-01");
   });
 
   it("returns actionable errors as tool errors, not protocol errors", async () => {

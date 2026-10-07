@@ -9,7 +9,8 @@ description: Use when the user needs AdMob earnings for bookkeeping, accounting,
 
 The AdMob API only exposes **estimated** earnings. Finalized earnings and payments are not available.
 Every answer that contains money says: *estimated; reconcile against AdMob Payments (finalized)*.
-If the tool returns `complete: false`, say the month is not over yet and the figures will change.
+If the tool returns `complete: false`, say the month is not over yet and the figures will change. Pass on any
+`API warning:` line in `notes` (for example delayed data).
 
 ## Monthly earnings
 
@@ -37,6 +38,12 @@ tool needs the `payments` feature; if it fails, call `admobctl_setup_status` and
 When the user wants a file their accounting system can import (not rows to paste), call `admobctl_finance_export` with
 `month` (or `from` and `to`) and `as: "json"` or `"csv"`. It returns the whole Revenue Journal file as `content`: save
 or show it unchanged, do not rebuild it from other tools' numbers. CLI: `admobctl finance export --month YYYY-MM --out <file>`.
+
+- A month that has not ended is refused. Offer the last complete month instead. Pass `allow_incomplete: true` only
+  when the user explicitly wants the month so far: the file then holds a partial voucher (through yesterday, with its
+  own `voucher_id`) that they must reverse when they book the whole month. Say so.
+- `counterparty` is written only when the user has set `finance.counterparty`. Which Google entity pays depends on
+  their country; do not guess it.
 
 ## Journal rows (bilagsjournal)
 

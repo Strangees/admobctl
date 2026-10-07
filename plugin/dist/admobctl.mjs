@@ -11894,16 +11894,23 @@ function formatMicros(micros, decimals = 2) {
 function microsToAmount(micros, decimals = 2) {
   return Number(formatMicros(micros, decimals));
 }
+function currencyDigits(currency) {
+  try {
+    return Math.min(6, new Intl.NumberFormat("en", { style: "currency", currency }).resolvedOptions().maximumFractionDigits ?? 2);
+  } catch {
+    return 2;
+  }
+}
 
 // src/core/finance.ts
 var ESTIMATE_LABEL = "Estimated earnings, reconcile against AdMob Payments (finalized).";
-function allocateRounded(micros) {
-  const CENT = 1e4;
+function allocateRounded(micros, digits = 2) {
+  const UNIT = 10 ** (6 - digits);
   const totalMicros = sumMicros(micros);
-  const total = Math.sign(totalMicros) * Math.floor((Math.abs(totalMicros) + CENT / 2) / CENT);
-  const floors = micros.map((m) => Math.floor(m / CENT));
+  const total = Math.sign(totalMicros) * Math.floor((Math.abs(totalMicros) + UNIT / 2) / UNIT);
+  const floors = micros.map((m) => Math.floor(m / UNIT));
   let remaining = total - floors.reduce((a, b) => a + b, 0);
-  const order = micros.map((m, i) => ({ i, rem: m - floors[i] * CENT })).sort((a, b) => b.rem - a.rem || a.i - b.i);
+  const order = micros.map((m, i) => ({ i, rem: m - floors[i] * UNIT })).sort((a, b) => b.rem - a.rem || a.i - b.i);
   const parts = [...floors];
   for (const { i } of order) {
     if (remaining <= 0) break;
@@ -11912,24 +11919,28 @@ function allocateRounded(micros) {
   }
   return { total, parts };
 }
-var cents = (c) => c / 100;
-function appsFromMicros(byApp, index) {
+var fromMinor = (minor, digits) => minor / 10 ** digits;
+var reportNotes = (r) => [...r.report.warnings.map((w) => `API warning: ${w}`), ...r.notices];
+function endAt(range, through) {
+  return through && compareDates(through, range.endDate) < 0 ? { ...range, endDate: through } : range;
+}
+function appsFromMicros(byApp, index, digits) {
   const byId = new Map(index.map((a) => [a.appId, a]));
   const entries = [...byApp.entries()].sort((a, b) => b[1] - a[1]);
-  const { total, parts } = allocateRounded(entries.map(([, m]) => m));
+  const { total, parts } = allocateRounded(entries.map(([, m]) => m), digits);
   const apps = entries.map(([appId, micros], i) => {
     const ref = byId.get(appId);
     const app = {
       alias: ref?.alias ?? appId,
       name: ref?.name ?? appId,
       appId,
-      earnings: cents(parts[i]),
+      earnings: fromMinor(parts[i], digits),
       earningsMicros: micros
     };
     if (ref?.platform) app.platform = ref.platform;
     return app;
   });
-  return { apps, total: cents(total) };
+  return { apps, total: fromMinor(total, digits) };
 }
 function monthNotes(complete, month) {
   const notes = [ESTIMATE_LABEL];
@@ -11939,12 +11950,13 @@ function monthNotes(complete, month) {
 function buildMonth(ym, byApp, index, ctx) {
   const month = formatMonth(ym);
   const complete = isMonthComplete(ym, ctx.today);
-  const { apps, total } = appsFromMicros(byApp, index);
+  const { apps, total } = appsFromMicros(byApp, index, currencyDigits(ctx.currency));
+  const { startDate, endDate } = endAt({ startDate: { ...ym, day: 1 }, endDate: monthEnd(ym) }, ctx.through);
   return {
     month,
-    from: formatDate({ ...ym, day: 1 }),
-    to: formatDate(monthEnd(ym)),
-    bookingDate: formatDate(monthEnd(ym)),
+    from: formatDate(startDate),
+    to: formatDate(endDate),
+    bookingDate: formatDate(endDate),
     currency: ctx.currency,
     timeZone: ctx.timeZone,
     complete,
@@ -11955,35 +11967,40 @@ function buildMonth(ym, byApp, index, ctx) {
     notes: monthNotes(complete, month)
   };
 }
-async function financeMonth(svc, month) {
+async function financeMonth(svc, month, opts = {}) {
   const ym = parseMonth(month);
   const acct = await svc.account();
-  const [{ report }, index] = await Promise.all([
-    svc.rawReport("network", { dateRange: monthRange(month), by: ["app"], metrics: ["earnings"] }),
+  const [raw, index] = await Promise.all([
+    svc.rawReport("network", { dateRange: endAt(monthRange(month), opts.through), by: ["app"], metrics: ["earnings"] }),
     svc.apps()
   ]);
+  const { report } = raw;
   const byApp = /* @__PURE__ */ new Map();
   for (const row of report.rows) {
     const id = row.dimensions.APP?.value ?? "unknown";
     byApp.set(id, (byApp.get(id) ?? 0) + (row.metrics.ESTIMATED_EARNINGS ?? 0));
   }
   const timeZone = report.timeZone ?? acct.reportingTimeZone;
-  return buildMonth(ym, byApp, index, {
+  const m = buildMonth(ym, byApp, index, {
     currency: report.currency ?? acct.currencyCode,
     timeZone,
-    today: todayIn(timeZone, svc.now())
+    today: todayIn(timeZone, svc.now()),
+    through: opts.through
   });
+  m.notes.push(...reportNotes(raw));
+  return m;
 }
-async function financeRange(svc, from, to) {
+async function financeRange(svc, from, to, opts = {}) {
   const start = parseMonth(from);
   const end = parseMonth(to);
   if (start.year * 12 + start.month > end.year * 12 + end.month) throw usageError(`--from (${from}) is after --to (${to})`);
   const acct = await svc.account();
-  const dateRange = { startDate: { ...start, day: 1 }, endDate: monthEnd(end) };
-  const [{ report }, index] = await Promise.all([
+  const dateRange = endAt({ startDate: { ...start, day: 1 }, endDate: monthEnd(end) }, opts.through);
+  const [raw, index] = await Promise.all([
     svc.rawReport("network", { dateRange, by: ["month", "app"], metrics: ["earnings"] }),
     svc.apps()
   ]);
+  const { report } = raw;
   const byMonth = /* @__PURE__ */ new Map();
   for (let y = start.year, m = start.month; y * 12 + m <= end.year * 12 + end.month; m === 12 ? (y++, m = 1) : m++) {
     byMonth.set(`${y}${String(m).padStart(2, "0")}`, /* @__PURE__ */ new Map());
@@ -11996,22 +12013,24 @@ async function financeRange(svc, from, to) {
     bucket.set(id, (bucket.get(id) ?? 0) + (row.metrics.ESTIMATED_EARNINGS ?? 0));
   }
   const timeZone = report.timeZone ?? acct.reportingTimeZone;
-  const ctx = { currency: report.currency ?? acct.currencyCode, timeZone, today: todayIn(timeZone, svc.now()) };
+  const ctx = { currency: report.currency ?? acct.currencyCode, timeZone, today: todayIn(timeZone, svc.now()), through: opts.through };
+  const digits = currencyDigits(ctx.currency);
   const months = [...byMonth.entries()].map(
     ([key, apps]) => buildMonth({ year: Number(key.slice(0, 4)), month: Number(key.slice(4, 6)) }, apps, index, ctx)
   );
   const totalMicros = sumMicros(months.map((m) => m.totalMicros));
-  const monthCents = months.reduce((a, m) => a + Math.round(m.total * 100), 0);
-  const total = cents(monthCents);
+  const monthMinor = months.reduce((a, m) => a + Math.round(m.total * 10 ** digits), 0);
+  const total = fromMinor(monthMinor, digits);
   const notes = [ESTIMATE_LABEL];
   const incomplete = months.filter((m) => !m.complete).map((m) => m.month);
   if (incomplete.length) notes.push(`Incomplete month(s): ${incomplete.join(", ")}; the figures will change.`);
-  const exact = allocateRounded([totalMicros]).total;
-  if (exact !== monthCents) {
+  const exact = allocateRounded([totalMicros], digits).total;
+  if (exact !== monthMinor) {
     notes.push(
-      `The total ${total.toFixed(2)} is the sum of the month totals, as booked; the exact earnings round to ${cents(exact).toFixed(2)}.`
+      `The total ${total.toFixed(digits)} is the sum of the month totals, as booked; the exact earnings round to ${fromMinor(exact, digits).toFixed(digits)}.`
     );
   }
+  notes.push(...reportNotes(raw));
   return {
     from: formatDate(dateRange.startDate),
     to: formatDate(dateRange.endDate),
@@ -12037,10 +12056,13 @@ async function financeForecast(svc, month) {
   if (compareDates(lastDay, start) < 0) {
     throw usageError(`${label2} has no complete day yet (today's data is still arriving). Try again tomorrow, or: admobctl finance month ${formatMonth(addDays(start, -1))}`);
   }
-  const [{ report }, index] = await Promise.all([
+  const [raw, index] = await Promise.all([
     svc.rawReport("network", { dateRange: { startDate: start, endDate: lastDay }, by: ["app"], metrics: ["earnings"] }),
     svc.apps()
   ]);
+  const { report } = raw;
+  const currency = report.currency ?? acct.currencyCode;
+  const digits = currencyDigits(currency);
   const elapsed = lastDay.day;
   const scale = (micros) => Math.round(micros * end.day / elapsed);
   const toDate = /* @__PURE__ */ new Map();
@@ -12048,8 +12070,8 @@ async function financeForecast(svc, month) {
     const id = row.dimensions.APP?.value ?? "unknown";
     toDate.set(id, (toDate.get(id) ?? 0) + (row.metrics.ESTIMATED_EARNINGS ?? 0));
   }
-  const actual = appsFromMicros(toDate, index);
-  const projected = appsFromMicros(new Map([...toDate].map(([id, m]) => [id, scale(m)])), index);
+  const actual = appsFromMicros(toDate, index, digits);
+  const projected = appsFromMicros(new Map([...toDate].map(([id, m]) => [id, scale(m)])), index, digits);
   const projectedById = new Map(projected.apps.map((a) => [a.appId, a]));
   const toDateMicros = sumMicros(toDate.values());
   const notes = [ESTIMATE_LABEL];
@@ -12059,11 +12081,12 @@ async function financeForecast(svc, month) {
     );
     if (elapsed < 7) notes.splice(1, 0, `Only ${elapsed} ${elapsed === 1 ? "day" : "days"} of data so far: a rough figure that will move a lot.`);
   } else notes.unshift(`${label2} has ended: this is the month's estimate, not a projection.`);
+  notes.push(...reportNotes(raw));
   return {
     month: label2,
     from: formatDate(start),
     to: formatDate(end),
-    currency: report.currency ?? acct.currencyCode,
+    currency,
     timeZone: report.timeZone ?? acct.reportingTimeZone,
     complete,
     estimate: true,
@@ -12073,7 +12096,7 @@ async function financeForecast(svc, month) {
     days_remaining: end.day - elapsed,
     month_to_date: actual.total,
     month_to_date_micros: toDateMicros,
-    daily_average: microsToAmount(Math.round(toDateMicros / elapsed)),
+    daily_average: microsToAmount(Math.round(toDateMicros / elapsed), digits),
     projected: projected.total,
     projected_micros: sumMicros(projected.apps.map((a) => a.earningsMicros)),
     apps: actual.apps.map((a) => {
@@ -12109,7 +12132,8 @@ var JOURNAL_COLUMNS = [
 ];
 var MONTH_NAMES_NB = ["januar", "februar", "mars", "april", "mai", "juni", "juli", "august", "september", "oktober", "november", "desember"];
 function journalRows(m, finance) {
-  const amount = (n) => n.toFixed(2).replace(".", finance.decimalSeparator);
+  const digits = currencyDigits(m.currency);
+  const amount = (n) => n.toFixed(digits).replace(".", finance.decimalSeparator);
   const [y, mo] = m.month.split("-");
   const period = `${MONTH_NAMES_NB[Number(mo) - 1]} ${y}`;
   const status = m.complete ? "Estimert" : "Estimert (ufullstendig m\xE5ned)";
@@ -12982,51 +13006,57 @@ function roleAccounts(configured) {
   };
 }
 var MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-var toCents = (amount) => Math.round(amount * 100);
 function accountFields(r) {
   return r.account ? { account: r.account, account_name: r.name } : { account_name: r.name };
 }
 function accrualVoucher(m, ctx) {
-  const apps = m.apps.filter((a) => toCents(a.earnings) > 0);
-  const total = toCents(m.total);
-  if (total <= 0 || apps.length === 0) return void 0;
+  const toMinor = (amount) => Math.round(amount * 10 ** currencyDigits(m.currency));
+  const total = toMinor(m.total);
+  const apps = m.apps.map((a) => ({ alias: a.alias, minor: toMinor(a.earnings) })).filter((a) => a.minor !== 0);
+  if (total === 0 && apps.length === 0) return void 0;
+  const lines = [];
+  if (total !== 0) {
+    lines.push({ role: "earnings_receivable", side: total > 0 ? "debit" : "credit", minor: Math.abs(total), ...accountFields(ctx.roles.earnings_receivable) });
+  }
+  for (const a of apps) {
+    lines.push({ role: "revenue", side: a.minor > 0 ? "credit" : "debit", minor: Math.abs(a.minor), ...accountFields(ctx.roles.revenue), dimension: a.alias });
+  }
   const [year, month] = m.month.split("-");
+  const name = `${MONTH_NAMES[Number(month) - 1]} ${year}`;
   return {
-    voucher_id: `admob:${ctx.publisherId}:accrual:${m.month}`,
+    voucher_id: `admob:${ctx.publisherId}:accrual:${m.complete ? m.month : `${m.from}/${m.to}`}`,
     kind: "accrual",
     date: m.bookingDate,
     period: { from: m.from, to: m.to },
     currency: m.currency,
     status: "estimate",
     source: "admob",
-    description: `AdMob earnings, ${MONTH_NAMES[Number(month) - 1]} ${year}`,
-    counterparty: ctx.counterparty,
+    description: m.complete ? `AdMob earnings, ${name}` : `AdMob earnings, ${name} (partial: ${m.from} to ${m.to})`,
+    ...ctx.counterparty ? { counterparty: ctx.counterparty } : {},
     account_ref: ctx.publisherId,
-    lines: [
-      { line: 1, role: "earnings_receivable", side: "debit", cents: total, ...accountFields(ctx.roles.earnings_receivable) },
-      ...apps.map((a, i) => ({
-        line: i + 2,
-        role: "revenue",
-        side: "credit",
-        cents: toCents(a.earnings),
-        ...accountFields(ctx.roles.revenue),
-        dimension: a.alias
-      }))
-    ]
+    lines: lines.map((l, i) => ({ line: i + 1, ...l }))
   };
 }
-var decimal = (cents2) => `${Math.floor(cents2 / 100)}.${String(cents2 % 100).padStart(2, "0")}`;
+function decimal(minor, digits) {
+  if (digits === 0) return String(minor);
+  const s = String(minor).padStart(digits + 1, "0");
+  return `${s.slice(0, -digits)}.${s.slice(-digits)}`;
+}
 function encoder(amounts) {
   if (!amounts || amounts.encoding === "decimal") return decimal;
   const { scale } = amounts;
   if (!Number.isInteger(scale) || scale < 0 || scale > 6) throw usageError(`--scale must be between 0 and 6, got ${scale}`);
-  return (cents2) => {
-    if (scale >= 2) return cents2 * 10 ** (scale - 2);
-    const divisor = 10 ** (2 - scale);
-    if (cents2 % divisor !== 0) {
-      throw usageError(`${decimal(cents2)} cannot be written exactly with --scale ${scale}; use --scale 2 or more.`);
+  return (minor, digits) => {
+    const divisor = 10 ** Math.max(0, digits - scale);
+    if (minor % divisor !== 0) {
+      throw usageError(`${decimal(minor, digits)} cannot be written exactly with --scale ${scale}; use --scale ${digits} or more.`);
     }
-    return cents2 / divisor;
+    const n = minor / divisor * 10 ** Math.max(0, scale - digits);
+    if (!Number.isSafeInteger(n)) {
+      const instead = scale > digits ? `use --scale ${digits}, or decimal amounts` : "use decimal amounts";
+      throw usageError(`${decimal(minor, digits)} is too large for --scale ${scale} (JSON integers stop at 9007199254740991); ${instead} (without --integer-amounts).`);
+    }
+    return n;
   };
 }
 function journalDocument(vouchers, opts) {
@@ -13037,12 +13067,12 @@ function journalDocument(vouchers, opts) {
     ...opts.amounts?.encoding === "integer" ? { amounts: opts.amounts } : {},
     vouchers: vouchers.map(({ lines, ...v }) => ({
       ...v,
-      lines: lines.map(({ side, cents: cents2, ...l }) => ({
+      lines: lines.map(({ side, minor, ...l }) => ({
         line: l.line,
         role: l.role,
         ...l.account !== void 0 ? { account: l.account } : {},
         ...l.account_name !== void 0 ? { account_name: l.account_name } : {},
-        [side]: amount(cents2),
+        [side]: amount(minor, currencyDigits(v.currency)),
         ...l.dimension !== void 0 ? { dimension: l.dimension } : {}
       }))
     }))
@@ -13077,6 +13107,7 @@ var csvField = (s) => /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 function journalCsv(vouchers) {
   const rows = [JOURNAL_CSV_COLUMNS.join(",")];
   for (const v of vouchers) {
+    const digits = currencyDigits(v.currency);
     for (const l of v.lines) {
       const row = {
         format: JOURNAL_FORMAT,
@@ -13095,8 +13126,8 @@ function journalCsv(vouchers) {
         role: l.role,
         account: l.account ?? "",
         account_name: l.account_name ?? "",
-        debit: l.side === "debit" ? decimal(l.cents) : "",
-        credit: l.side === "credit" ? decimal(l.cents) : "",
+        debit: l.side === "debit" ? decimal(l.minor, digits) : "",
+        credit: l.side === "credit" ? decimal(l.minor, digits) : "",
         vat_code: "",
         line_description: "",
         dimension: l.dimension ?? "",
@@ -13110,6 +13141,24 @@ function journalCsv(vouchers) {
 `;
 }
 var EXPORT_FORMATS = ["revenue-journal-json", "revenue-journal-csv"];
+async function exportThrough(svc, q) {
+  const last = parseMonth(q.month ?? q.to);
+  const { reportingTimeZone } = await svc.account();
+  const today = todayIn(reportingTimeZone, svc.now());
+  if (isMonthComplete(last, today)) return void 0;
+  const label2 = formatMonth(last);
+  const yesterday = addDays(today, -1);
+  const latest = formatMonth(addDays({ ...today, day: 1 }, -1));
+  if (!q.allowIncomplete) {
+    throw usageError(
+      `${label2} has not ended yet (today is ${formatDate(today)} in ${reportingTimeZone}), so its voucher would carry the month's ID and month-end date with only part of its earnings. Export up to ${latest} (the latest complete month), or add --allow-incomplete for a partial voucher through ${formatDate(yesterday)} with an ID of its own.`
+    );
+  }
+  if (compareDates({ ...last, day: 1 }, yesterday) > 0) {
+    throw usageError(`${label2} has no complete day yet (today's data is still arriving), so there is nothing to export. Export up to ${latest}.`);
+  }
+  return yesterday;
+}
 async function exportJournal(svc, q) {
   if (!EXPORT_FORMATS.includes(q.as)) {
     throw usageError(`Unknown export format "${q.as}". Formats: ${EXPORT_FORMATS.join(", ")}`);
@@ -13121,23 +13170,32 @@ async function exportJournal(svc, q) {
   if (q.month && (q.from || q.to)) throw usageError("Give either --month or --from/--to, not both.");
   if (!q.month && !q.from && !q.to) throw usageError("Give a period: --month YYYY-MM or --from YYYY-MM --to YYYY-MM.");
   if (!q.month && !(q.from && q.to)) throw usageError("A range needs both --from and --to (YYYY-MM).");
-  const { months, notes } = q.month ? await financeMonth(svc, q.month).then((m) => ({ months: [m], notes: m.notes })) : await financeRange(svc, q.from, q.to).then((r) => ({ months: r.months, notes: r.notes }));
+  const through = await exportThrough(svc, q);
+  const { months, notes, currency } = q.month ? await financeMonth(svc, q.month, { through }).then((m) => ({ months: [m], notes: m.notes, currency: m.currency })) : await financeRange(svc, q.from, q.to, { through }).then((r) => ({ months: r.months, notes: r.notes, currency: r.currency }));
   const acct = await svc.account();
   const ctx = {
     publisherId: acct.publisherId,
-    counterparty: svc.profile.finance.counterparty,
+    // Only a configured one: which Google entity pays depends on the publisher's country.
+    counterparty: svc.profile.financeConfigured.counterparty,
     roles: roleAccounts(svc.profile.financeConfigured)
   };
   const vouchers = [];
   for (const m of months) {
     const v = accrualVoucher(m, ctx);
-    if (v) vouchers.push(v);
-    else notes.push(`${m.month}: no earnings, so no voucher.`);
+    if (!v) notes.push(`${m.month}: no earnings, so no voucher.`);
+    else {
+      vouchers.push(v);
+      if (!m.complete) {
+        notes.push(
+          `${v.voucher_id} is a partial voucher (${m.from} to ${m.to}), not the month's accrual. Once ${m.month} has ended, reverse it and book admob:${acct.publisherId}:accrual:${m.month} instead.`
+        );
+      }
+    }
   }
   const content = q.as === "revenue-journal-csv" ? journalCsv(vouchers) : `${JSON.stringify(
     journalDocument(vouchers, {
       producer: { name: "admobctl", version: VERSION },
-      amounts: q.integerAmounts ? { encoding: "integer", scale: q.scale ?? 2 } : void 0
+      amounts: q.integerAmounts ? { encoding: "integer", scale: q.scale ?? currencyDigits(currency) } : void 0
     }),
     null,
     2
@@ -15244,6 +15302,7 @@ function keyValueView(data) {
 }
 function financeMonthView(m) {
   const cur = m.currency;
+  const digits = currencyDigits(cur);
   return {
     data: m,
     table: {
@@ -15253,8 +15312,8 @@ function financeMonthView(m) {
         { key: "platform", label: "Platform" },
         { key: "earnings", label: `Earnings (${cur})`, align: "right" }
       ],
-      rows: m.apps.map((a) => ({ ...a, earnings: a.earnings.toFixed(2) })),
-      footer: [{ alias: "Total", earnings: m.total.toFixed(2) }]
+      rows: m.apps.map((a) => ({ ...a, earnings: a.earnings.toFixed(digits) })),
+      footer: [{ alias: "Total", earnings: m.total.toFixed(digits) }]
     },
     notes: [`${m.month} (${m.from} \u2192 ${m.to}, ${m.timeZone}), booking date ${m.bookingDate}.`, ...m.notes]
   };
@@ -15274,6 +15333,7 @@ function financeBalanceView(b) {
 }
 function financeForecastView(f) {
   const cur = f.currency;
+  const digits = currencyDigits(cur);
   return {
     data: f,
     table: {
@@ -15283,16 +15343,17 @@ function financeForecastView(f) {
         { key: "month_to_date", label: `Month to date (${cur})`, align: "right" },
         { key: "projected", label: `${f.projection ? "Projected" : "Month"} (${cur})`, align: "right" }
       ],
-      rows: f.apps.map((a) => ({ ...a, month_to_date: a.month_to_date.toFixed(2), projected: a.projected.toFixed(2) })),
-      footer: [{ alias: "Total", month_to_date: f.month_to_date.toFixed(2), projected: f.projected.toFixed(2) }]
+      rows: f.apps.map((a) => ({ ...a, month_to_date: a.month_to_date.toFixed(digits), projected: a.projected.toFixed(digits) })),
+      footer: [{ alias: "Total", month_to_date: f.month_to_date.toFixed(digits), projected: f.projected.toFixed(digits) }]
     },
     notes: [
-      `${f.month}: ${f.days_elapsed} of ${f.days_in_month} days, ${f.daily_average.toFixed(2)} ${cur} per day (${f.timeZone}).`,
+      `${f.month}: ${f.days_elapsed} of ${f.days_in_month} days, ${f.daily_average.toFixed(digits)} ${cur} per day (${f.timeZone}).`,
       ...f.notes
     ]
   };
 }
 function financeRangeView(r) {
+  const digits = currencyDigits(r.currency);
   return {
     data: r,
     table: {
@@ -15301,8 +15362,8 @@ function financeRangeView(r) {
         { key: "total", label: `Earnings (${r.currency})`, align: "right" },
         { key: "complete", label: "Complete" }
       ],
-      rows: r.months.map((m) => ({ month: m.month, total: m.total.toFixed(2), complete: m.complete ? "yes" : "no" })),
-      footer: [{ month: "Total", total: r.total.toFixed(2) }]
+      rows: r.months.map((m) => ({ month: m.month, total: m.total.toFixed(digits), complete: m.complete ? "yes" : "no" })),
+      footer: [{ month: "Total", total: r.total.toFixed(digits) }]
     },
     notes: r.notes
   };
@@ -16006,7 +16067,7 @@ function buildProgram(io) {
     const view = financeBalanceView(await financeBalance(svc(cmd)));
     emitFinance(cmd, o.as, view, () => view);
   });
-  finance.command("export").description("Export accrual vouchers in the Revenue Journal format (spec/SPEC.md), for accounting imports").option("--month <YYYY-MM>", "one month").option("--from <YYYY-MM>", "first month of a range").option("--to <YYYY-MM>", "last month of a range").option("--as <format>", `export format: ${EXPORT_FORMATS.join(", ")}`, "revenue-journal-json").option("--integer-amounts", "write amounts as JSON integers instead of decimal strings (JSON only)").option("--scale <digits>", "decimal places the integers carry, 0-6 (default 2; 6 = micros)", (v) => Number(v)).option("--out <file>", "write to this file (readable only by you) instead of stdout").action(
+  finance.command("export").description("Export accrual vouchers in the Revenue Journal format (spec/SPEC.md), for accounting imports").option("--month <YYYY-MM>", "one month").option("--from <YYYY-MM>", "first month of a range").option("--to <YYYY-MM>", "last month of a range").option("--as <format>", `export format: ${EXPORT_FORMATS.join(", ")}`, "revenue-journal-json").option("--integer-amounts", "write amounts as JSON integers instead of decimal strings (JSON only)").option("--scale <digits>", "decimal places the integers carry, 0-6 (default: the currency's, e.g. 2; 6 = micros)", (v) => Number(v)).option("--allow-incomplete", "export a month that has not ended as a partial voucher through yesterday (its own ID)").option("--out <file>", "write to this file (readable only by you) instead of stdout").action(
     async (o, cmd) => {
       const { content, notes } = await exportJournal(svc(cmd), o);
       if (o.out) {
@@ -45730,14 +45791,15 @@ function createMcpServer(deps) {
     "admobctl_finance_export",
     {
       title: "Export AdMob accruals as Revenue Journal",
-      description: "Accrual vouchers for one month or a range of months in the Revenue Journal format (an open format for platform revenue bookkeeping): one balanced voucher per month, debit the receivable, credit revenue per app. Returns `content`, the complete file as text (JSON document or CSV), to save or pass to an accounting import verbatim. Give either `month` or both `from` and `to`. Figures are estimates, not finalized payments.",
+      description: "Accrual vouchers for one month or a range of months in the Revenue Journal format (an open format for platform revenue bookkeeping): one balanced voucher per month, debit the receivable, credit revenue per app. Returns `content`, the complete file as text (JSON document or CSV), to save or pass to an accounting import verbatim. Give either `month` or both `from` and `to`. A month that has not ended is refused unless allow_incomplete is set. Figures are estimates, not finalized payments.",
       inputSchema: {
         month: external_exports.string().optional().describe("One month, YYYY-MM"),
         from: external_exports.string().optional().describe("First month of a range, YYYY-MM (with `to`, instead of `month`)"),
         to: external_exports.string().optional().describe("Last month of a range, YYYY-MM"),
         as: external_exports.enum(["json", "csv"]).optional().describe("File format: json (default) or csv"),
         integer_amounts: external_exports.boolean().optional().describe("JSON only: write amounts as integers instead of decimal strings"),
-        scale: external_exports.number().int().min(0).max(6).optional().describe("Decimal places the integers carry (default 2; 6 = micros). Needs integer_amounts."),
+        scale: external_exports.number().int().min(0).max(6).optional().describe("Decimal places the integers carry (default: the currency's minor unit, e.g. 2; 6 = micros). Needs integer_amounts."),
+        allow_incomplete: external_exports.boolean().optional().describe("Export a month that has not ended as a partial voucher through yesterday, with its own voucher_id. Only when the user asks for a partial month."),
         ...accountArg
       },
       outputSchema: loose({ as: external_exports.string(), content: external_exports.string(), notes: external_exports.array(external_exports.string()) }),
@@ -45745,7 +45807,15 @@ function createMcpServer(deps) {
     },
     wrap(async (a) => {
       const as = `revenue-journal-${a.as ?? "json"}`;
-      const r = await exportJournal(svc(a), { as, month: a.month, from: a.from, to: a.to, integerAmounts: a.integer_amounts, scale: a.scale });
+      const r = await exportJournal(svc(a), {
+        as,
+        month: a.month,
+        from: a.from,
+        to: a.to,
+        integerAmounts: a.integer_amounts,
+        scale: a.scale,
+        allowIncomplete: a.allow_incomplete
+      });
       return { as, ...r };
     })
   );

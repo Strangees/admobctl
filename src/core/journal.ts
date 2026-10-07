@@ -1,12 +1,15 @@
 import { VERSION } from "../version.js";
 import type { FinanceConfig } from "./config.js";
+import { addDays, compareDates, formatDate, formatMonth, isMonthComplete, parseMonth, todayIn, type ApiDate } from "./dates.js";
 import { usageError } from "./errors.js";
 import { financeMonth, financeRange, type FinanceMonth } from "./finance.js";
+import { currencyDigits } from "./money.js";
 import type { AdmobService } from "./service.js";
 
 /**
  * Revenue Journal (spec/SPEC.md): vouchers of balanced debit and credit lines, the shared format
- * every accounting export is built from. Amounts are integer cents here; encoding happens on output.
+ * every accounting export is built from. Amounts are integers in the currency's minor unit here (cents for NOK,
+ * yen for JPY); encoding happens on output.
  */
 export const JOURNAL_FORMAT = "revenue-journal/1";
 
@@ -16,7 +19,8 @@ export interface VoucherLine {
   line: number;
   role: string;
   side: "debit" | "credit";
-  cents: number;
+  /** Positive, in the minor unit of the voucher's currency. */
+  minor: number;
   account?: string;
   account_name?: string;
   dimension?: string;
@@ -57,59 +61,71 @@ export function roleAccounts(configured: FinanceConfig | undefined): RoleAccount
 }
 
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-const toCents = (amount: number) => Math.round(amount * 100);
 
 function accountFields(r: RoleAccount): Pick<VoucherLine, "account" | "account_name"> {
   return r.account ? { account: r.account, account_name: r.name } : { account_name: r.name };
 }
 
-/** One month's accrual: debit the receivable for the total, credit revenue per app. Undefined when nothing was earned. */
+/**
+ * One month's accrual: debit the receivable for the total, credit revenue per app. An app that lost money is a
+ * revenue debit, and a month that lost money credits the receivable, so the voucher always balances. A month that
+ * has not ended gets an ID of its own (its period), never the month's. Undefined when everything rounds to zero.
+ */
 export function accrualVoucher(
   m: FinanceMonth,
-  ctx: { publisherId: string; counterparty: string; roles: RoleAccounts },
+  ctx: { publisherId: string; counterparty?: string; roles: RoleAccounts },
 ): Voucher | undefined {
-  const apps = m.apps.filter((a) => toCents(a.earnings) > 0);
-  const total = toCents(m.total);
-  if (total <= 0 || apps.length === 0) return undefined;
+  const toMinor = (amount: number) => Math.round(amount * 10 ** currencyDigits(m.currency));
+  const total = toMinor(m.total);
+  const apps = m.apps.map((a) => ({ alias: a.alias, minor: toMinor(a.earnings) })).filter((a) => a.minor !== 0);
+  if (total === 0 && apps.length === 0) return undefined;
+  const lines: Array<Omit<VoucherLine, "line">> = [];
+  if (total !== 0) {
+    lines.push({ role: "earnings_receivable", side: total > 0 ? "debit" : "credit", minor: Math.abs(total), ...accountFields(ctx.roles.earnings_receivable) });
+  }
+  for (const a of apps) {
+    lines.push({ role: "revenue", side: a.minor > 0 ? "credit" : "debit", minor: Math.abs(a.minor), ...accountFields(ctx.roles.revenue), dimension: a.alias });
+  }
   const [year, month] = m.month.split("-");
+  const name = `${MONTH_NAMES[Number(month) - 1]} ${year}`;
   return {
-    voucher_id: `admob:${ctx.publisherId}:accrual:${m.month}`,
+    voucher_id: `admob:${ctx.publisherId}:accrual:${m.complete ? m.month : `${m.from}/${m.to}`}`,
     kind: "accrual",
     date: m.bookingDate,
     period: { from: m.from, to: m.to },
     currency: m.currency,
     status: "estimate",
     source: "admob",
-    description: `AdMob earnings, ${MONTH_NAMES[Number(month) - 1]} ${year}`,
-    counterparty: ctx.counterparty,
+    description: m.complete ? `AdMob earnings, ${name}` : `AdMob earnings, ${name} (partial: ${m.from} to ${m.to})`,
+    ...(ctx.counterparty ? { counterparty: ctx.counterparty } : {}),
     account_ref: ctx.publisherId,
-    lines: [
-      { line: 1, role: "earnings_receivable", side: "debit", cents: total, ...accountFields(ctx.roles.earnings_receivable) },
-      ...apps.map((a, i): VoucherLine => ({
-        line: i + 2,
-        role: "revenue",
-        side: "credit",
-        cents: toCents(a.earnings),
-        ...accountFields(ctx.roles.revenue),
-        dimension: a.alias,
-      })),
-    ],
+    lines: lines.map((l, i) => ({ line: i + 1, ...l })),
   };
 }
 
-const decimal = (cents: number) => `${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, "0")}`;
+/** `minor` units of a currency with `digits` decimals as a decimal string: 10245 → "102.45", or "10245" for JPY. */
+function decimal(minor: number, digits: number): string {
+  if (digits === 0) return String(minor);
+  const s = String(minor).padStart(digits + 1, "0");
+  return `${s.slice(0, -digits)}.${s.slice(-digits)}`;
+}
 
-function encoder(amounts: AmountEncoding | undefined): (cents: number) => string | number {
+function encoder(amounts: AmountEncoding | undefined): (minor: number, digits: number) => string | number {
   if (!amounts || amounts.encoding === "decimal") return decimal;
   const { scale } = amounts;
   if (!Number.isInteger(scale) || scale < 0 || scale > 6) throw usageError(`--scale must be between 0 and 6, got ${scale}`);
-  return (cents) => {
-    if (scale >= 2) return cents * 10 ** (scale - 2);
-    const divisor = 10 ** (2 - scale);
-    if (cents % divisor !== 0) {
-      throw usageError(`${decimal(cents)} cannot be written exactly with --scale ${scale}; use --scale 2 or more.`);
+  return (minor, digits) => {
+    const divisor = 10 ** Math.max(0, digits - scale);
+    if (minor % divisor !== 0) {
+      throw usageError(`${decimal(minor, digits)} cannot be written exactly with --scale ${scale}; use --scale ${digits} or more.`);
     }
-    return cents / divisor;
+    const n = (minor / divisor) * 10 ** Math.max(0, scale - digits);
+    if (!Number.isSafeInteger(n)) {
+      // RJ-AMOUNT: larger integers are not read exactly by every JSON parser.
+      const instead = scale > digits ? `use --scale ${digits}, or decimal amounts` : "use decimal amounts";
+      throw usageError(`${decimal(minor, digits)} is too large for --scale ${scale} (JSON integers stop at 9007199254740991); ${instead} (without --integer-amounts).`);
+    }
+    return n;
   };
 }
 
@@ -125,12 +141,12 @@ export function journalDocument(
     ...(opts.amounts?.encoding === "integer" ? { amounts: opts.amounts } : {}),
     vouchers: vouchers.map(({ lines, ...v }) => ({
       ...v,
-      lines: lines.map(({ side, cents, ...l }) => ({
+      lines: lines.map(({ side, minor, ...l }) => ({
         line: l.line,
         role: l.role,
         ...(l.account !== undefined ? { account: l.account } : {}),
         ...(l.account_name !== undefined ? { account_name: l.account_name } : {}),
-        [side]: amount(cents),
+        [side]: amount(minor, currencyDigits(v.currency)),
         ...(l.dimension !== undefined ? { dimension: l.dimension } : {}),
       })),
     })),
@@ -149,6 +165,7 @@ const csvField = (s: string) => (/[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}
 export function journalCsv(vouchers: Voucher[]): string {
   const rows = [JOURNAL_CSV_COLUMNS.join(",")];
   for (const v of vouchers) {
+    const digits = currencyDigits(v.currency);
     for (const l of v.lines) {
       const row: Record<(typeof JOURNAL_CSV_COLUMNS)[number], string> = {
         format: JOURNAL_FORMAT,
@@ -167,8 +184,8 @@ export function journalCsv(vouchers: Voucher[]): string {
         role: l.role,
         account: l.account ?? "",
         account_name: l.account_name ?? "",
-        debit: l.side === "debit" ? decimal(l.cents) : "",
-        credit: l.side === "credit" ? decimal(l.cents) : "",
+        debit: l.side === "debit" ? decimal(l.minor, digits) : "",
+        credit: l.side === "credit" ? decimal(l.minor, digits) : "",
         vat_code: "",
         line_description: "",
         dimension: l.dimension ?? "",
@@ -229,7 +246,34 @@ export interface ExportQuery {
   from?: string;
   to?: string;
   integerAmounts?: boolean;
+  /** Default: the decimals of the currency's minor unit. */
   scale?: number;
+  /** Export a month that has not ended as a partial voucher through yesterday, instead of refusing it. */
+  allowIncomplete?: boolean;
+}
+
+/**
+ * The last day to export: undefined when the period has ended. A month that has not ended is refused unless
+ * `allowIncomplete`: its voucher would carry the month's ID and month-end date with part of its earnings, and a
+ * consumer that skips IDs it has booked would then skip the real one.
+ */
+async function exportThrough(svc: AdmobService, q: ExportQuery): Promise<ApiDate | undefined> {
+  const last = parseMonth(q.month ?? q.to!);
+  const { reportingTimeZone } = await svc.account();
+  const today = todayIn(reportingTimeZone, svc.now());
+  if (isMonthComplete(last, today)) return undefined;
+  const label = formatMonth(last);
+  const yesterday = addDays(today, -1);
+  const latest = formatMonth(addDays({ ...today, day: 1 }, -1));
+  if (!q.allowIncomplete) {
+    throw usageError(
+      `${label} has not ended yet (today is ${formatDate(today)} in ${reportingTimeZone}), so its voucher would carry the month's ID and month-end date with only part of its earnings. Export up to ${latest} (the latest complete month), or add --allow-incomplete for a partial voucher through ${formatDate(yesterday)} with an ID of its own.`,
+    );
+  }
+  if (compareDates({ ...last, day: 1 }, yesterday) > 0) {
+    throw usageError(`${label} has no complete day yet (today's data is still arriving), so there is nothing to export. Export up to ${latest}.`);
+  }
+  return yesterday;
 }
 
 /** `finance export`: the accrual vouchers for a month or a range, in one of the export formats. */
@@ -245,20 +289,29 @@ export async function exportJournal(svc: AdmobService, q: ExportQuery): Promise<
   if (!q.month && !q.from && !q.to) throw usageError("Give a period: --month YYYY-MM or --from YYYY-MM --to YYYY-MM.");
   if (!q.month && !(q.from && q.to)) throw usageError("A range needs both --from and --to (YYYY-MM).");
 
-  const { months, notes } = q.month
-    ? await financeMonth(svc, q.month).then((m) => ({ months: [m], notes: m.notes }))
-    : await financeRange(svc, q.from!, q.to!).then((r) => ({ months: r.months, notes: r.notes }));
+  const through = await exportThrough(svc, q);
+  const { months, notes, currency } = q.month
+    ? await financeMonth(svc, q.month, { through }).then((m) => ({ months: [m], notes: m.notes, currency: m.currency }))
+    : await financeRange(svc, q.from!, q.to!, { through }).then((r) => ({ months: r.months, notes: r.notes, currency: r.currency }));
   const acct = await svc.account();
   const ctx = {
     publisherId: acct.publisherId,
-    counterparty: svc.profile.finance.counterparty,
+    // Only a configured one: which Google entity pays depends on the publisher's country.
+    counterparty: svc.profile.financeConfigured.counterparty,
     roles: roleAccounts(svc.profile.financeConfigured),
   };
   const vouchers: Voucher[] = [];
   for (const m of months) {
     const v = accrualVoucher(m, ctx);
-    if (v) vouchers.push(v);
-    else notes.push(`${m.month}: no earnings, so no voucher.`);
+    if (!v) notes.push(`${m.month}: no earnings, so no voucher.`);
+    else {
+      vouchers.push(v);
+      if (!m.complete) {
+        notes.push(
+          `${v.voucher_id} is a partial voucher (${m.from} to ${m.to}), not the month's accrual. Once ${m.month} has ended, reverse it and book admob:${acct.publisherId}:accrual:${m.month} instead.`,
+        );
+      }
+    }
   }
   const content =
     q.as === "revenue-journal-csv"
@@ -266,7 +319,7 @@ export async function exportJournal(svc: AdmobService, q: ExportQuery): Promise<
       : `${JSON.stringify(
           journalDocument(vouchers, {
             producer: { name: "admobctl", version: VERSION },
-            amounts: q.integerAmounts ? { encoding: "integer", scale: q.scale ?? 2 } : undefined,
+            amounts: q.integerAmounts ? { encoding: "integer", scale: q.scale ?? currencyDigits(currency) } : undefined,
           }),
           null,
           2,

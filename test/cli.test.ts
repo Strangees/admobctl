@@ -6,7 +6,7 @@ import { run } from "../src/cli/program.js";
 import { reportView } from "../src/cli/views.js";
 import type { ReportResult } from "../src/core/service.js";
 import type { TokenProvider } from "../src/core/auth/types.js";
-import { fakeFetch, fixture, jsonResponse, noSleep } from "./helpers.js";
+import { fakeFetch, fixture, jsonResponse, noSleep, synthReport } from "./helpers.js";
 
 const token: TokenProvider = { mode: "adc", getToken: async () => "t", quotaProject: () => "qp" };
 
@@ -176,6 +176,14 @@ describe("cli", () => {
     expect(JSON.parse(json.stdout).total).toBe(102.45);
   });
 
+  it("prints finance amounts in the currency's minor unit", async () => {
+    const report = synthReport([[{ APP: ["ca-app-pub-0000000000000001~1111111111"] }, { ESTIMATED_EARNINGS: 1_234_570_000 }]], "JPY");
+    const r = await cli(["finance", "month", "2026-09"], { isTTY: true, routes: { "POST /networkReport:generate": () => jsonResponse(report) } });
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/example-quiz-ios\s+Example Quiz\s+IOS\s+1235\n/);
+    expect(r.stdout).toMatch(/Total\s+1235\n/);
+  });
+
   it("prints the unpaid balance from AdSense payments", async () => {
     const routes = { "GET /v2/accounts/": () => jsonResponse(fixture("adsense-payments.json")) };
     const json = await cli(["finance", "balance", "--as", "json"], { routes });
@@ -223,7 +231,21 @@ describe("cli", () => {
       expect(doc.amounts).toBeUndefined();
       expect(doc.vouchers.map((v) => v.voucher_id)).toEqual(["admob:pub-0000000000000001:accrual:2026-09"]);
       expect(doc.vouchers[0]!.lines[0]).toMatchObject({ role: "earnings_receivable", debit: "102.45" });
+      // The paying Google entity depends on the publisher's country: only a configured one is written.
+      expect(doc.vouchers[0]).not.toHaveProperty("counterparty");
       expect(r.stderr).toMatch(/reconcile against AdMob Payments/);
+    });
+
+    it("refuses a month that has not ended unless --allow-incomplete, which writes a partial voucher", async () => {
+      const refused = await cli(["finance", "export", "--month", "2026-10"]);
+      expect(refused.code).toBe(2);
+      expect(refused.stdout).toBe("");
+      expect(refused.stderr).toMatch(/2026-10 has not ended.*--allow-incomplete/);
+      const partial = await cli(["finance", "export", "--month", "2026-10", "--allow-incomplete"]);
+      expect(partial.code, partial.stderr).toBe(0);
+      const doc = JSON.parse(partial.stdout) as Doc;
+      expect(doc.vouchers.map((v) => v.voucher_id)).toEqual(["admob:pub-0000000000000001:accrual:2026-10-01/2026-10-01"]);
+      expect(partial.stderr).toMatch(/partial/i);
     });
 
     it("writes integer amounts with --integer-amounts, at scale 2 unless --scale says otherwise", async () => {

@@ -13,7 +13,7 @@ import type { GeoResult } from "../core/geo.js";
 import type { InsightsResult } from "../core/insights.js";
 import type { LintResult } from "../core/lint.js";
 import type { PublisherAccount } from "../core/client.js";
-import { formatMicros } from "../core/money.js";
+import { currencyDigits, formatMicros } from "../core/money.js";
 import { shownRows, type ViewRow } from "../core/report-view.js";
 import type { AdapterView, AdUnitMappingView, AdUnitView, MediationGroupView, ReportResult } from "../core/service.js";
 import { API_BASE_BETA, type AdSource } from "../core/client.js";
@@ -231,6 +231,7 @@ export function keyValueView(data: Record<string, unknown>): Output {
 
 export function financeMonthView(m: FinanceMonth): Output {
   const cur = m.currency;
+  const digits = currencyDigits(cur);
   return {
     data: m,
     table: {
@@ -240,8 +241,8 @@ export function financeMonthView(m: FinanceMonth): Output {
         { key: "platform", label: "Platform" },
         { key: "earnings", label: `Earnings (${cur})`, align: "right" },
       ],
-      rows: m.apps.map((a) => ({ ...a, earnings: a.earnings.toFixed(2) })),
-      footer: [{ alias: "Total", earnings: m.total.toFixed(2) }],
+      rows: m.apps.map((a) => ({ ...a, earnings: a.earnings.toFixed(digits) })),
+      footer: [{ alias: "Total", earnings: m.total.toFixed(digits) }],
     },
     notes: [`${m.month} (${m.from} → ${m.to}, ${m.timeZone}), booking date ${m.bookingDate}.`, ...m.notes],
   };
@@ -263,6 +264,7 @@ export function financeBalanceView(b: FinanceBalance): Output {
 
 export function financeForecastView(f: FinanceForecast): Output {
   const cur = f.currency;
+  const digits = currencyDigits(cur);
   return {
     data: f,
     table: {
@@ -272,17 +274,18 @@ export function financeForecastView(f: FinanceForecast): Output {
         { key: "month_to_date", label: `Month to date (${cur})`, align: "right" },
         { key: "projected", label: `${f.projection ? "Projected" : "Month"} (${cur})`, align: "right" },
       ],
-      rows: f.apps.map((a) => ({ ...a, month_to_date: a.month_to_date.toFixed(2), projected: a.projected.toFixed(2) })),
-      footer: [{ alias: "Total", month_to_date: f.month_to_date.toFixed(2), projected: f.projected.toFixed(2) }],
+      rows: f.apps.map((a) => ({ ...a, month_to_date: a.month_to_date.toFixed(digits), projected: a.projected.toFixed(digits) })),
+      footer: [{ alias: "Total", month_to_date: f.month_to_date.toFixed(digits), projected: f.projected.toFixed(digits) }],
     },
     notes: [
-      `${f.month}: ${f.days_elapsed} of ${f.days_in_month} days, ${f.daily_average.toFixed(2)} ${cur} per day (${f.timeZone}).`,
+      `${f.month}: ${f.days_elapsed} of ${f.days_in_month} days, ${f.daily_average.toFixed(digits)} ${cur} per day (${f.timeZone}).`,
       ...f.notes,
     ],
   };
 }
 
 export function financeRangeView(r: FinanceRange): Output {
+  const digits = currencyDigits(r.currency);
   return {
     data: r,
     table: {
@@ -291,8 +294,8 @@ export function financeRangeView(r: FinanceRange): Output {
         { key: "total", label: `Earnings (${r.currency})`, align: "right" },
         { key: "complete", label: "Complete" },
       ],
-      rows: r.months.map((m) => ({ month: m.month, total: m.total.toFixed(2), complete: m.complete ? "yes" : "no" })),
-      footer: [{ month: "Total", total: r.total.toFixed(2) }],
+      rows: r.months.map((m) => ({ month: m.month, total: m.total.toFixed(digits), complete: m.complete ? "yes" : "no" })),
+      footer: [{ month: "Total", total: r.total.toFixed(digits) }],
     },
     notes: r.notes,
   };
