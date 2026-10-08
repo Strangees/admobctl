@@ -72,6 +72,23 @@ To enable APIs in a specific project without changing your profile, use
 `admobctl setup apis --project <client-project-id> --features payments --yes`. Google errors that name an API
 consumer project include that project in the fix command, so the fix targets the failing consumer.
 
+### Cron and CI
+
+The AdMob API only accepts OAuth user credentials, so there is no service-account option for unattended runs. Sign in
+once at a terminal, then give the machine that runs admobctl the stored refresh token:
+
+- **gcloud ADC:** store the `application_default_credentials.json` that `admobctl setup login` wrote (in
+  `~/.config/gcloud/`) as a CI secret, write it to a file on the runner and point `GOOGLE_APPLICATION_CREDENTIALS` at
+  it. The runner needs gcloud.
+- **Your own OAuth client:** on Linux, `admobctl auth login` keeps the refresh token in `~/.admobctl/credentials-<profile>.json`
+  (on macOS it is in the Keychain, so sign in on Linux). Restore that directory on the runner and set `ADMOBCTL_HOME`
+  to it.
+
+Either way, restore `~/.admobctl/config.json` too if you set an account, aliases or finance settings, and treat the
+credential file like a password. If your OAuth consent screen is still in *Testing*, Google expires its refresh tokens
+after 7 days; set it to *In production* for a long-lived token. `admobctl setup status` exits 1 when sign-in stops
+working, so it makes a good first step in the job.
+
 ### Optional: unpaid balance (`finance balance`)
 
 `finance balance` reads your current unpaid balance from the AdSense Management API, which serves the Google payments
