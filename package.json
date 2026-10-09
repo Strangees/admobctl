@@ -40,8 +40,8 @@
     "url": "git+https://github.com/Strangees/admobctl.git"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "^1.31.0",
-    "@types/node": "^26.6.3",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@types/node": "^26.6.4",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "commander": "^15.0.0",
