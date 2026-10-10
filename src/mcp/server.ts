@@ -4,9 +4,11 @@ import { z } from "zod";
 import { analyzeConsent, analyzeVersions, analyzeWaterfall, VERSION_KINDS } from "../core/analyze.js";
 import { checkAppAds } from "../core/app-ads.js";
 import { check } from "../core/check.js";
+import { configStamp } from "../core/config.js";
 import { AdmobctlError } from "../core/errors.js";
 import { financeForecast, financeMonth, financeRange, JOURNAL_COLUMNS, journalRows } from "../core/finance.js";
 import { financeBalance } from "../core/payments.js";
+import { profileCommand } from "../core/setup/commands.js";
 import { setupStatus } from "../core/setup/status.js";
 import { exportJournal } from "../core/journal.js";
 import { analyzeGeo } from "../core/geo.js";
@@ -29,6 +31,10 @@ export const SERVICE_TTL_MS = 5 * 60_000;
 
 export interface McpDeps {
   service: (opts: ServiceOptions) => AdmobService;
+  /** --profile the server runs with, if any. With defaultProfile, pins the Fix commands in errors to it, as the CLI does. */
+  profile?: string;
+  /** defaultProfile in config.json now: services follow edits to it, so the Fix lines must too. */
+  defaultProfile?: () => string | undefined;
   /** Reuse window per account. Default SERVICE_TTL_MS. */
   serviceTtlMs?: number;
   /** Clock in ms, for tests. Default Date.now. */
@@ -51,6 +57,7 @@ const INSTRUCTIONS = `Read-only access to the user's Google AdMob account via ad
 - These tools never change anything. Changes (creating apps, ad units or mappings; editing mediation groups; A/B
   experiments) exist only as admobctl CLI commands, which print a plan and send nothing unless the user adds --yes.
 - Errors include a "Fix:" line with the exact command the user should run.
+- A result with truncated: true is partial; its notice says how much is shown and how to narrow the call.
 - For any sign-in, scope, quota project or API error, call admobctl_setup_status and run its next_command (an admobctl
   command) in the terminal exactly as given. Never improvise gcloud commands. Commands with --yes change the user's setup:
   show them first. The browser sign-in (admobctl setup login --yes) must run in the user's own terminal.
@@ -85,10 +92,10 @@ function ok(data: Record<string, unknown>): ToolResult {
   return { content: [{ type: "text", text: textOf(data) }], structuredContent: data };
 }
 
-function fail(err: unknown): ToolResult {
+function fail(err: unknown, pinProfile: (command: string) => string): ToolResult {
   const text =
     err instanceof AdmobctlError
-      ? `${err.message}${err.fix ? `\nFix: ${err.fix}` : ""}`
+      ? `${err.message}${err.fix ? `\nFix: ${pinProfile(err.fix)}` : ""}`
       : `Unexpected error: ${(err as Error)?.message ?? String(err)}`;
   if (!(err instanceof AdmobctlError)) log.warn((err as Error)?.stack ?? String(err));
   return { content: [{ type: "text", text }], isError: true };
@@ -97,30 +104,38 @@ function fail(err: unknown): ToolResult {
 /** Per-country totals the geo tool returns; the rows still cover every country. */
 const GEO_MAX_COUNTRIES = 25;
 
-/** Drop trailing rows until the JSON fits the context budget. */
-export function fitRows<T extends { rows: unknown[] }>(result: T & { truncated?: boolean; notice?: string }): T {
+const NARROW_QUERY = "Narrow the query (fewer dimensions, a filter, or a shorter range) to see the rest.";
+
+/**
+ * Drop trailing items of the list at `key` until the JSON fits the context budget. Sets `truncated` and adds to
+ * `notice` how many are shown and `hint`, the way to see the rest.
+ */
+export function fitRows<T extends { [k in K]: unknown[] } & { notice?: string }, K extends string = "rows">(
+  result: T,
+  key = "rows" as K,
+  hint = NARROW_QUERY,
+): T {
   if (textOf(result).length <= MAX_TEXT_CHARS) return result;
-  const all = result.rows;
+  const all = result[key];
+  const notice = (n: number) =>
+    [result.notice, `Showing ${n} of ${all.length} returned ${key} to stay within the context limit.`, hint].filter(Boolean).join(" ");
+  const fitted = (n: number): T => ({ ...result, [key]: all.slice(0, n), truncated: true, notice: notice(n) });
   let lo = 0;
   let hi = all.length;
   while (lo < hi) {
     const mid = Math.ceil((lo + hi) / 2);
-    const candidate = { ...result, rows: all.slice(0, mid), truncated: true, notice: "x".repeat(200) };
-    if (textOf(candidate).length <= MAX_TEXT_CHARS) lo = mid;
+    if (textOf(fitted(mid)).length <= MAX_TEXT_CHARS) lo = mid;
     else hi = mid - 1;
   }
-  return {
-    ...result,
-    rows: all.slice(0, lo),
-    truncated: true,
-    notice: `Showing ${lo} of ${all.length} returned rows to stay within the context limit. Narrow the query (fewer dimensions, a filter, or a shorter range) to see the rest.`,
-  };
+  return fitted(lo);
 }
 
 function reportPayload(r: ReportResult): Record<string, unknown> {
   const payload: ReportResult & { notice?: string } = { ...r };
   if (r.truncated) {
     payload.notice = `Truncated: ${shownRows(r)}. Raise max_rows (≤ ${HARD_MAX_ROWS}) or narrow the query.`;
+    // Rows past the context budget are trimmed below, so a higher max_rows would show no more.
+    if (textOf(payload).length > MAX_TEXT_CHARS) payload.notice = `Truncated: ${shownRows(r)}.`;
   }
   return fitRows(payload) as unknown as Record<string, unknown>;
 }
@@ -176,8 +191,14 @@ export function createMcpServer(deps: McpDeps): McpServer {
   };
   const svc = (a: { account?: string }): AdmobService => {
     const hit = services.get(a.account ?? "");
-    if (hit && now() - hit.createdAt < ttl) return hit.svc;
+    // A service keeps the config it was created with: replace it once config.json changed (`config set` in a terminal).
+    if (hit && now() - hit.createdAt < ttl && configStamp(hit.svc.configDir) === hit.svc.configStamp) return hit.svc;
     return freshSvc(a);
+  };
+  // Fix commands name the profile the server runs with, so the user fixes that one.
+  const pinProfile = (command: string) => {
+    const configured = deps.defaultProfile?.();
+    return profileCommand(command, deps.profile ?? configured ?? "default", configured);
   };
   const wrap =
     <A>(fn: (args: A) => Promise<Record<string, unknown>>) =>
@@ -185,7 +206,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
       try {
         return ok(await fn(args));
       } catch (err) {
-        return fail(err);
+        return fail(err, pinProfile);
       }
     };
 
@@ -198,7 +219,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
       outputSchema: loose({ accounts: z.array(anyRecord) }),
       annotations,
     },
-    wrap(async () => ({ accounts: await svc({}).listAccounts() })),
+    wrap(async () => fitRows({ accounts: await svc({}).listAccounts() }, "accounts", "")),
   );
 
   server.registerTool(
@@ -211,7 +232,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
       outputSchema: loose({ apps: z.array(anyRecord) }),
       annotations,
     },
-    wrap(async (a: { account?: string }) => ({ apps: await svc(a).apps() })),
+    wrap(async (a: { account?: string }) => fitRows({ apps: await svc(a).apps() }, "apps", "")),
   );
 
   server.registerTool(
@@ -229,7 +250,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
       annotations,
     },
     wrap(async (a: { app?: string; website?: string; account?: string }) =>
-      (await checkAppAds(svc(a), { app: a.app, website: a.website })) as unknown as Record<string, unknown>,
+      fitRows({ ...(await checkAppAds(svc(a), { app: a.app, website: a.website })) }, "apps", "Pass `app` to check one app.") as unknown as Record<string, unknown>,
     ),
   );
 
@@ -242,7 +263,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
       outputSchema: loose({ adUnits: z.array(anyRecord) }),
       annotations,
     },
-    wrap(async (a: { app?: string; account?: string }) => ({ adUnits: await svc(a).adUnits({ app: a.app }) })),
+    wrap(async (a: { app?: string; account?: string }) => fitRows({ adUnits: await svc(a).adUnits({ app: a.app }) }, "adUnits", "Pass `app` for one app's ad units.")),
   );
 
   for (const kind of ["network", "mediation"] as const) {
@@ -515,7 +536,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
       outputSchema: loose({ adSources: z.array(anyRecord) }),
       annotations,
     },
-    wrap(async (a: { account?: string }) => ({ adSources: await svc(a).adSources() })),
+    wrap(async (a: { account?: string }) => fitRows({ adSources: await svc(a).adSources() }, "adSources", "")),
   );
 
   server.registerTool(
@@ -528,7 +549,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
       outputSchema: loose({ adapters: z.array(anyRecord) }),
       annotations,
     },
-    wrap(async (a: { ad_source: string; account?: string }) => ({ adapters: await svc(a).adapters(a.ad_source) })),
+    wrap(async (a: { ad_source: string; account?: string }) => fitRows({ adapters: await svc(a).adapters(a.ad_source) }, "adapters", "")),
   );
 
   server.registerTool(
@@ -548,9 +569,13 @@ export function createMcpServer(deps: McpDeps): McpServer {
       outputSchema: loose({ mediationGroups: z.array(anyRecord) }),
       annotations,
     },
-    wrap(async (a: { app?: string; ad_source?: string; format?: string; platform?: string; state?: string; account?: string }) => ({
-      mediationGroups: await svc(a).mediationGroups({ app: a.app, adSource: a.ad_source, format: a.format, platform: a.platform, state: a.state }),
-    })),
+    wrap(async (a: { app?: string; ad_source?: string; format?: string; platform?: string; state?: string; account?: string }) =>
+      fitRows(
+        { mediationGroups: await svc(a).mediationGroups({ app: a.app, adSource: a.ad_source, format: a.format, platform: a.platform, state: a.state }) },
+        "mediationGroups",
+        "Filter by app, ad_source, format, platform or state to see the rest.",
+      ),
+    ),
   );
 
   server.registerTool(
@@ -563,7 +588,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
       outputSchema: loose({ adUnitMappings: z.array(anyRecord) }),
       annotations,
     },
-    wrap(async (a: { ad_unit: string; account?: string }) => ({ adUnitMappings: await svc(a).adUnitMappings(a.ad_unit) })),
+    wrap(async (a: { ad_unit: string; account?: string }) => fitRows({ adUnitMappings: await svc(a).adUnitMappings(a.ad_unit) }, "adUnitMappings", "")),
   );
 
   const rangeInput = {
@@ -664,7 +689,9 @@ export function createMcpServer(deps: McpDeps): McpServer {
       outputSchema: loose({ from: z.string(), to: z.string(), checked: anyRecord, problems: z.number(), findings: z.array(anyRecord), summary: z.array(z.string()), notices: z.array(z.string()) }),
       annotations,
     },
-    wrap(async (a: RangeArgs & { app?: string }) => ({ ...(await lint(svc(a), { ...range(a), app: a.app })) })),
+    wrap(async (a: RangeArgs & { app?: string }) =>
+      fitRows({ ...(await lint(svc(a), { ...range(a), app: a.app })) }, "findings", "Problems come first; pass `app` to lint one app at a time.") as unknown as Record<string, unknown>,
+    ),
   );
 
   server.registerTool(

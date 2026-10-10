@@ -46,6 +46,7 @@ If the MCP tools are not available, run the CLI with `-o json` and read the JSON
 
 - Use the numbers the tools return. Do not invent figures, and say so when the data cannot answer the question.
 - All earnings are estimates. Say so whenever you report money.
+- A result with `truncated: true` is partial. Say so, and follow its `notice` (e.g. pass `app`) rather than presenting it as complete.
 - One good call usually answers the question. If results look inconsistent, report what you saw instead of investigating at length.
 
 ## Changes (CLI only)

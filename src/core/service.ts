@@ -3,7 +3,7 @@ import { resolveTokenProvider } from "./auth/index.js";
 import type { TokenProvider } from "./auth/types.js";
 import { mergeCampaignChunks, RATIO_BASES } from "./campaign.js";
 import { AdmobClient, type AdSource, type AdUnit, type MediationGroup, type PublisherAccount } from "./client.js";
-import { configDir, loadConfig, resolveProfile, type ResolvedProfile } from "./config.js";
+import { configDir, configStamp, loadConfig, resolveProfile, type ResolvedProfile } from "./config.js";
 import { dateRangeFromArgs, formatDate, previousPeriod, splitRange, todayIn, type DateRange } from "./dates.js";
 import { AdmobctlError, usageError } from "./errors.js";
 import type { Exec } from "./exec.js";
@@ -193,10 +193,14 @@ export class AdmobService {
     readonly configDir: string,
     /** For requests outside the AdMob API (store lookups, app-ads.txt). */
     readonly fetch: typeof globalThis.fetch,
+    /** configStamp() of the config.json this service was built from: a different one now means it is out of date. */
+    readonly configStamp: string,
   ) {}
 
   static create(opts: ServiceOptions = {}, deps: ServiceDeps = {}): AdmobService {
     const dir = deps.configDir ?? configDir();
+    // Before reading, so a write in between shows up as a change.
+    const stamp = configStamp(dir);
     const profile = resolveProfile(loadConfig(dir), opts.profile);
     const tokenProvider = deps.tokenProvider ?? resolveTokenProvider(profile, { configDir: dir, exec: deps.exec, fetch: deps.fetch });
     const client = new AdmobClient({
@@ -213,6 +217,7 @@ export class AdmobService {
       deps.now ?? (() => new Date()),
       dir,
       deps.fetch ?? fetch,
+      stamp,
     );
   }
 

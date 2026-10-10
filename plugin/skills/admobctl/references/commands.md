@@ -212,7 +212,9 @@ They take the same arguments as the CLI, in snake_case: `max_rows`, `sort`, `com
 `admobctl_check` takes `window_days`, `baseline_days`, `drop_percent`, `min_requests`, `app`.
 `admobctl_finance_export` takes `month` or `from`+`to`, `as` (`json` or `csv`), `integer_amounts`, `scale`, and returns
 the file as `content`.
-Reports default to 200 rows.
+Reports default to 200 rows. A result bigger than roughly 25k tokens (reports, analyses, lists, lint findings) is
+trimmed to fit: `truncated: true`, and `notice` says how much is shown and how to narrow the call.
+Error `Fix:` lines carry `--profile` when the server runs with one; config changes apply from the next tool call.
 
 ## Write commands (v1beta; CLI only)
 

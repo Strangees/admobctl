@@ -11145,7 +11145,7 @@ var CloudClient = class {
 };
 
 // src/core/config.ts
-import { chmodSync as chmodSync2, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync as chmodSync2, existsSync, readFileSync, renameSync, statSync as statSync2, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -11197,6 +11197,14 @@ function loadConfig(dir) {
     throw new AdmobctlError("CONFIG", `Could not parse ${file2}: ${err.message}`, {
       fix: `Fix or delete ${file2}`
     });
+  }
+}
+function configStamp(dir) {
+  try {
+    const s = statSync2(configPath(dir));
+    return `${s.ino}:${s.size}:${s.mtimeMs}`;
+  } catch {
+    return "";
   }
 }
 function saveConfig(dir, config2) {
@@ -14445,7 +14453,7 @@ var CAMPAIGN_MAX_DAYS = 30;
 var filterValue = (v) => `"${v.replace(/["\\]/g, (c) => `\\${c}`)}"`;
 var COMPARISONS = ["previous"];
 var AdmobService = class _AdmobService {
-  constructor(profile, client, tokenProvider, accountOverride, now, configDir2, fetch2) {
+  constructor(profile, client, tokenProvider, accountOverride, now, configDir2, fetch2, configStamp2) {
     this.profile = profile;
     this.client = client;
     this.tokenProvider = tokenProvider;
@@ -14453,6 +14461,7 @@ var AdmobService = class _AdmobService {
     this.now = now;
     this.configDir = configDir2;
     this.fetch = fetch2;
+    this.configStamp = configStamp2;
   }
   profile;
   client;
@@ -14461,10 +14470,12 @@ var AdmobService = class _AdmobService {
   now;
   configDir;
   fetch;
+  configStamp;
   /** In-flight or settled lookups (account, apps, ad units, ad sources), shared by every caller. */
   cache = /* @__PURE__ */ new Map();
   static create(opts = {}, deps = {}) {
     const dir = deps.configDir ?? configDir();
+    const stamp = configStamp(dir);
     const profile = resolveProfile(loadConfig(dir), opts.profile);
     const tokenProvider = deps.tokenProvider ?? resolveTokenProvider(profile, { configDir: dir, exec: deps.exec, fetch: deps.fetch });
     const client = new AdmobClient({
@@ -14480,7 +14491,8 @@ var AdmobService = class _AdmobService {
       opts.account ?? profile.account,
       deps.now ?? (() => /* @__PURE__ */ new Date()),
       dir,
-      deps.fetch ?? fetch
+      deps.fetch ?? fetch,
+      stamp
     );
   }
   /** The account that will be used (--account, then profile), without calling the API. Undefined means auto-detect. */
@@ -16084,7 +16096,15 @@ function buildProgram(io) {
     if (!io.runMcp) throw new AdmobctlError("USAGE", "The mcp command is not available in this build (no MCP server wired in).");
     const { profile, account } = g(cmd);
     await io.runMcp({
-      service: (opts) => AdmobService.create({ profile, account: opts.account ?? account }, io.service)
+      service: (opts) => AdmobService.create({ profile, account: opts.account ?? account }, io.service),
+      profile,
+      defaultProfile: () => {
+        try {
+          return loadConfig(dir()).defaultProfile;
+        } catch {
+          return void 0;
+        }
+      }
     });
     await new Promise((resolve) => process.stdin.on("close", resolve));
   });
@@ -45453,6 +45473,7 @@ var INSTRUCTIONS = `Read-only access to the user's Google AdMob account via admo
 - These tools never change anything. Changes (creating apps, ad units or mappings; editing mediation groups; A/B
   experiments) exist only as admobctl CLI commands, which print a plan and send nothing unless the user adds --yes.
 - Errors include a "Fix:" line with the exact command the user should run.
+- A result with truncated: true is partial; its notice says how much is shown and how to narrow the call.
 - For any sign-in, scope, quota project or API error, call admobctl_setup_status and run its next_command (an admobctl
   command) in the terminal exactly as given. Never improvise gcloud commands. Commands with --yes change the user's setup:
   show them first. The browser sign-in (admobctl setup login --yes) must run in the user's own terminal.
@@ -45472,35 +45493,33 @@ function textOf(data) {
 function ok(data) {
   return { content: [{ type: "text", text: textOf(data) }], structuredContent: data };
 }
-function fail(err) {
+function fail(err, pinProfile) {
   const text = err instanceof AdmobctlError ? `${err.message}${err.fix ? `
-Fix: ${err.fix}` : ""}` : `Unexpected error: ${err?.message ?? String(err)}`;
+Fix: ${pinProfile(err.fix)}` : ""}` : `Unexpected error: ${err?.message ?? String(err)}`;
   if (!(err instanceof AdmobctlError)) log.warn(err?.stack ?? String(err));
   return { content: [{ type: "text", text }], isError: true };
 }
 var GEO_MAX_COUNTRIES = 25;
-function fitRows(result) {
+var NARROW_QUERY = "Narrow the query (fewer dimensions, a filter, or a shorter range) to see the rest.";
+function fitRows(result, key = "rows", hint = NARROW_QUERY) {
   if (textOf(result).length <= MAX_TEXT_CHARS) return result;
-  const all = result.rows;
+  const all = result[key];
+  const notice = (n) => [result.notice, `Showing ${n} of ${all.length} returned ${key} to stay within the context limit.`, hint].filter(Boolean).join(" ");
+  const fitted = (n) => ({ ...result, [key]: all.slice(0, n), truncated: true, notice: notice(n) });
   let lo = 0;
   let hi = all.length;
   while (lo < hi) {
     const mid = Math.ceil((lo + hi) / 2);
-    const candidate = { ...result, rows: all.slice(0, mid), truncated: true, notice: "x".repeat(200) };
-    if (textOf(candidate).length <= MAX_TEXT_CHARS) lo = mid;
+    if (textOf(fitted(mid)).length <= MAX_TEXT_CHARS) lo = mid;
     else hi = mid - 1;
   }
-  return {
-    ...result,
-    rows: all.slice(0, lo),
-    truncated: true,
-    notice: `Showing ${lo} of ${all.length} returned rows to stay within the context limit. Narrow the query (fewer dimensions, a filter, or a shorter range) to see the rest.`
-  };
+  return fitted(lo);
 }
 function reportPayload(r) {
   const payload = { ...r };
   if (r.truncated) {
     payload.notice = `Truncated: ${shownRows(r)}. Raise max_rows (\u2264 ${HARD_MAX_ROWS}) or narrow the query.`;
+    if (textOf(payload).length > MAX_TEXT_CHARS) payload.notice = `Truncated: ${shownRows(r)}.`;
   }
   return fitRows(payload);
 }
@@ -45540,14 +45559,18 @@ function createMcpServer(deps) {
   };
   const svc = (a) => {
     const hit = services.get(a.account ?? "");
-    if (hit && now() - hit.createdAt < ttl) return hit.svc;
+    if (hit && now() - hit.createdAt < ttl && configStamp(hit.svc.configDir) === hit.svc.configStamp) return hit.svc;
     return freshSvc(a);
+  };
+  const pinProfile = (command) => {
+    const configured = deps.defaultProfile?.();
+    return profileCommand(command, deps.profile ?? configured ?? "default", configured);
   };
   const wrap = (fn) => async (args) => {
     try {
       return ok(await fn(args));
     } catch (err) {
-      return fail(err);
+      return fail(err, pinProfile);
     }
   };
   server.registerTool(
@@ -45559,7 +45582,7 @@ function createMcpServer(deps) {
       outputSchema: loose({ accounts: external_exports.array(anyRecord) }),
       annotations
     },
-    wrap(async () => ({ accounts: await svc({}).listAccounts() }))
+    wrap(async () => fitRows({ accounts: await svc({}).listAccounts() }, "accounts", ""))
   );
   server.registerTool(
     "admobctl_list_apps",
@@ -45570,7 +45593,7 @@ function createMcpServer(deps) {
       outputSchema: loose({ apps: external_exports.array(anyRecord) }),
       annotations
     },
-    wrap(async (a) => ({ apps: await svc(a).apps() }))
+    wrap(async (a) => fitRows({ apps: await svc(a).apps() }, "apps", ""))
   );
   server.registerTool(
     "admobctl_check_app_ads",
@@ -45586,7 +45609,7 @@ function createMcpServer(deps) {
       annotations
     },
     wrap(
-      async (a) => await checkAppAds(svc(a), { app: a.app, website: a.website })
+      async (a) => fitRows({ ...await checkAppAds(svc(a), { app: a.app, website: a.website }) }, "apps", "Pass `app` to check one app.")
     )
   );
   server.registerTool(
@@ -45598,7 +45621,7 @@ function createMcpServer(deps) {
       outputSchema: loose({ adUnits: external_exports.array(anyRecord) }),
       annotations
     },
-    wrap(async (a) => ({ adUnits: await svc(a).adUnits({ app: a.app }) }))
+    wrap(async (a) => fitRows({ adUnits: await svc(a).adUnits({ app: a.app }) }, "adUnits", "Pass `app` for one app's ad units."))
   );
   for (const kind of ["network", "mediation"]) {
     server.registerTool(
@@ -45847,7 +45870,7 @@ function createMcpServer(deps) {
       outputSchema: loose({ adSources: external_exports.array(anyRecord) }),
       annotations
     },
-    wrap(async (a) => ({ adSources: await svc(a).adSources() }))
+    wrap(async (a) => fitRows({ adSources: await svc(a).adSources() }, "adSources", ""))
   );
   server.registerTool(
     "admobctl_list_adapters",
@@ -45858,7 +45881,7 @@ function createMcpServer(deps) {
       outputSchema: loose({ adapters: external_exports.array(anyRecord) }),
       annotations
     },
-    wrap(async (a) => ({ adapters: await svc(a).adapters(a.ad_source) }))
+    wrap(async (a) => fitRows({ adapters: await svc(a).adapters(a.ad_source) }, "adapters", ""))
   );
   server.registerTool(
     "admobctl_list_mediation_groups",
@@ -45876,9 +45899,13 @@ function createMcpServer(deps) {
       outputSchema: loose({ mediationGroups: external_exports.array(anyRecord) }),
       annotations
     },
-    wrap(async (a) => ({
-      mediationGroups: await svc(a).mediationGroups({ app: a.app, adSource: a.ad_source, format: a.format, platform: a.platform, state: a.state })
-    }))
+    wrap(
+      async (a) => fitRows(
+        { mediationGroups: await svc(a).mediationGroups({ app: a.app, adSource: a.ad_source, format: a.format, platform: a.platform, state: a.state }) },
+        "mediationGroups",
+        "Filter by app, ad_source, format, platform or state to see the rest."
+      )
+    )
   );
   server.registerTool(
     "admobctl_list_ad_unit_mappings",
@@ -45889,7 +45916,7 @@ function createMcpServer(deps) {
       outputSchema: loose({ adUnitMappings: external_exports.array(anyRecord) }),
       annotations
     },
-    wrap(async (a) => ({ adUnitMappings: await svc(a).adUnitMappings(a.ad_unit) }))
+    wrap(async (a) => fitRows({ adUnitMappings: await svc(a).adUnitMappings(a.ad_unit) }, "adUnitMappings", ""))
   );
   const rangeInput = {
     last_days: external_exports.number().int().min(1).max(366).optional().describe("The last N complete days (default 30)"),
@@ -45973,7 +46000,9 @@ function createMcpServer(deps) {
       outputSchema: loose({ from: external_exports.string(), to: external_exports.string(), checked: anyRecord, problems: external_exports.number(), findings: external_exports.array(anyRecord), summary: external_exports.array(external_exports.string()), notices: external_exports.array(external_exports.string()) }),
       annotations
     },
-    wrap(async (a) => ({ ...await lint(svc(a), { ...range(a), app: a.app }) }))
+    wrap(
+      async (a) => fitRows({ ...await lint(svc(a), { ...range(a), app: a.app }) }, "findings", "Problems come first; pass `app` to lint one app at a time.")
+    )
   );
   server.registerTool(
     "admobctl_analyze_trend",

@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { parseFeatures, type Feature } from "./setup/features.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -93,6 +93,19 @@ export function loadConfig(dir: string): ConfigFile {
     throw new AdmobctlError("CONFIG", `Could not parse ${file}: ${(err as Error).message}`, {
       fix: `Fix or delete ${file}`,
     });
+  }
+}
+
+/**
+ * Identifies the current config.json ("" when there is none). saveConfig replaces the file, so every write changes it:
+ * a long-lived reader such as the MCP server compares it to tell that what it loaded is out of date.
+ */
+export function configStamp(dir: string): string {
+  try {
+    const s = statSync(configPath(dir));
+    return `${s.ino}:${s.size}:${s.mtimeMs}`;
+  } catch {
+    return "";
   }
 }
 
