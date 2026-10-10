@@ -128,7 +128,10 @@ admobctl insights [--last 30d | --from … --to …] [--by ad-unit|app|country|f
 ```
 
 Returns rows (earnings, share, change vs the previous equal-length period, eCPM, request RPM, match rate, show rate, CTR),
-highlights (top, bottom, low-fill, low-show-rate, swing-up, swing-down, new, gone) and a plain-language summary.
+highlights (top, bottom, low-fill, low-show-rate, swing-up, swing-down, new, started-earning, gone), a plain-language
+summary and `notices`. `new` means the row was not in the previous period; `started-earning` means it was, with traffic
+but no earnings. A `--to` of today or later ends the period at yesterday (with a notice), and the previous period is
+then just as long, so a part month is never compared with a whole one.
 
 ## Check
 
@@ -153,6 +156,8 @@ yesterday in the account's time zone and network data lands a few hours late, so
 ```bash
 admobctl lint [--app <alias>] [--last 30d | --from … --to …]
 ```
+
+Like `insights` and `analyze`, it uses complete days only: a range that reaches today ends at yesterday, with a notice.
 
 Checks the setup by joining apps, ad units and mediation groups with traffic. `findings` have `kind`, `severity`,
 `target`, `app` and `message`; `problems` counts the problems, and the command **exits 1** when there is one.
@@ -179,6 +184,9 @@ admobctl analyze geo       [--app <alias>] [--min-requests 1000] [--currency X] 
 admobctl analyze trend     [--by total|app|format|country|platform] [--app <alias>] [--currency X] [--last 30d | --from … --to …]
 ```
 
+- All of them use complete days only: a `--to` of today or later ends the range at yesterday, with a notice, and a
+  range that starts today or later is a usage error. A report that hits the AdMob API's 100,000-row limit is flagged
+  in `notices` (rows are missing).
 - `versions`: requests, share of the group (platform, or app for app versions), match rate, show rate, CTR per
   version. Highlights `low-match-rate` / `low-show-rate` when a version with ≥5% of its group's traffic does ≥20%
   worse than the group's other versions. No earnings (the API does not split earnings by version).
@@ -196,9 +204,12 @@ admobctl analyze trend     [--by total|app|format|country|platform] [--app <alia
 - `trend`: one series (the account, or `--app`) or one per `--by` value (the ten biggest). Per series: `earnings`,
   `average_per_day`, `first_active` (first day with traffic; earlier days are left out of the averages, later days
   without traffic count as zero), `weekdays` (average per weekday) and `days` (date, weekday, earnings, requests,
-  match rate, show rate, eCPM). `shift` is set when daily earnings moved to a new level: `date`, `before_per_day`,
-  `after_per_day`, `change`. Highlights: `shift-up`, `shift-down`, `weekday` (best weekday ≥ 1.3× the worst),
-  `started`. The table shows the days for one series and one line per series otherwise.
+  match rate, show rate, eCPM). `shift` is set when daily earnings moved to a new level (series of 14 days or more,
+  so a weekday pattern is not taken for one): `date`, `before_per_day`, `after_per_day`, `change` (absent when the
+  series earned nothing before). Highlights: `shift-up`, `shift-down`, `started-earning` (traffic but no earnings, then
+  earnings), `weekday` (best weekday ≥ 1.3× the worst), `started` (no traffic before `first_active`). A series that
+  hits the API's 100,000-row limit is a usage error (the latest days would be missing): use a shorter range, `--app` or
+  a smaller split. The table shows the days for one series and one line per series otherwise.
 
 ## MCP tools (`admobctl mcp`)
 

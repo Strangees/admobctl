@@ -1,8 +1,8 @@
-import { dateRangeFromArgs, formatDate, lastNDays, todayIn, type DateRange } from "./dates.js";
+import { addDays, compareDates, dateRangeFromArgs, formatDate, lastNDays, todayIn, type ApiDate, type DateRange } from "./dates.js";
 import { usageError } from "./errors.js";
 import { ESTIMATE_LABEL } from "./finance.js";
 import { formatMicros, microsToAmount, sumMicros } from "./money.js";
-import type { Report } from "./report.js";
+import { rowCapNotices, type Report } from "./report.js";
 import type { AdmobService } from "./service.js";
 
 export const INSIGHT_DIMENSIONS = ["app", "ad-unit", "country", "format", "platform"] as const;
@@ -43,7 +43,7 @@ export interface InsightRow {
   change?: number;
 }
 
-export type HighlightKind = "top" | "bottom" | "low-fill" | "low-show-rate" | "swing-up" | "swing-down" | "new" | "gone";
+export type HighlightKind = "top" | "bottom" | "low-fill" | "low-show-rate" | "swing-up" | "swing-down" | "new" | "started-earning" | "gone";
 
 export interface Highlight {
   kind: HighlightKind;
@@ -64,6 +64,8 @@ export interface InsightsResult {
   rows: InsightRow[];
   highlights: Highlight[];
   summary: string[];
+  /** A range cut at yesterday, API warnings (for either period), a report cut off at the API's row limit. */
+  notices: string[];
 }
 
 interface Agg {
@@ -107,12 +109,28 @@ export const perMille = (micros: number, n: number) => microsToAmount(Math.round
 export const pct = (f: number) => `${(f * 100).toFixed(1)}%`;
 export const signedPct = (f: number) => `${f >= 0 ? "+" : ""}${(f * 100).toFixed(1)}%`;
 
-/** --last N days (ending yesterday) or --from/--to. */
-export function resolveInsightRange(opts: Pick<InsightsOptions, "last" | "from" | "to">, today: ReturnType<typeof todayIn>): DateRange {
-  if (opts.from || opts.to) return dateRangeFromArgs(opts.from ?? opts.to!, opts.to ?? opts.from!);
+/**
+ * --last N days (ending yesterday) or --from/--to, cut at yesterday. Today's figures are partial and later days have
+ * none, so counting them would show a drop that is not there (and compare a part period with a whole one).
+ */
+export function resolveInsightRange(opts: Pick<InsightsOptions, "last" | "from" | "to">, today: ApiDate): { range: DateRange; notices: string[] } {
+  if (opts.from || opts.to) {
+    const asked = dateRangeFromArgs(opts.from ?? opts.to!, opts.to ?? opts.from!);
+    const yesterday = addDays(today, -1);
+    if (compareDates(asked.endDate, yesterday) <= 0) return { range: asked, notices: [] };
+    if (compareDates(asked.startDate, yesterday) > 0) {
+      throw usageError(
+        `${formatDate(asked.startDate)} → ${formatDate(asked.endDate)} has no complete day yet: analyses end at yesterday (${formatDate(yesterday)}) because today's figures are partial. Start on ${formatDate(yesterday)} or earlier.`,
+      );
+    }
+    return {
+      range: { startDate: asked.startDate, endDate: yesterday },
+      notices: [`Ends at ${formatDate(yesterday)} (yesterday) instead of ${formatDate(asked.endDate)}: today's figures are partial and later days have none.`],
+    };
+  }
   const days = opts.last ?? 30;
   if (!Number.isInteger(days) || days < 1 || days > 366) throw usageError("--last must be between 1d and 366d");
-  return lastNDays(days, today);
+  return { range: lastNDays(days, today), notices: [] };
 }
 
 export async function insights(svc: AdmobService, opts: InsightsOptions): Promise<InsightsResult> {
@@ -120,7 +138,8 @@ export async function insights(svc: AdmobService, opts: InsightsOptions): Promis
     throw usageError(`--by must be one of ${INSIGHT_DIMENSIONS.join(", ")}`);
   }
   const acct = await svc.account();
-  const range = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
+  // Cut at yesterday first, so the previous period is as long as the days actually compared.
+  const { range, notices } = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
   const metrics = ["earnings", "requests", "matched-requests", "impressions", "clicks"];
   const dim = DIM_API[opts.by];
   const [{ current: cur, previous: prev }, apps, units] = await Promise.all([
@@ -208,11 +227,14 @@ export async function insights(svc: AdmobService, opts: InsightsOptions): Promis
   const threshold = opts.swingThreshold ?? 0.3;
   const minSwing = Math.max(total * 0.01, 1_000_000);
   for (const r of rows) {
-    const p = prevAgg.get(r.key)?.earnings ?? 0;
+    const before = prevAgg.get(r.key);
+    const p = before?.earnings ?? 0;
     const delta = r.earnings_micros - p;
     if (Math.abs(delta) < minSwing) continue;
-    if (p === 0) add("new", r, `${r.label} is new this period: ${money(r.earnings_micros)}.`);
-    else if (r.change !== undefined && Math.abs(r.change) >= threshold) {
+    if (!before) add("new", r, `${r.label} is new this period: ${money(r.earnings_micros)}.`);
+    else if (p === 0) {
+      add("started-earning", r, `${r.label} started earning this period: ${money(r.earnings_micros)}, after earning nothing from ${before.requests} requests the period before.`);
+    } else if (r.change !== undefined && Math.abs(r.change) >= threshold) {
       add(r.change > 0 ? "swing-up" : "swing-down", r, `${r.label} ${r.change > 0 ? "rose" : "fell"} ${signedPct(r.change)}: ${money(p)} → ${money(r.earnings_micros)}.`);
     }
   }
@@ -255,5 +277,13 @@ export async function insights(svc: AdmobService, opts: InsightsOptions): Promis
     rows,
     highlights,
     summary,
+    notices: [
+      ...notices,
+      ...cur.report.warnings.map((w) => `API warning: ${w}`),
+      // The earlier period feeds every change, new and gone row, so its own warnings matter too.
+      ...prev.report.warnings.filter((w) => !cur.report.warnings.includes(w)).map((w) => `API warning (previous period): ${w}`),
+      ...cur.notices,
+      ...rowCapNotices(cur.report, prev.report),
+    ],
   };
 }

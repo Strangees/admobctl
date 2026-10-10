@@ -5,6 +5,7 @@ import { usageError } from "./errors.js";
 import { ESTIMATE_LABEL } from "./finance.js";
 import { perMille, ratio, signedPct } from "./insights.js";
 import { formatMicros, microsToAmount } from "./money.js";
+import { API_MAX_ROWS } from "./report.js";
 import type { AdmobService } from "./service.js";
 
 /** Daily series: when did a change start, and is there a weekday pattern? */
@@ -49,8 +50,11 @@ export interface TrendSeries {
   average_per_day: number;
   /** Average earnings per weekday, Monday first. */
   weekdays: Array<{ weekday: (typeof WEEKDAYS)[number]; days: number; average: number }>;
-  /** The day daily earnings moved to a new level, when the series has one clear step. */
-  shift?: { date: string; before_per_day: number; after_per_day: number; change: number };
+  /**
+   * The day daily earnings moved to a new level, when the series has one clear step. `change` is absent when the
+   * series earned nothing before (it started earning).
+   */
+  shift?: { date: string; before_per_day: number; after_per_day: number; change?: number };
   days?: TrendDay[];
 }
 
@@ -66,11 +70,13 @@ const squares = (xs: number[], m: number) => xs.reduce((a, x) => a + (x - m) ** 
 
 /**
  * The single split that best divides a series into two levels, or undefined when no split explains at least
- * half of the series' variance with a change of at least 20%. Each side needs three days.
+ * half of the series' variance with a change of at least 20% (any rise from zero counts). Each side needs three
+ * days, and the series two weeks: in a shorter one a weekday pattern (quiet weekdays, busy weekend) looks like a step.
  */
 export function levelShift(values: number[]): { index: number; before: number; after: number } | undefined {
   const MIN_SIDE = 3;
-  if (values.length < 2 * MIN_SIDE + 1) return undefined;
+  const MIN_DAYS = 14;
+  if (values.length < MIN_DAYS) return undefined;
   const total = squares(values, mean(values));
   if (total === 0) return undefined;
   let best: { index: number; before: number; after: number; left: number } | undefined;
@@ -80,8 +86,8 @@ export function levelShift(values: number[]): { index: number; before: number; a
     const left = squares(values.slice(0, i), before) + squares(values.slice(i), after);
     if (!best || left < best.left) best = { index: i, before, after, left };
   }
-  if (!best || best.before <= 0) return undefined;
-  if ((total - best.left) / total < 0.5 || Math.abs(best.after - best.before) / best.before < 0.2) return undefined;
+  if (!best || (total - best.left) / total < 0.5) return undefined;
+  if (best.before > 0 ? Math.abs(best.after - best.before) / best.before < 0.2 : best.after <= 0) return undefined;
   return { index: best.index, before: best.before, after: best.after };
 }
 
@@ -107,6 +113,13 @@ export async function analyzeTrend(svc: AdmobService, opts: TrendOptions = {}): 
     }),
     by === "app" ? svc.apps() : Promise.resolve([] as AppRef[]),
   ]);
+  // Rows come back by date, so the ones the API left out are the latest days: they would read as a drop.
+  if (r.capped) {
+    throw usageError(
+      `The AdMob API returned its maximum of ${API_MAX_ROWS} rows for this series, so the latest days are missing and would look like a drop. ` +
+        `Use a shorter range${by === "total" ? "" : ", --app, or a split with fewer values"}.`,
+    );
+  }
   const alias = new Map(apps.map((a) => [a.appId, a.alias]));
   const totalLabel = opts.app ? (await svc.resolveApp(opts.app)).alias : "All apps";
 
@@ -164,13 +177,12 @@ export async function analyzeTrend(svc: AdmobService, opts: TrendOptions = {}): 
     if (days.length) series.first_active = days[0]!.date;
     const shift = levelShift(days.map((d) => d.earnings_micros));
     if (shift) {
-      const change = (shift.after - shift.before) / shift.before;
       series.shift = {
         date: days[shift.index]!.date,
         before_per_day: microsToAmount(Math.round(shift.before)),
         after_per_day: microsToAmount(Math.round(shift.after)),
-        change,
       };
+      if (shift.before > 0) series.shift.change = (shift.after - shift.before) / shift.before;
     }
     if (opts.days !== false) series.days = days;
     return series;
@@ -179,13 +191,20 @@ export async function analyzeTrend(svc: AdmobService, opts: TrendOptions = {}): 
   const rows = all.slice(0, MAX_SERIES);
 
   for (const s of rows) {
-    if (s.shift) {
+    if (s.shift?.change !== undefined) {
       const up = s.shift.change > 0;
       highlights.push({
         kind: up ? "shift-up" : "shift-down",
         key: s.key,
         label: s.label,
         message: `${s.label} ${up ? "rose" : "fell"} from ${s.shift.before_per_day.toFixed(2)} to ${s.shift.after_per_day.toFixed(2)} ${r.currency} per day around ${s.shift.date} (${signedPct(s.shift.change)}).`,
+      });
+    } else if (s.shift) {
+      highlights.push({
+        kind: "started-earning",
+        key: s.key,
+        label: s.label,
+        message: `${s.label} started earning around ${s.shift.date}: nothing before, then ${s.shift.after_per_day.toFixed(2)} ${r.currency} per day.`,
       });
     }
     if (s.first_active && s.first_active !== r.from) {

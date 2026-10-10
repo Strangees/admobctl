@@ -416,7 +416,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
     {
       title: "AdMob monetization insights",
       description:
-        "Analyze monetization: earnings, eCPM, request RPM, match (fill) rate, show rate and CTR per app/ad-unit/country/format/platform, compared with the previous period. Returns highlights (top and bottom earners, low fill, low show rate, big swings) and a plain-language summary with the numbers behind each claim.",
+        "Analyze monetization: earnings, eCPM, request RPM, match (fill) rate, show rate and CTR per app/ad-unit/country/format/platform, compared with the previous period. Returns highlights (top and bottom earners, low fill, low show rate, big swings, new rows, rows that started earning), a plain-language summary with the numbers behind each claim, and notices. Complete days only: a period that reaches today ends at yesterday.",
       inputSchema: {
         last_days: z.number().int().min(1).max(366).optional().describe("The last N complete days (default 30)"),
         from: z.string().optional().describe("Start, YYYY-MM or YYYY-MM-DD (instead of last_days)"),
@@ -434,6 +434,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
         rows: z.array(anyRecord),
         highlights: z.array(anyRecord),
         summary: z.array(z.string()),
+        notices: z.array(z.string()),
       }),
       annotations,
     },
@@ -672,7 +673,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
     {
       title: "AdMob daily trend",
       description:
-        "Daily earnings as a series, to answer \"when did it change?\": per series the day earnings moved to a new level (`shift`: date, before and after per day, change), the average per weekday, and the first day with traffic. One series for the whole account or one app, or split by app, format, country or platform (the ten biggest). Days without traffic before a series starts are left out of the averages. Set include_days for the day-by-day rows. Earnings are estimates.",
+        "Daily earnings as a series, to answer \"when did it change?\": per series the day earnings moved to a new level (`shift`: date, before and after per day, change; no change when it started from zero), the average per weekday, and the first day with traffic. One series for the whole account or one app, or split by app, format, country or platform (the ten biggest). Days without traffic before a series starts are left out of the averages. Set include_days for the day-by-day rows. Earnings are estimates.",
       inputSchema: {
         by: z.enum(TREND_SPLITS).optional().describe("One series per app, format, country or platform. Default: total (one series)."),
         ...appArg,

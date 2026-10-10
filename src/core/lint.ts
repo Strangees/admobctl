@@ -42,11 +42,10 @@ export interface LintResult {
 
 export async function lint(svc: AdmobService, opts: LintOptions = {}): Promise<LintResult> {
   const acct = await svc.account();
-  const range = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
+  const { range, notices } = resolveInsightRange(opts, todayIn(acct.reportingTimeZone, svc.now()));
   const from = formatDate(range.startDate);
   const to = formatDate(range.endDate);
   const only = opts.app ? await svc.resolveApp(opts.app) : undefined;
-  const notices: string[] = [];
   const [allApps, units, allUnits, traffic, groups] = await Promise.all([
     svc.apps(),
     svc.adUnits({ app: opts.app }),

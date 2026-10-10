@@ -392,6 +392,14 @@ describe("mcp server", () => {
     expect(r.structuredContent!.notices).toContain("`countries` lists the 25 biggest of 30 countries; the rows cover all of them.");
   });
 
+  it("returns insights notices, such as a period cut at yesterday", async () => {
+    const { client } = await connect();
+    const r = (await client.callTool({ name: "admobctl_insights", arguments: { from: "2026-09-20", to: "2026-10" } })) as ToolResult;
+    expect(r.isError, r.content[0]!.text).toBeFalsy();
+    expect(r.structuredContent).toMatchObject({ from: "2026-09-20", to: "2026-10-01", previous: { from: "2026-09-08", to: "2026-09-19" } });
+    expect(r.structuredContent!.notices).toContain("Ends at 2026-10-01 (yesterday) instead of 2026-10-31: today's figures are partial and later days have none.");
+  });
+
   it("serves the daily trend without the day rows unless asked", async () => {
     const day = (n: number) => ({
       row: { dimensionValues: { DATE: { value: `202609${String(n).padStart(2, "0")}` } }, metricValues: { ESTIMATED_EARNINGS: { microsValue: "1000000" }, AD_REQUESTS: { integerValue: "10" } } },
