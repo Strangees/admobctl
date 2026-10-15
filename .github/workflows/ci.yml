@@ -39,6 +39,8 @@ jobs:
         run: git add --all plugin/dist && git diff --cached --exit-code --stat plugin/dist
       - name: Bundle runs on this Node version
         run: node plugin/dist/admobctl.mjs --version
+      - name: Standalone release file runs on this Node version
+        run: node scripts/build.mjs --standalone dist/admobctl.mjs && node dist/admobctl.mjs --version
       - run: npm test
         if: matrix.node != 20
       # `npm run eval` itself needs Claude credentials and is run by hand.
