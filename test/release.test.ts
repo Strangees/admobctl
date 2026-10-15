@@ -28,6 +28,26 @@ describe("release version", () => {
   });
 });
 
+describe("npm package", () => {
+  const pkg = JSON.parse(read("package.json")) as Record<string, unknown>;
+
+  it("is publishable, with the repository URL trusted publishing checks", () => {
+    expect(pkg.private).toBeUndefined();
+    expect((pkg.repository as { url: string }).url).toBe("git+https://github.com/Strangees/admobctl.git");
+    expect(pkg.bin).toEqual({ admobctl: "plugin/dist/admobctl.mjs" });
+    expect(pkg.dependencies).toBeUndefined();
+  });
+
+  it("packs only the bundle, package.json and README/LICENSE files", () => {
+    const out = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], { cwd: root, encoding: "utf8" });
+    const [packed] = JSON.parse(out) as Array<{ files: Array<{ path: string }> }>;
+    const paths = packed!.files.map((f) => f.path);
+    expect(paths).toEqual(expect.arrayContaining(["LICENSE", "README.md"]));
+    // npm always adds README and LICENSE files, including plugin/'s copies; everything else must be listed in `files`.
+    expect(paths.filter((p) => !/(^|\/)(README\.md|LICENSE)$/.test(p)).sort()).toEqual(["package.json", "plugin/dist/admobctl.mjs"]);
+  });
+});
+
 describe("open-source hygiene", () => {
   /** Tracked text files with every match of `re`; binary files are skipped. */
   function matches(re: RegExp): string[] {

@@ -34,7 +34,10 @@
     "monetization"
   ],
   "license": "MIT",
-  "private": true,
+  "homepage": "https://github.com/Strangees/admobctl#readme",
+  "bugs": {
+    "url": "https://github.com/Strangees/admobctl/issues"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Strangees/admobctl.git"

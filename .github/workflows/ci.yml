@@ -46,7 +46,9 @@ jobs:
         run: npm run eval:mocks && git diff --exit-code plugin/evals/mocks
 
   # Plugins install straight from main, and `claude plugin update` only sees a change when the version changes.
-  # So a release is: bump the version, merge to main. This tags it and publishes a GitHub release.
+  # So a release is: bump the version, merge to main. This tags it, publishes a GitHub release and publishes the
+  # npm package. Each step skips what is already out, so rerunning a half-failed release finishes it.
+  # npm is published here, not from an `on: release` workflow: a release created with GITHUB_TOKEN triggers no workflows.
   release:
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -54,10 +56,15 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: write
+      id-token: write # npm trusted publishing (OIDC); no npm token is stored
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
       - name: Release the version on main unless it is already tagged
         env:
           GH_TOKEN: ${{ github.token }}
@@ -71,5 +78,18 @@ jobs:
           (cd plugin/dist && sha256sum admobctl.mjs) > admobctl.mjs.sha256
           gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --generate-notes \
             plugin/dist/admobctl.mjs admobctl.mjs.sha256
-      # Later: npm publish and the Homebrew formula hang off `on: release: types: [published]`
-      # in their own workflow, once the repository is public.
+      # Trusted publisher on npmjs.com: user Strangees, repository admobctl, workflow ci.yml, no environment,
+      # `npm publish` allowed (README, "CI and releases").
+      # The test job checked that the committed bundle matches the source, so nothing is built here.
+      - name: Publish the version on main to npm unless it is already there
+        run: |
+          version="$(jq -r .version package.json)"
+          if npm view "admobctl@$version" version >/dev/null 2>&1; then
+            echo "admobctl@$version is already on npm; nothing to do."
+            exit 0
+          fi
+          # Trusted publishing needs npm 11.5.1 or later.
+          if ! node -e 'const [a,b,c]=process.argv[1].split(".").map(Number); process.exit(a>11||(a==11&&(b>5||(b==5&&c>=1)))?0:1)' "$(npm --version)"; then
+            npm install -g npm@11
+          fi
+          npm publish --access public --ignore-scripts
