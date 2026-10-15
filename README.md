@@ -249,7 +249,7 @@ The MCP server stays read-only: no write is exposed as an MCP tool.
 This repo is also a plugin marketplace. The plugin, in [`plugin/`](plugin/README.md), bundles the MCP server and three
 skills: `admobctl` (routing, auth, command reference), `admobctl-finance` (monthly bookkeeping, estimate vs finalized)
 and `admobctl-insights` (how to analyze and present monetization findings). It needs only Node.js 20+ and
-authentication (see above): `plugin/dist/admobctl.mjs` is committed and the plugin folder has no `package.json`, so
+authentication (see above): the built `plugin/dist/` is committed and the plugin folder has no `package.json`, so
 installing the plugin downloads no packages.
 
 Claude Code:
@@ -304,7 +304,7 @@ Running admobctl needs Node.js 20+. Developing it (vitest) needs Node.js 22.12+.
 ```bash
 npm test            # vitest
 npm run typecheck
-npm run build       # → plugin/dist/admobctl.mjs (single file, no runtime dependencies)
+npm run build       # → plugin/dist/ (entry admobctl.mjs, one file per module, no runtime dependencies)
 npm run check       # typecheck + bundle + tests
 npm run eval        # plugin evals (uses your Claude credentials)
 
@@ -318,7 +318,7 @@ privately as described in [SECURITY.md](SECURITY.md).
 ### CI and releases
 
 CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on every pull request and push to `main`: typecheck,
-tests, and checks that the committed bundle and eval mocks match the source. The tests also guard that the version is
+tests, and checks that the committed `plugin/dist/` and eval mocks match the source. The tests also guard that the version is
 the same everywhere and that no real publisher IDs or email addresses are committed.
 
 Plugins install straight from `main`, and `claude plugin update` only notices a new version number. To release, bump
@@ -327,10 +327,11 @@ the version and merge to `main`:
 ```bash
 npm version <patch|minor|major> --no-git-tag-version   # package.json + lockfile
 # set the same version in plugin/.claude-plugin/plugin.json and plugin/.codex-plugin/plugin.json
-npm run check                                          # rebuilds the bundle with the new version
+npm run check                                          # rebuilds plugin/dist/ with the new version
 ```
 
-When CI passes on `main`, it tags `v<version>` and publishes a GitHub release with the bundle and its checksum.
+When CI passes on `main`, it tags `v<version>` and publishes a GitHub release with admobctl as one file
+(`admobctl.mjs`) and its checksum.
 A push that does not change the version releases nothing.
 
 ## License

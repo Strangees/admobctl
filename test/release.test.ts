@@ -1,6 +1,6 @@
 /** Guards what a release ships: one version everywhere, and the open-source hygiene rules in AGENTS.md. */
 import { execFileSync } from "node:child_process";
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -78,9 +78,24 @@ describe("plugin folder", () => {
     expect(files.filter((f) => /(^|\/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|\.npmrc)$/.test(f))).toEqual([]);
   });
 
-  it("keeps every file except the bundle and images under the directory's 256 KiB read limit", () => {
-    const big = files.filter((f) => f !== "dist/admobctl.mjs" && !/\.(png|svg)$/.test(f) && statSync(`${root}plugin/${f}`).size > 256 * 1024);
+  // The directory holds a version for manual review when it ships a non-image file it cannot read (256 KiB or more)
+  // or more than 512 files. Count what is on disk and not ignored, so a fresh build is checked before it is committed.
+  const onDisk = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "plugin/"], { cwd: root, encoding: "utf8" })
+    .split("\n")
+    .filter((f) => f && existsSync(`${root}${f}`));
+
+  it("keeps every file except images and fonts under the directory's 256 KiB read limit", () => {
+    const big = onDisk.filter((f) => !/\.(png|jpe?g|gif|webp|svg|ico|woff2?|ttf|otf)$/.test(f) && statSync(`${root}${f}`).size >= 256 * 1024);
     expect(big).toEqual([]);
+  });
+
+  it("stays within the directory's 512-file limit", () => {
+    expect(new Set(onDisk).size).toBeLessThanOrEqual(512);
+  });
+
+  it("lets git see every file the build writes, so none is left out of the installed plugin", () => {
+    const ignored = execFileSync("git", ["ls-files", "--others", "--ignored", "--exclude-standard", "plugin/dist/"], { cwd: root, encoding: "utf8" });
+    expect(ignored.split("\n").filter(Boolean)).toEqual([]);
   });
 
   it("carries the project LICENSE and the data disclosure", () => {
