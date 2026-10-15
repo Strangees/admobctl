@@ -16,6 +16,17 @@ A fast command-line tool for the Google AdMob API, with an agent plugin for Clau
 Requires Node.js 20 or later.
 
 ```bash
+npm install -g admobctl
+```
+
+The package is prebuilt with its dependencies included, so it installs nothing else; each version is published from
+CI with [npm provenance](https://docs.npmjs.com/generating-provenance-statements). To run it without installing, use
+`npx admobctl …`. Each [GitHub release](https://github.com/Strangees/admobctl/releases) also carries the same program
+as one file (`admobctl.mjs`, run with `node admobctl.mjs`) and its SHA-256 checksum.
+
+From source:
+
+```bash
 git clone https://github.com/Strangees/admobctl && cd admobctl
 npm install && npm run build
 npm link   # puts `admobctl` on your PATH
@@ -244,6 +255,9 @@ The MCP server stays read-only: no write is exposed as an MCP tool.
 
 `admobctl mcp` serves read-only tools over stdio: `admobctl_list_accounts`, `admobctl_list_apps`, `admobctl_list_ad_units`, `admobctl_network_report`, `admobctl_mediation_report`, `admobctl_finance_month`, `admobctl_finance_range`, `admobctl_finance_export`, `admobctl_finance_forecast`, `admobctl_finance_balance`, `admobctl_setup_status`, `admobctl_insights`, `admobctl_check`, `admobctl_lint`, `admobctl_analyze_versions`, `admobctl_analyze_consent`, `admobctl_analyze_waterfall`, `admobctl_analyze_geo`, `admobctl_analyze_trend`, `admobctl_campaign_report`, `admobctl_list_ad_sources`, `admobctl_list_adapters`, `admobctl_list_mediation_groups`, `admobctl_list_ad_unit_mappings` and `admobctl_check_app_ads`. Reports default to 200 rows and are trimmed with a notice to stay within roughly 25k tokens.
 
+For an MCP client other than the plugin below, run the server as the command `admobctl` with the argument `mcp`, or
+without a global install as `npx` with the arguments `-y admobctl mcp`.
+
 ## Agent plugin (Claude Code and Codex)
 
 This repo is also a plugin marketplace. The plugin, in [`plugin/`](plugin/README.md), bundles the MCP server and three
@@ -330,9 +344,17 @@ npm version <patch|minor|major> --no-git-tag-version   # package.json + lockfile
 npm run check                                          # rebuilds plugin/dist/ with the new version
 ```
 
-When CI passes on `main`, it tags `v<version>` and publishes a GitHub release with admobctl as one file
-(`admobctl.mjs`) and its checksum.
-A push that does not change the version releases nothing.
+When CI passes on `main`, it tags `v<version>`, publishes a GitHub release with admobctl as one file
+(`admobctl.mjs`) and its checksum, and publishes the npm package (the committed `plugin/dist`). A push that does not
+change the version releases nothing, and rerunning a failed release skips whatever already went out.
+
+npm publishing uses [trusted publishing](https://docs.npmjs.com/trusted-publishers): a separate `npm` job signs in to
+npm with a GitHub OIDC token, so the repository stores no npm token, and npm adds a provenance statement to each version.
+The trusted publisher is set on npmjs.com under the package's settings: user `Strangees`, repository `admobctl`,
+workflow `ci.yml`, no environment, with `npm publish` allowed (new configurations allow only `npm stage publish` by
+default). A new configuration expires unless it publishes within 2 days, so add it just before merging a version bump.
+npm only offers these settings for a package that exists, so the very first version was published by hand
+(`npm publish --access public`).
 
 ## License
 
