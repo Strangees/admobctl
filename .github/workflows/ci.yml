@@ -34,8 +34,9 @@ jobs:
       - run: npm run typecheck
         if: matrix.node != 20
       - run: npm run build
-      - name: Committed bundle is up to date
-        run: git diff --exit-code plugin/dist/admobctl.mjs
+      - name: Committed plugin/dist is up to date
+        # Also fails on files the build added or removed, which `git diff` alone would miss.
+        run: git add --all plugin/dist && git diff --cached --exit-code --stat plugin/dist
       - name: Bundle runs on this Node version
         run: node plugin/dist/admobctl.mjs --version
       - run: npm test
@@ -58,6 +59,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
       - name: Release the version on main unless it is already tagged
         env:
           GH_TOKEN: ${{ github.token }}
@@ -68,8 +74,10 @@ jobs:
             echo "$tag is already released; nothing to do."
             exit 0
           fi
-          (cd plugin/dist && sha256sum admobctl.mjs) > admobctl.mjs.sha256
+          # plugin/dist is one file per module; the release asset is the same program as a single file.
+          node scripts/build.mjs --standalone dist/admobctl.mjs
+          (cd dist && sha256sum admobctl.mjs) > admobctl.mjs.sha256
           gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --generate-notes \
-            plugin/dist/admobctl.mjs admobctl.mjs.sha256
+            dist/admobctl.mjs admobctl.mjs.sha256
       # Later: npm publish and the Homebrew formula hang off `on: release: types: [published]`
       # in their own workflow, once the repository is public.

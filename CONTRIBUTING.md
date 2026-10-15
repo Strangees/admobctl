@@ -38,9 +38,9 @@ into `test/fixtures/private/`, which is gitignored.
 ## Pull requests
 
 1. `npm run check` passes.
-2. **Commit the rebuilt bundle.** `plugin/dist/admobctl.mjs` is committed because Claude Code and Codex install the
-   plugin straight from git. `npm run check` rebuilds it, and CI fails when the committed bundle does not match the
-   source.
+2. **Commit the rebuilt `plugin/dist/`.** It is committed because Claude Code and Codex install the plugin straight
+   from git. `npm run check` rebuilds it (one file per module, so files can appear or disappear), and CI fails when
+   the committed build does not match the source.
 3. If you changed what an MCP tool returns, run `npm run eval:mocks` and commit `plugin/evals/mocks/`; CI checks these
    too.
 4. Update the README, `plugin/README.md` and `plugin/skills/` when a command, flag or MCP tool changes.

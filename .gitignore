@@ -1,5 +1,5 @@
 node_modules/
-# Build scratch (record-fixtures). The plugin bundle, plugin/dist/admobctl.mjs, is committed:
+# Build scratch (record-fixtures, the standalone release file). The plugin build, plugin/dist/, is committed:
 # Claude Code and Codex install the plugin straight from git.
 /dist/
 plugin/evals/results/

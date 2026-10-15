@@ -7,7 +7,7 @@
     "admobctl": "plugin/dist/admobctl.mjs"
   },
   "files": [
-    "plugin/dist/admobctl.mjs",
+    "plugin/dist",
     "README.md",
     "LICENSE"
   ],
@@ -46,6 +46,7 @@
     "ajv-formats": "^3.0.1",
     "commander": "^15.0.0",
     "esbuild": "^0.28.2",
+    "rolldown": "^1.2.12",
     "typescript": "^7.0.2",
     "vitest": "^5.0.3",
     "zod": "^4.6.5"
