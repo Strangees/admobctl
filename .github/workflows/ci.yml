@@ -49,9 +49,8 @@ jobs:
         run: npm run eval:mocks && git diff --exit-code plugin/evals/mocks
 
   # Plugins install straight from main, and `claude plugin update` only sees a change when the version changes.
-  # So a release is: bump the version, merge to main. This tags it, publishes a GitHub release and publishes the
-  # npm package. Each step skips what is already out, so rerunning a half-failed release finishes it.
-  # npm is published here, not from an `on: release` workflow: a release created with GITHUB_TOKEN triggers no workflows.
+  # So a release is: bump the version, merge to main. This tags it and publishes a GitHub release; the npm job below
+  # publishes the npm package. Each skips what is already out, so rerunning a half-failed release finishes it.
   release:
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -59,16 +58,14 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: write
-      id-token: write # npm trusted publishing (OIDC); no npm token is stored
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24
+          node-version: 22
           cache: npm
-          registry-url: https://registry.npmjs.org
       - run: npm ci
       - name: Release the version on main unless it is already tagged
         env:
@@ -85,9 +82,28 @@ jobs:
           (cd dist && sha256sum admobctl.mjs) > admobctl.mjs.sha256
           gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --generate-notes \
             dist/admobctl.mjs admobctl.mjs.sha256
-      # Trusted publisher on npmjs.com: user Strangees, repository admobctl, workflow ci.yml, no environment,
-      # `npm publish` allowed (README, "CI and releases").
-      # The package is the committed plugin/dist, which the test job checked against the source.
+
+  # npm is published here, not from an `on: release` workflow: a release created with GITHUB_TOKEN triggers no workflows.
+  # This job alone can mint the npm OIDC token, so it installs and runs nothing but npm itself: no `npm ci` (dev
+  # dependencies' install scripts), no cache. It publishes the committed plugin/dist, which the test job checked.
+  # Trusted publisher on npmjs.com: user Strangees, repository admobctl, workflow ci.yml, no environment,
+  # `npm publish` allowed (README, "CI and releases").
+  npm:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing (OIDC); no npm token is stored
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
       - name: Publish the version on main to npm unless it is already there
         run: |
           version="$(jq -r .version package.json)"
@@ -95,8 +111,9 @@ jobs:
             echo "admobctl@$version is already on npm; nothing to do."
             exit 0
           fi
-          # Trusted publishing needs npm 11.5.1 or later.
+          # Trusted publishing needs npm 11.5.1 or later, which Node 24 bundles; never install npm in this job.
           if ! node -e 'const [a,b,c]=process.argv[1].split(".").map(Number); process.exit(a>11||(a==11&&(b>5||(b==5&&c>=1)))?0:1)' "$(npm --version)"; then
-            npm install -g npm@11
+            echo "::error::npm $(npm --version) is too old for trusted publishing (needs 11.5.1 or later)"
+            exit 1
           fi
           npm publish --access public --ignore-scripts

@@ -348,8 +348,8 @@ When CI passes on `main`, it tags `v<version>`, publishes a GitHub release with 
 (`admobctl.mjs`) and its checksum, and publishes the npm package (the committed `plugin/dist`). A push that does not
 change the version releases nothing, and rerunning a failed release skips whatever already went out.
 
-npm publishing uses [trusted publishing](https://docs.npmjs.com/trusted-publishers): the release job signs in to npm
-with a GitHub OIDC token, so the repository stores no npm token, and npm adds a provenance statement to each version.
+npm publishing uses [trusted publishing](https://docs.npmjs.com/trusted-publishers): a separate `npm` job signs in to
+npm with a GitHub OIDC token, so the repository stores no npm token, and npm adds a provenance statement to each version.
 The trusted publisher is set on npmjs.com under the package's settings: user `Strangees`, repository `admobctl`,
 workflow `ci.yml`, no environment, with `npm publish` allowed (new configurations allow only `npm stage publish` by
 default). A new configuration expires unless it publishes within 2 days, so add it just before merging a version bump.
