@@ -1,0 +1,1212 @@
+import { approvalLabel, appsNeedingAction } from "../core/aliases.mjs";
+import { formatMicros } from "../core/money.mjs";
+import { JOURNAL_COLUMNS } from "../core/finance.mjs";
+import { API_BASE_BETA } from "../core/client.mjs";
+import { shownRows } from "../core/report-view.mjs";
+
+//#region src/cli/views.ts
+const ESTIMATE_NOTE = "Estimated earnings — reconcile against AdMob Payments (finalized).";
+function accountsView(accounts) {
+	return {
+		data: accounts,
+		table: {
+			columns: [
+				{
+					key: "publisherId",
+					label: "Publisher ID"
+				},
+				{
+					key: "currencyCode",
+					label: "Currency"
+				},
+				{
+					key: "reportingTimeZone",
+					label: "Time zone"
+				}
+			],
+			rows: accounts
+		}
+	};
+}
+function appsView(apps) {
+	const blocked = appsNeedingAction(apps);
+	return {
+		data: apps,
+		table: {
+			columns: [
+				{
+					key: "alias",
+					label: "Alias"
+				},
+				{
+					key: "name",
+					label: "Name"
+				},
+				{
+					key: "platform",
+					label: "Platform"
+				},
+				{
+					key: "appId",
+					label: "App ID"
+				},
+				{
+					key: "storeId",
+					label: "Store ID"
+				},
+				{
+					key: "approval",
+					label: "Approval"
+				}
+			],
+			rows: apps.map((a) => ({
+				...a,
+				approval: approvalLabel(a.approval)
+			}))
+		},
+		notes: blocked.length ? [`${blocked.map((a) => a.alias).join(", ")} ${blocked.length === 1 ? "needs" : "need"} action in AdMob (Apps → View all apps); ad serving may be limited until then.`] : void 0
+	};
+}
+function appAdsView(r) {
+	return {
+		data: r,
+		table: {
+			columns: [
+				{
+					key: "app",
+					label: "App"
+				},
+				{
+					key: "status",
+					label: "Status"
+				},
+				{
+					key: "website",
+					label: "Website"
+				},
+				{
+					key: "detail",
+					label: "Detail"
+				}
+			],
+			rows: r.apps.map((a) => ({
+				app: a.app,
+				status: a.status,
+				website: a.website ? `${a.website} (${a.websiteSource})` : "",
+				detail: a.detail
+			}))
+		},
+		notes: [...r.apps.flatMap((a) => a.notes.map((n) => `${a.app}: ${n}`)), ...r.summary]
+	};
+}
+function adUnitsView(units) {
+	return {
+		data: units,
+		table: {
+			columns: [
+				{
+					key: "app",
+					label: "App"
+				},
+				{
+					key: "name",
+					label: "Ad unit"
+				},
+				{
+					key: "format",
+					label: "Format"
+				},
+				{
+					key: "adUnitId",
+					label: "Ad unit ID"
+				}
+			],
+			rows: units
+		}
+	};
+}
+const METRIC_LABELS = {
+	earnings: "Earnings",
+	requests: "Requests",
+	matched_requests: "Matched",
+	impressions: "Impressions",
+	clicks: "Clicks",
+	match_rate: "Match rate",
+	show_rate: "Show rate",
+	ctr: "CTR",
+	rpm: "RPM",
+	ecpm: "eCPM",
+	cost: "Cost",
+	cpi: "CPI"
+};
+const MONEY_KEYS = /* @__PURE__ */ new Set([
+	"earnings",
+	"rpm",
+	"ecpm",
+	"cost",
+	"cpi"
+]);
+const RATE_KEYS = /* @__PURE__ */ new Set([
+	"match_rate",
+	"show_rate",
+	"ctr"
+]);
+function titleCase(key) {
+	const s = key.replace(/_/g, " ");
+	return s.charAt(0).toUpperCase() + s.slice(1);
+}
+function formatPercent(fraction) {
+	return `${(fraction * 100).toFixed(1)}%`;
+}
+function signedPercent(fraction) {
+	return `${fraction >= 0 ? "+" : ""}${formatPercent(fraction)}`;
+}
+function displayRow(row) {
+	const out = { ...row };
+	for (const k of Object.keys(row)) if (MONEY_KEYS.has(k) && typeof row[`${k}_micros`] === "number") out[k] = formatMicros(row[`${k}_micros`]);
+	else if (RATE_KEYS.has(k) && typeof row[k] === "number") out[k] = formatPercent(row[k]);
+	return out;
+}
+function reportView(r) {
+	const columns = r.dimensions.map((d) => ({
+		key: d,
+		label: d === "app" ? "App" : titleCase(d)
+	}));
+	const compared = r.previous ? r.metrics[0] : void 0;
+	for (const key of r.metrics) {
+		const label = METRIC_LABELS[key] ?? titleCase(key);
+		columns.push({
+			key,
+			label: MONEY_KEYS.has(key) && r.currency ? `${label} (${r.currency})` : label,
+			align: "right"
+		});
+		if (key === compared) columns.push({
+			key: "change",
+			label: `Δ ${label}`,
+			align: "right"
+		});
+	}
+	const withChange = (row, missing) => {
+		const out = displayRow(row);
+		if (!compared) return out;
+		const c = row[`${compared}_change`];
+		out.change = typeof c === "number" ? signedPercent(c) : row[`previous_${compared}`] === void 0 ? missing : "";
+		return out;
+	};
+	const notes = [`${titleCase(r.kind)} report ${r.from} → ${r.to}, ${r.timeZone ?? ""}.${r.kind === "campaign" ? "" : ` ${ESTIMATE_NOTE}`}`];
+	if (r.previous) notes.push(`Compared with ${r.previous.from} → ${r.previous.to}. JSON output has the previous value and change of every metric.`);
+	if (r.truncated) notes.push(`Truncated: ${shownRows(r)}. Raise --max-rows or narrow the query.`);
+	for (const w of r.warnings) notes.push(`API warning: ${w}`);
+	notes.push(...r.notices);
+	const footer = r.totals && r.rows.length > 1 ? [{
+		...withChange(r.totals, ""),
+		[columns[0].key]: "Total"
+	}] : void 0;
+	return {
+		data: r,
+		table: {
+			columns,
+			rows: r.rows.map((row) => withChange(row, "new")),
+			footer
+		},
+		notes
+	};
+}
+const ICONS = {
+	ok: "✓",
+	warn: "!",
+	fail: "✗",
+	skip: "-"
+};
+function setupStatusView(s) {
+	return {
+		...doctorView(s.checks),
+		data: s
+	};
+}
+function setupStepsView(r) {
+	return {
+		data: r,
+		table: {
+			columns: [
+				{
+					key: "step",
+					label: "Step"
+				},
+				{
+					key: "status",
+					label: "Status"
+				},
+				{
+					key: "summary",
+					label: "Details"
+				}
+			],
+			rows: r.steps.flatMap((s) => s.summary.map((line, i) => i === 0 ? {
+				step: s.step,
+				status: s.status,
+				summary: line
+			} : {
+				step: "",
+				status: "",
+				summary: line
+			}))
+		}
+	};
+}
+function projectsView(projects) {
+	return {
+		data: projects,
+		table: {
+			columns: [{
+				key: "projectId",
+				label: "Project ID"
+			}, {
+				key: "name",
+				label: "Name"
+			}],
+			rows: projects.map((p) => ({ ...p }))
+		}
+	};
+}
+function doctorView(checks) {
+	return {
+		data: {
+			ok: checks.every((c) => c.status !== "fail"),
+			checks
+		},
+		table: {
+			columns: [{
+				key: "check",
+				label: "Check"
+			}, {
+				key: "summary",
+				label: "Result"
+			}],
+			rows: checks.flatMap((c) => [{
+				check: `${ICONS[c.status]} ${c.id}`,
+				summary: c.summary
+			}, ...c.fix && c.status !== "ok" ? [{
+				check: "",
+				summary: `→ fix: ${c.fix}`
+			}] : []])
+		}
+	};
+}
+function keyValueView(data) {
+	return {
+		data,
+		table: {
+			columns: [{
+				key: "key",
+				label: "Key"
+			}, {
+				key: "value",
+				label: "Value"
+			}],
+			rows: Object.entries(data).map(([key, value]) => ({
+				key,
+				value: typeof value === "object" && value !== null ? JSON.stringify(value) : value
+			}))
+		}
+	};
+}
+function financeMonthView(m) {
+	return {
+		data: m,
+		table: {
+			columns: [
+				{
+					key: "alias",
+					label: "App"
+				},
+				{
+					key: "name",
+					label: "Name"
+				},
+				{
+					key: "platform",
+					label: "Platform"
+				},
+				{
+					key: "earnings",
+					label: `Earnings (${m.currency})`,
+					align: "right"
+				}
+			],
+			rows: m.apps.map((a) => ({
+				...a,
+				earnings: a.earnings.toFixed(2)
+			})),
+			footer: [{
+				alias: "Total",
+				earnings: m.total.toFixed(2)
+			}]
+		},
+		notes: [`${m.month} (${m.from} → ${m.to}, ${m.timeZone}), booking date ${m.bookingDate}.`, ...m.notes]
+	};
+}
+function financeBalanceView(b) {
+	return {
+		data: b,
+		table: {
+			columns: [{
+				key: "account",
+				label: "Account"
+			}, {
+				key: "unpaid",
+				label: `Unpaid (${b.currency})`,
+				align: "right"
+			}],
+			rows: [{
+				account: b.account,
+				unpaid: b.unpaid.toFixed(2)
+			}]
+		},
+		notes: b.notes
+	};
+}
+function financeForecastView(f) {
+	const cur = f.currency;
+	return {
+		data: f,
+		table: {
+			columns: [
+				{
+					key: "alias",
+					label: "App"
+				},
+				{
+					key: "platform",
+					label: "Platform"
+				},
+				{
+					key: "month_to_date",
+					label: `Month to date (${cur})`,
+					align: "right"
+				},
+				{
+					key: "projected",
+					label: `${f.projection ? "Projected" : "Month"} (${cur})`,
+					align: "right"
+				}
+			],
+			rows: f.apps.map((a) => ({
+				...a,
+				month_to_date: a.month_to_date.toFixed(2),
+				projected: a.projected.toFixed(2)
+			})),
+			footer: [{
+				alias: "Total",
+				month_to_date: f.month_to_date.toFixed(2),
+				projected: f.projected.toFixed(2)
+			}]
+		},
+		notes: [`${f.month}: ${f.days_elapsed} of ${f.days_in_month} days, ${f.daily_average.toFixed(2)} ${cur} per day (${f.timeZone}).`, ...f.notes]
+	};
+}
+function financeRangeView(r) {
+	return {
+		data: r,
+		table: {
+			columns: [
+				{
+					key: "month",
+					label: "Month"
+				},
+				{
+					key: "total",
+					label: `Earnings (${r.currency})`,
+					align: "right"
+				},
+				{
+					key: "complete",
+					label: "Complete"
+				}
+			],
+			rows: r.months.map((m) => ({
+				month: m.month,
+				total: m.total.toFixed(2),
+				complete: m.complete ? "yes" : "no"
+			})),
+			footer: [{
+				month: "Total",
+				total: r.total.toFixed(2)
+			}]
+		},
+		notes: r.notes
+	};
+}
+function journalView(rows, notes) {
+	return {
+		data: rows,
+		table: {
+			columns: JOURNAL_COLUMNS.map((c) => ({
+				key: c,
+				label: c
+			})),
+			rows
+		},
+		notes
+	};
+}
+function insightsView(r) {
+	return {
+		data: r,
+		table: {
+			columns: [
+				{
+					key: "label",
+					label: r.by === "app" ? "App" : titleCase(r.by.replace(/-/g, "_"))
+				},
+				{
+					key: "earnings",
+					label: `Earnings (${r.currency})`,
+					align: "right"
+				},
+				{
+					key: "share",
+					label: "Share",
+					align: "right"
+				},
+				{
+					key: "change",
+					label: "Δ prev",
+					align: "right"
+				},
+				{
+					key: "ecpm",
+					label: "eCPM",
+					align: "right"
+				},
+				{
+					key: "match_rate",
+					label: "Match",
+					align: "right"
+				},
+				{
+					key: "show_rate",
+					label: "Show",
+					align: "right"
+				},
+				{
+					key: "requests",
+					label: "Requests",
+					align: "right"
+				}
+			],
+			rows: r.rows.map((x) => ({
+				...x,
+				earnings: x.earnings.toFixed(2),
+				share: formatPercent(x.share),
+				change: x.change === void 0 ? "" : `${x.change >= 0 ? "+" : ""}${(x.change * 100).toFixed(1)}%`,
+				ecpm: x.ecpm.toFixed(2),
+				match_rate: formatPercent(x.match_rate),
+				show_rate: formatPercent(x.show_rate)
+			})),
+			footer: [{
+				label: "Total",
+				earnings: r.totals.earnings.toFixed(2),
+				ecpm: r.totals.ecpm.toFixed(2),
+				requests: r.totals.requests
+			}]
+		},
+		notes: r.summary
+	};
+}
+const VERSION_LABELS = {
+	sdk: "SDK version",
+	app: "App version",
+	os: "OS version"
+};
+function versionsView(r) {
+	return {
+		data: r,
+		table: {
+			columns: [
+				{
+					key: "group",
+					label: r.group_by === "app" ? "App" : "Platform"
+				},
+				{
+					key: "version",
+					label: VERSION_LABELS[r.by]
+				},
+				{
+					key: "requests",
+					label: "Requests",
+					align: "right"
+				},
+				{
+					key: "request_share",
+					label: "Share",
+					align: "right"
+				},
+				{
+					key: "match_rate",
+					label: "Match",
+					align: "right"
+				},
+				{
+					key: "show_rate",
+					label: "Show",
+					align: "right"
+				},
+				{
+					key: "ctr",
+					label: "CTR",
+					align: "right"
+				},
+				{
+					key: "data",
+					label: "Data"
+				}
+			],
+			rows: r.rows.map((x) => ({
+				...x,
+				request_share: formatPercent(x.request_share),
+				match_rate: formatPercent(x.match_rate),
+				show_rate: formatPercent(x.show_rate),
+				ctr: formatPercent(x.ctr),
+				data: x.enough_data ? "" : "thin"
+			}))
+		},
+		notes: [...r.summary, ...r.notices]
+	};
+}
+function consentView(r) {
+	return {
+		data: r,
+		table: {
+			columns: [
+				{
+					key: "app",
+					label: "App"
+				},
+				{
+					key: "restriction",
+					label: "Serving restriction"
+				},
+				{
+					key: "requests",
+					label: "Requests",
+					align: "right"
+				},
+				{
+					key: "request_share",
+					label: "Share",
+					align: "right"
+				},
+				{
+					key: "earnings",
+					label: `Earnings (${r.currency})`,
+					align: "right"
+				},
+				{
+					key: "ecpm",
+					label: "eCPM",
+					align: "right"
+				},
+				{
+					key: "ecpm_vs_unrestricted",
+					label: "vs open",
+					align: "right"
+				},
+				{
+					key: "match_rate",
+					label: "Match",
+					align: "right"
+				},
+				{
+					key: "show_rate",
+					label: "Show",
+					align: "right"
+				},
+				{
+					key: "data",
+					label: "Data"
+				}
+			],
+			rows: r.rows.map((x) => ({
+				...x,
+				data: x.enough_data ? "" : "thin",
+				request_share: formatPercent(x.request_share),
+				earnings: x.earnings.toFixed(2),
+				ecpm: x.ecpm.toFixed(2),
+				ecpm_vs_unrestricted: x.ecpm_vs_unrestricted === void 0 ? "" : formatPercent(x.ecpm_vs_unrestricted),
+				match_rate: formatPercent(x.match_rate),
+				show_rate: formatPercent(x.show_rate)
+			}))
+		},
+		notes: [...r.summary, ...r.notices]
+	};
+}
+function waterfallView(r) {
+	return {
+		data: r,
+		table: {
+			columns: [
+				{
+					key: "group",
+					label: "Mediation group"
+				},
+				{
+					key: "source",
+					label: "Ad source"
+				},
+				{
+					key: "instance",
+					label: "Instance"
+				},
+				{
+					key: "ecpm",
+					label: `Obs. eCPM (${r.currency})`,
+					align: "right"
+				},
+				{
+					key: "earnings",
+					label: `Earnings (${r.currency})`,
+					align: "right"
+				},
+				{
+					key: "earnings_share",
+					label: "Share",
+					align: "right"
+				},
+				{
+					key: "requests",
+					label: "Requests",
+					align: "right"
+				},
+				{
+					key: "match_rate",
+					label: "Match",
+					align: "right"
+				},
+				{
+					key: "impressions",
+					label: "Impressions",
+					align: "right"
+				}
+			],
+			rows: r.rows.map((x) => ({
+				...x,
+				ecpm: formatMicros(x.ecpm_micros),
+				earnings: formatMicros(x.earnings_micros),
+				earnings_share: formatPercent(x.earnings_share),
+				match_rate: formatPercent(x.match_rate)
+			}))
+		},
+		notes: [...r.summary, ...r.notices]
+	};
+}
+function adSourcesView(sources) {
+	return {
+		data: sources,
+		table: {
+			columns: [{
+				key: "title",
+				label: "Ad source"
+			}, {
+				key: "adSourceId",
+				label: "Ad source ID"
+			}],
+			rows: sources
+		}
+	};
+}
+function adaptersView(adapters) {
+	return {
+		data: adapters,
+		table: {
+			columns: [
+				{
+					key: "title",
+					label: "Adapter"
+				},
+				{
+					key: "adapterId",
+					label: "Adapter ID"
+				},
+				{
+					key: "platform",
+					label: "Platform"
+				},
+				{
+					key: "formats",
+					label: "Formats"
+				},
+				{
+					key: "settings",
+					label: "Mapping settings (* required)"
+				}
+			],
+			rows: adapters.map((a) => ({
+				...a,
+				settings: a.settings.map((x) => `${x.label}${x.required ? "*" : ""}`).join(", ")
+			}))
+		}
+	};
+}
+function mediationGroupsView(groups) {
+	return {
+		data: groups,
+		table: {
+			columns: [
+				{
+					key: "name",
+					label: "Mediation group"
+				},
+				{
+					key: "id",
+					label: "ID"
+				},
+				{
+					key: "state",
+					label: "State"
+				},
+				{
+					key: "platform",
+					label: "Platform"
+				},
+				{
+					key: "format",
+					label: "Format"
+				},
+				{
+					key: "adUnits",
+					label: "Ad units",
+					align: "right"
+				},
+				{
+					key: "lines",
+					label: "Lines",
+					align: "right"
+				},
+				{
+					key: "experiment",
+					label: "A/B test"
+				}
+			],
+			rows: groups.map((g) => ({
+				...g,
+				adUnits: g.adUnits.length,
+				lines: g.lines.length
+			}))
+		}
+	};
+}
+function mediationGroupView(g) {
+	const notes = [
+		`${g.name} (${g.id}): ${g.state}, ${g.platform} ${g.format}, A/B test ${g.experiment}.`,
+		`Ad units: ${g.adUnits.map((u) => u.app ? `${u.name} (${u.app})` : u.name).join(", ") || "(none)"}.`,
+		`Regions: ${g.regions.join(", ") || "all"}${g.excludedRegions.length ? `; excluding ${g.excludedRegions.join(", ")}` : ""}.`
+	];
+	if (g.lines.some((l) => l.cpm !== void 0)) notes.push("Manual CPMs are in USD, the only currency the API supports for mediation lines.");
+	return {
+		data: g,
+		table: {
+			columns: [
+				{
+					key: "name",
+					label: "Line"
+				},
+				{
+					key: "adSource",
+					label: "Ad source"
+				},
+				{
+					key: "cpmMode",
+					label: "CPM mode"
+				},
+				{
+					key: "cpm",
+					label: "CPM (USD)",
+					align: "right"
+				},
+				{
+					key: "state",
+					label: "State"
+				},
+				{
+					key: "variant",
+					label: "Variant"
+				},
+				{
+					key: "id",
+					label: "Line ID"
+				}
+			],
+			rows: g.lines.map((l) => ({
+				...l,
+				cpm: l.cpm_micros === void 0 ? "" : formatMicros(l.cpm_micros)
+			}))
+		},
+		notes
+	};
+}
+function mappingsView(mappings) {
+	return {
+		data: mappings,
+		table: {
+			columns: [
+				{
+					key: "name",
+					label: "Mapping"
+				},
+				{
+					key: "id",
+					label: "ID"
+				},
+				{
+					key: "adapterId",
+					label: "Adapter ID"
+				},
+				{
+					key: "state",
+					label: "State"
+				},
+				{
+					key: "settings",
+					label: "Settings"
+				}
+			],
+			rows: mappings.map((m) => ({
+				...m,
+				settings: Object.entries(m.settings).map(([k, v]) => `${k}=${v}`).join(", ")
+			}))
+		}
+	};
+}
+function requestLine(p) {
+	const qs = p.query ? `?${Object.entries(p.query).map(([k, v]) => `${k}=${v}`).join("&")}` : "";
+	return `${p.method} ${API_BASE_BETA}/${p.path}${qs}`;
+}
+/** A write's plan (dry run) or, once applied, the plan plus what the API returned. */
+function writeView(plans, results) {
+	const applied = results !== void 0;
+	const rows = plans.flatMap((p, i) => p.summary.map((line, j) => ({
+		step: j === 0 ? `${i + 1}. ${p.action}` : "",
+		change: line,
+		result: j === 0 && applied ? String(results[i]?.name ?? "done") : ""
+	})));
+	const columns = [{
+		key: "step",
+		label: "Step"
+	}, {
+		key: "change",
+		label: "Change"
+	}];
+	if (applied) columns.push({
+		key: "result",
+		label: "Result"
+	});
+	return {
+		data: applied ? {
+			applied: true,
+			plans,
+			results
+		} : {
+			applied: false,
+			plans
+		},
+		table: {
+			columns,
+			rows
+		},
+		notes: applied ? [] : plans.flatMap((p) => [requestLine(p), JSON.stringify(p.body, null, 2)])
+	};
+}
+function auditLogView(log) {
+	return {
+		data: log,
+		table: {
+			columns: [
+				{
+					key: "time",
+					label: "Time (UTC)"
+				},
+				{
+					key: "action",
+					label: "Action"
+				},
+				{
+					key: "request",
+					label: "Request"
+				},
+				{
+					key: "outcome",
+					label: "Outcome"
+				},
+				{
+					key: "profile",
+					label: "Profile"
+				}
+			],
+			rows: log.entries.map((e) => ({
+				time: e.time.replace("T", " ").replace(/\.\d+Z$/, ""),
+				action: e.action,
+				request: `${e.method} ${e.path}`,
+				outcome: e.ok ? e.result ?? "ok" : `failed: ${e.error ?? "unknown"}`,
+				profile: e.profile
+			}))
+		},
+		notes: [...log.entries.length ? [] : [`No applied writes recorded in ${log.file}.`], ...log.skipped ? [`Skipped ${log.skipped} unreadable ${log.skipped === 1 ? "line" : "lines"} in ${log.file}.`] : []]
+	};
+}
+const CHECK_STATUS = {
+	ok: "ok",
+	breach: "DROP",
+	thin: "too little data"
+};
+function checkView(r) {
+	const row = (c) => ({
+		app: c.app,
+		status: CHECK_STATUS[c.status],
+		earnings: formatMicros(c.earnings_per_day_micros),
+		baseline: formatMicros(c.baseline_earnings_per_day_micros),
+		change: c.earnings_change === void 0 ? "" : signedPercent(c.earnings_change),
+		match_rate: `${formatPercent(c.match_rate)} (${formatPercent(c.baseline_match_rate)})`,
+		show_rate: `${formatPercent(c.show_rate)} (${formatPercent(c.baseline_show_rate)})`
+	});
+	return {
+		data: r,
+		table: {
+			columns: [
+				{
+					key: "app",
+					label: "App"
+				},
+				{
+					key: "status",
+					label: "Status"
+				},
+				{
+					key: "earnings",
+					label: `Per day (${r.currency})`,
+					align: "right"
+				},
+				{
+					key: "baseline",
+					label: "Baseline",
+					align: "right"
+				},
+				{
+					key: "change",
+					label: "Δ",
+					align: "right"
+				},
+				{
+					key: "match_rate",
+					label: "Match rate (baseline)",
+					align: "right"
+				},
+				{
+					key: "show_rate",
+					label: "Show rate (baseline)",
+					align: "right"
+				}
+			],
+			rows: r.rows.map(row),
+			footer: r.total ? [{
+				...row(r.total),
+				app: "All apps"
+			}] : void 0
+		},
+		notes: [...r.summary, ...r.notices]
+	};
+}
+function trendView(r) {
+	const notes = [...r.summary, ...r.notices];
+	const only = r.rows.length === 1 ? r.rows[0] : void 0;
+	if (only?.days) return {
+		data: r,
+		table: {
+			columns: [
+				{
+					key: "date",
+					label: "Date"
+				},
+				{
+					key: "weekday",
+					label: "Day"
+				},
+				{
+					key: "earnings",
+					label: `Earnings (${r.currency})`,
+					align: "right"
+				},
+				{
+					key: "requests",
+					label: "Requests",
+					align: "right"
+				},
+				{
+					key: "match_rate",
+					label: "Match",
+					align: "right"
+				},
+				{
+					key: "show_rate",
+					label: "Show",
+					align: "right"
+				},
+				{
+					key: "ecpm",
+					label: "eCPM",
+					align: "right"
+				}
+			],
+			rows: only.days.map((d) => ({
+				...d,
+				earnings: formatMicros(d.earnings_micros),
+				match_rate: formatPercent(d.match_rate),
+				show_rate: formatPercent(d.show_rate),
+				ecpm: d.ecpm.toFixed(2)
+			})),
+			footer: [{
+				date: "Total",
+				earnings: formatMicros(only.earnings_micros)
+			}]
+		},
+		notes
+	};
+	return {
+		data: r,
+		table: {
+			columns: [
+				{
+					key: "label",
+					label: titleCase(r.by)
+				},
+				{
+					key: "earnings",
+					label: `Earnings (${r.currency})`,
+					align: "right"
+				},
+				{
+					key: "average_per_day",
+					label: "Per day",
+					align: "right"
+				},
+				{
+					key: "first_active",
+					label: "First traffic"
+				},
+				{
+					key: "shift",
+					label: "Level change"
+				}
+			],
+			rows: r.rows.map((s) => ({
+				label: s.label,
+				earnings: formatMicros(s.earnings_micros),
+				average_per_day: s.average_per_day.toFixed(2),
+				first_active: s.first_active ?? "",
+				shift: s.shift ? `${signedPercent(s.shift.change)} around ${s.shift.date}` : ""
+			}))
+		},
+		notes
+	};
+}
+function lintView(r) {
+	return {
+		data: r,
+		table: {
+			columns: [
+				{
+					key: "severity",
+					label: "Severity"
+				},
+				{
+					key: "kind",
+					label: "Finding"
+				},
+				{
+					key: "target",
+					label: "Target"
+				},
+				{
+					key: "message",
+					label: "Detail"
+				}
+			],
+			rows: r.findings
+		},
+		notes: [
+			...r.summary,
+			`Traffic checked ${r.from} → ${r.to}.`,
+			...r.notices
+		]
+	};
+}
+function geoView(r) {
+	return {
+		data: r,
+		table: {
+			columns: [
+				{
+					key: "country",
+					label: "Country"
+				},
+				{
+					key: "format",
+					label: "Format"
+				},
+				{
+					key: "earnings",
+					label: `Earnings (${r.currency})`,
+					align: "right"
+				},
+				{
+					key: "earnings_share",
+					label: "Share",
+					align: "right"
+				},
+				{
+					key: "requests",
+					label: "Requests",
+					align: "right"
+				},
+				{
+					key: "match_rate",
+					label: "Match",
+					align: "right"
+				},
+				{
+					key: "show_rate",
+					label: "Show",
+					align: "right"
+				},
+				{
+					key: "ecpm",
+					label: "eCPM",
+					align: "right"
+				},
+				{
+					key: "ecpm_vs_format",
+					label: "vs format",
+					align: "right"
+				},
+				{
+					key: "data",
+					label: "Data"
+				}
+			],
+			rows: r.rows.map((x) => ({
+				...x,
+				earnings: formatMicros(x.earnings_micros),
+				earnings_share: formatPercent(x.earnings_share),
+				match_rate: formatPercent(x.match_rate),
+				show_rate: formatPercent(x.show_rate),
+				ecpm: x.ecpm.toFixed(2),
+				ecpm_vs_format: x.ecpm_vs_format === void 0 ? "" : `${x.ecpm_vs_format.toFixed(1)}×`,
+				data: x.enough_data ? "" : "thin"
+			}))
+		},
+		notes: [...r.summary, ...r.notices]
+	};
+}
+
+//#endregion
+export { ESTIMATE_NOTE, accountsView, adSourcesView, adUnitsView, adaptersView, appAdsView, appsView, auditLogView, checkView, consentView, doctorView, financeBalanceView, financeForecastView, financeMonthView, financeRangeView, formatPercent, geoView, insightsView, journalView, keyValueView, lintView, mappingsView, mediationGroupView, mediationGroupsView, projectsView, reportView, setupStatusView, setupStepsView, trendView, versionsView, waterfallView, writeView };

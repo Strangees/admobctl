@@ -1,0 +1,64 @@
+import { ReadBuffer, serializeMessage } from "../shared/stdio.mjs";
+import process from "node:process";
+
+//#region node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
+/**
+* Server transport for stdio: this communicates with an MCP client by reading from the current process' stdin and writing to stdout.
+*
+* This transport is only available in Node.js environments.
+*/
+var StdioServerTransport = class {
+	constructor(_stdin = process.stdin, _stdout = process.stdout, options) {
+		this._stdin = _stdin;
+		this._stdout = _stdout;
+		this._started = false;
+		this._ondata = (chunk) => {
+			try {
+				this._readBuffer.append(chunk);
+				this.processReadBuffer();
+			} catch (error) {
+				this.onerror?.(error);
+				this.close().catch(() => {});
+			}
+		};
+		this._onerror = (error) => {
+			this.onerror?.(error);
+		};
+		this._readBuffer = new ReadBuffer({ maxBufferSize: options?.maxBufferSize });
+	}
+	/**
+	* Starts listening for messages on stdin.
+	*/
+	async start() {
+		if (this._started) throw new Error("StdioServerTransport already started! If using Server class, note that connect() calls start() automatically.");
+		this._started = true;
+		this._stdin.on("data", this._ondata);
+		this._stdin.on("error", this._onerror);
+	}
+	processReadBuffer() {
+		while (true) try {
+			const message = this._readBuffer.readMessage();
+			if (message === null) break;
+			this.onmessage?.(message);
+		} catch (error) {
+			this.onerror?.(error);
+		}
+	}
+	async close() {
+		this._stdin.off("data", this._ondata);
+		this._stdin.off("error", this._onerror);
+		if (this._stdin.listenerCount("data") === 0) this._stdin.pause();
+		this._readBuffer.clear();
+		this.onclose?.();
+	}
+	send(message) {
+		return new Promise((resolve) => {
+			const json = serializeMessage(message);
+			if (this._stdout.write(json)) resolve();
+			else this._stdout.once("drain", resolve);
+		});
+	}
+};
+
+//#endregion
+export { StdioServerTransport };

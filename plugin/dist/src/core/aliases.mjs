@@ -1,0 +1,71 @@
+import { usageError } from "./errors.mjs";
+
+//#region src/core/aliases.ts
+const TRANSLITERATE = {
+	æ: "ae",
+	ø: "o",
+	å: "a",
+	ß: "ss",
+	œ: "oe",
+	đ: "d",
+	ł: "l"
+};
+function slugify(input) {
+	return input.toLowerCase().replace(/[æøåßœđł]/g, (c) => TRANSLITERATE[c] ?? c).normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+const APPROVAL_LABELS = {
+	APPROVED: "approved",
+	IN_REVIEW: "in review",
+	ACTION_REQUIRED: "action required"
+};
+/** App.appApprovalState in plain words; empty when unknown. */
+function approvalLabel(state) {
+	return state ? APPROVAL_LABELS[state] ?? "" : "";
+}
+/** Apps whose AdMob review needs the publisher to act (ads may be limited until it is fixed). */
+function appsNeedingAction(apps) {
+	return apps.filter((a) => a.approval === "ACTION_REQUIRED");
+}
+function appDisplayName(app) {
+	return app.manualAppInfo?.displayName || app.linkedAppInfo?.displayName || app.appId;
+}
+function platformSuffix(platform) {
+	return slugify(platform || "app");
+}
+/** Build the alias index. Configured overrides (alias → appId) win over generated aliases. */
+function buildAppIndex(apps, overrides = {}) {
+	const overrideByApp = new Map(Object.entries(overrides).map(([alias, appId]) => [appId, alias]));
+	const taken = new Set(overrideByApp.values());
+	return apps.map((app) => {
+		let alias = overrideByApp.get(app.appId);
+		if (!alias) {
+			const base = `${slugify(appDisplayName(app)) || "app"}-${platformSuffix(app.platform)}`;
+			alias = base;
+			for (let n = 2; taken.has(alias); n++) alias = `${base}-${n}`;
+			taken.add(alias);
+		}
+		const ref = {
+			alias,
+			appId: app.appId,
+			name: appDisplayName(app),
+			platform: app.platform,
+			resource: app.name
+		};
+		if (app.linkedAppInfo?.appStoreId) ref.storeId = app.linkedAppInfo.appStoreId;
+		if (app.appApprovalState) ref.approval = app.appApprovalState;
+		return ref;
+	});
+}
+/** Resolve user input (alias, app ID, numeric ID or display name) to an app. */
+function resolveApp(input, index) {
+	const q = input.trim();
+	const exact = index.find((a) => a.alias === q || a.appId === q || a.resource === q || a.appId.endsWith(`~${q}`));
+	if (exact) return exact;
+	const byName = index.filter((a) => a.name.toLowerCase() === q.toLowerCase());
+	if (byName.length === 1) return byName[0];
+	if (byName.length > 1) throw usageError(`App name "${input}" is ambiguous: ${byName.map((a) => a.alias).join(", ")}`);
+	throw usageError(`Unknown app "${input}". Known apps: ${index.map((a) => a.alias).join(", ") || "(none)"}`);
+}
+
+//#endregion
+export { appDisplayName, approvalLabel, appsNeedingAction, buildAppIndex, resolveApp, slugify };
